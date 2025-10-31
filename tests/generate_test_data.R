@@ -47,4 +47,29 @@ saveRDS(list(), file.path(output_dir, "list_empty.rds"))
 saveRDS(list(x=1:5, y=c("a", "b"), z=list(nested=TRUE)),
         file.path(output_dir, "list_nested.rds"))
 
+# Named vectors (vectors with names attribute)
+x <- c(1L, 2L, 3L)
+names(x) <- c("a", "b", "c")
+saveRDS(x, file.path(output_dir, "int_named.rds"))
+
+y <- c(1.5, 2.5, 3.5)
+names(y) <- c("x", "y", "z")
+saveRDS(y, file.path(output_dir, "real_named.rds"))
+
+z <- c("foo", "bar", "baz")
+names(z) <- c("first", "second", "third")
+saveRDS(z, file.path(output_dir, "char_named.rds"))
+
+# Matrices (with dim attribute)
+mat <- matrix(1:6, nrow=2, ncol=3)
+saveRDS(mat, file.path(output_dir, "matrix_int.rds"))
+
+mat2 <- matrix(c(1.1, 2.2, 3.3, 4.4), nrow=2, ncol=2)
+saveRDS(mat2, file.path(output_dir, "matrix_real.rds"))
+
+# Matrix with dimnames
+mat3 <- matrix(1:4, nrow=2, ncol=2)
+dimnames(mat3) <- list(c("row1", "row2"), c("col1", "col2"))
+saveRDS(mat3, file.path(output_dir, "matrix_dimnames.rds"))
+
 cat("Test RDS files generated successfully in", output_dir, "\n")

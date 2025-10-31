@@ -1,9 +1,10 @@
 //! Parser for RDS files.
 
 use crate::error::{Error, Result};
-use crate::types::{Logical, RObject};
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
+use crate::types::{Attributes, Logical, PairlistElement, RObject};
+use byteorder::{BigEndian, ReadBytesExt};
 use flate2::read::GzDecoder;
+use std::collections::HashMap;
 use std::io::{Cursor, Read};
 
 /// SEXP type constants
@@ -12,7 +13,6 @@ const SYMSXP: u32 = 1;
 const LISTSXP: u32 = 2;
 const CLOSXP: u32 = 3;
 const ENVSXP: u32 = 4;
-const PROMSXP: u32 = 5;
 const CHARSXP: u32 = 9;
 const LGLSXP: u32 = 10;
 const INTSXP: u32 = 13;
@@ -89,18 +89,38 @@ fn parse_header(cursor: &mut Cursor<&[u8]>) -> Result<u32> {
 
 /// Parse an R object from the stream.
 fn parse_object(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+    // Peek at the first byte to check for packaged/pseudo types
+    let pos = cursor.position();
+    let first_byte = match cursor.read_u8() {
+        Ok(b) => b,
+        Err(e) => return Err(Error::Io(e)),
+    };
+    cursor.set_position(pos); // Reset position
+
+    // Check if this is a packaged type (single byte encoding)
+    // These include NILVALUE_SXP (254/0xFE), GLOBALENV_SXP (253/0xFD), etc.
+    if first_byte >= 240 {
+        // This is likely a packaged type - read as single byte
+        let _packed_type = cursor.read_u8()?;
+        // For now, treat all packaged types as NULL
+        // TODO: Handle GLOBALENV_SXP, UNBOUNDVALUE_SXP, MISSINGARG_SXP properly
+        return Ok(RObject::Null);
+    }
+
     // Read the flags as a big-endian u32
     let flags = cursor.read_u32::<BigEndian>()?;
 
     // Extract the SEXP type from the flags.
-    // In theory, it should be in bits 0-7, but due to XDR encoding quirks,
-    // it appears in different positions for different types:
-    // - Regular types (INTSXP, LGLSXP, etc.): bits 8-15
-    // - Special types (NILVALUE_SXP, etc.): bits 0-7
-    // We check bits 8-15 first, and if that's 0, fall back to bits 0-7
+    // The type can appear in different bit positions:
+    // - Bits 0-7: For types like CHARSXP (9), NILSXP (0), etc.
+    // - Bits 8-15: For types like INTSXP (13), LGLSXP (10), REALSXP (14), STRSXP (16), VECSXP (19)
+    //
+    // The heuristic: if bits 8-15 contain a value >= 10, use that (it's likely the real type).
+    // Otherwise, use bits 0-7.
+    // This handles the XDR encoding quirk where different types are encoded differently.
     let type_from_8_15 = (flags >> 8) & 0xFF;
     let type_from_0_7 = flags & 0xFF;
-    let sexp_type = if type_from_8_15 != 0 {
+    let sexp_type = if type_from_8_15 >= 10 {
         type_from_8_15
     } else {
         type_from_0_7
@@ -114,7 +134,7 @@ fn parse_object(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
 
 
     // Parse the object based on type
-    let obj = match sexp_type {
+    let mut obj = match sexp_type {
         NILSXP | NILVALUE_SXP => RObject::Null,
         SYMSXP => parse_symbol(cursor)?,
         INTSXP => parse_integer_vector(cursor)?,
@@ -129,6 +149,8 @@ fn parse_object(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
             // Return as a single-element character vector for now
             RObject::Character(vec![string])
         }
+        CLOSXP => parse_closure(cursor)?,
+        ENVSXP => parse_environment(cursor)?,
         REFSXP => {
             // Reference to a previously seen object
             // For now, return an error as we haven't implemented reference tracking yet
@@ -148,10 +170,15 @@ fn parse_object(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
 
     // Parse attributes if present
     if has_attr {
-        // For now, skip attributes - we'll implement this later
-        // Just parse and discard the attributes object
-        let _attrs = parse_object(cursor)?;
-        // TODO: Wrap object with attributes
+        let attr_obj = parse_object(cursor)?;
+        let attributes = parse_attributes(attr_obj)?;
+
+        if !attributes.is_empty() {
+            obj = RObject::WithAttributes {
+                object: Box::new(obj),
+                attributes,
+            };
+        }
     }
 
     Ok(obj)
@@ -226,11 +253,16 @@ fn parse_character_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
 /// Parse a symbol (SYMSXP).
 fn parse_symbol(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     // A symbol consists of a CHARSXP for the name
-    // For now, just parse it as a character vector
-    let _name = parse_object(cursor)?;
-    // Symbols can also have pname and value, but for encoding markers we only need the name
-    // Return as NULL for now since we don't have a Symbol type yet
-    Ok(RObject::Null)
+    let name_obj = parse_object(cursor)?;
+
+    // Extract the name and return as a character vector
+    match name_obj {
+        RObject::Character(names) => Ok(RObject::Character(names)),
+        _ => {
+            // If we got something unexpected, just return it
+            Ok(name_obj)
+        }
+    }
 }
 
 /// Parse a generic list (VECSXP).
@@ -246,15 +278,49 @@ fn parse_list(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     Ok(RObject::List(elements))
 }
 
+/// Parse a closure (CLOSXP).
+/// Closures consist of: formals (pairlist), body (any SEXP), environment (ENVSXP)
+fn parse_closure(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+    // Parse formals (arguments)
+    let _formals = parse_object(cursor)?;
+    // Parse body
+    let _body = parse_object(cursor)?;
+    // Parse environment
+    let _env = parse_object(cursor)?;
+
+    // For now, return NULL as we don't have a Closure type yet
+    Ok(RObject::Null)
+}
+
+/// Parse an environment (ENVSXP).
+/// Environments consist of: locked flag, enclosing environment, frame (pairlist), hashtab
+fn parse_environment(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+    // Parse locked flag (an integer: 0 or 1)
+    let _locked = parse_object(cursor)?;
+    // Parse enclosing environment (can be another environment or NULL for global env)
+    let _enclos = parse_object(cursor)?;
+    // Parse frame (pairlist of bindings)
+    let _frame = parse_object(cursor)?;
+    // Parse hashtab (can be NULL or a VECSXP)
+    let _hashtab = parse_object(cursor)?;
+
+    // Note: attributes are NOT parsed here - they're handled by the HAS_ATTR flag
+    // in parse_object
+
+    // For now, return NULL as we don't have an Environment type yet
+    Ok(RObject::Null)
+}
+
 /// Parse a pairlist (LISTSXP).
 fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool) -> Result<RObject> {
     // Pairlists are serialized as: [TAG if HAS_TAG_BIT], CAR, CDR
-    // We'll convert to a regular list for simplicity
     let mut elements = Vec::new();
 
     // Parse the TAG if present (comes before CAR)
-    let _tag = if has_tag {
-        Some(parse_object(cursor)?)
+    let tag = if has_tag {
+        let tag_obj = parse_object(cursor)?;
+        // Extract the tag name from the symbol or character object
+        extract_tag_name(tag_obj)
     } else {
         None
     };
@@ -265,8 +331,8 @@ fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool) -> Result<RObject> 
     // Parse the CDR (rest of list)
     let cdr = parse_object(cursor)?;
 
-    // Add CAR to the list
-    elements.push(car);
+    // Add CAR to the pairlist with its tag
+    elements.push(PairlistElement { tag, value: car });
 
     // If CDR is another pairlist, recursively add its elements
     // If CDR is NULL, we're done
@@ -274,17 +340,29 @@ fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool) -> Result<RObject> 
         RObject::Null => {
             // End of list
         }
-        RObject::List(mut rest) => {
+        RObject::Pairlist(mut rest) => {
             // Append the rest
             elements.append(&mut rest);
         }
         other => {
-            // CDR is some other object, add it
-            elements.push(other);
+            // CDR is some other object, add it without a tag
+            elements.push(PairlistElement {
+                tag: None,
+                value: other,
+            });
         }
     }
 
-    Ok(RObject::List(elements))
+    Ok(RObject::Pairlist(elements))
+}
+
+/// Extract a tag name from a tag object (usually a symbol or character).
+fn extract_tag_name(tag_obj: RObject) -> Option<String> {
+    match tag_obj {
+        RObject::Character(vec) if !vec.is_empty() => Some(vec[0].clone()),
+        RObject::Null => None,
+        _ => None,
+    }
 }
 
 /// Parse an ALTREP object.
@@ -371,6 +449,46 @@ fn parse_charsxp_content(cursor: &mut Cursor<&[u8]>) -> Result<String> {
     let string = String::from_utf8(bytes)?;
 
     Ok(string)
+}
+
+/// Parse attributes from a pairlist object.
+/// Attributes are stored as pairlists where TAG = attribute name, CAR = attribute value.
+fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
+    let mut attrs = HashMap::new();
+
+    // Attributes are typically stored as a pairlist (LISTSXP)
+    // We need to extract the TAG (name) and CAR (value) from each pair
+    match attr_obj {
+        RObject::Null => {
+            // No attributes
+            return Ok(Attributes { attrs });
+        }
+        RObject::Pairlist(elements) => {
+            // Extract TAG (name) and CAR (value) from each pairlist element
+            for elem in elements {
+                if let Some(name) = elem.tag {
+                    attrs.insert(name, elem.value);
+                }
+            }
+            return Ok(Attributes { attrs });
+        }
+        RObject::List(_elements) => {
+            // If we have a regular list without tags, we can't extract attribute names
+            // This shouldn't happen for attributes, but handle it gracefully
+            return Ok(Attributes { attrs });
+        }
+        RObject::WithAttributes { object, attributes: _ } => {
+            // The attributes object itself has attributes - use the inner object
+            return parse_attributes(*object);
+        }
+        _ => {
+            // Unexpected attribute structure
+            return Err(Error::InvalidFormat(format!(
+                "Expected pairlist for attributes, got {:?}",
+                attr_obj
+            )));
+        }
+    }
 }
 
 #[cfg(test)]

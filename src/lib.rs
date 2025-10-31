@@ -9,7 +9,7 @@ mod types;
 mod writer;
 
 pub use error::{Error, Result};
-pub use types::{Logical, RObject};
+pub use types::{Logical, PairlistElement, RObject};
 
 /// Read an RDS file from a byte slice.
 pub fn read_rds(data: &[u8]) -> Result<RObject> {
@@ -23,8 +23,6 @@ pub fn write_rds(_obj: &RObject) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_placeholder() {
         // Placeholder test - will be replaced with actual tests

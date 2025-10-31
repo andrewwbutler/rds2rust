@@ -29,11 +29,21 @@ pub enum RObject {
     /// Generic list (VECSXP)
     List(Vec<RObject>),
 
+    /// Pairlist (LISTSXP) with optional tags
+    Pairlist(Vec<PairlistElement>),
+
     /// Object with attributes
     WithAttributes {
         object: Box<RObject>,
         attributes: Attributes,
     },
+}
+
+/// An element in a pairlist, optionally tagged
+#[derive(Debug, Clone, PartialEq)]
+pub struct PairlistElement {
+    pub tag: Option<String>,
+    pub value: RObject,
 }
 
 /// Represents a logical value in R (TRUE, FALSE, or NA)
