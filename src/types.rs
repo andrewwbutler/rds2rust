@@ -38,7 +38,14 @@ pub enum RObject {
         row_names: Vec<String>,
     },
 
-    /// Object with attributes
+    /// S3 object (any object with a class attribute)
+    S3Object {
+        base: Box<RObject>,
+        class: Vec<String>,
+        attributes: Attributes,
+    },
+
+    /// Object with attributes (no class)
     WithAttributes {
         object: Box<RObject>,
         attributes: Attributes,

@@ -178,10 +178,19 @@ fn parse_object(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
         let attributes = parse_attributes(attr_obj)?;
 
         if !attributes.is_empty() {
-            // Check if this is a data.frame
-            if let Some(dataframe) = try_convert_to_dataframe(&obj, &attributes) {
-                obj = dataframe;
+            // Check if this has a class attribute
+            let has_class = attributes.get("class").is_some();
+
+            if has_class {
+                // Check if this is a data.frame (special S3 object)
+                if let Some(dataframe) = try_convert_to_dataframe(&obj, &attributes) {
+                    obj = dataframe;
+                } else {
+                    // General S3 object with class attribute
+                    obj = convert_to_s3_object(obj, attributes);
+                }
             } else {
+                // Regular object with attributes (no class)
                 obj = RObject::WithAttributes {
                     object: Box::new(obj),
                     attributes,
@@ -609,6 +618,23 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
     };
 
     Some(RObject::DataFrame { columns, row_names })
+}
+
+/// Convert an object with attributes to an S3 object.
+/// Assumes the class attribute has already been checked.
+fn convert_to_s3_object(obj: RObject, mut attributes: Attributes) -> RObject {
+    // Extract the class attribute
+    let classes = match attributes.attrs.remove("class") {
+        Some(RObject::Character(classes)) => classes,
+        _ => vec![], // Shouldn't happen since we checked before calling
+    };
+
+    // Create the S3 object
+    RObject::S3Object {
+        base: Box::new(obj),
+        class: classes,
+        attributes,
+    }
 }
 
 #[cfg(test)]

@@ -100,4 +100,30 @@ df3 <- data.frame(
 rownames(df3) <- c("person1", "person2", "person3")
 saveRDS(df3, file.path(output_dir, "dataframe_rownames.rds"))
 
+# S3 objects
+# Simple S3 object (custom class on a list)
+my_obj <- list(x = 1:3, y = "test", z = TRUE)
+class(my_obj) <- "my_custom_class"
+saveRDS(my_obj, file.path(output_dir, "s3_simple.rds"))
+
+# S3 object with multiple classes (class inheritance)
+my_obj2 <- list(value = 42, name = "answer")
+class(my_obj2) <- c("special_class", "base_class")
+saveRDS(my_obj2, file.path(output_dir, "s3_multi_class.rds"))
+
+# S3 object on a vector
+my_vec <- c(10, 20, 30)
+class(my_vec) <- "custom_vector"
+attr(my_vec, "description") <- "A custom vector class"
+saveRDS(my_vec, file.path(output_dir, "s3_vector.rds"))
+
+# Factor (built-in S3 class)
+fac <- factor(c("low", "high", "medium", "low", "high"))
+saveRDS(fac, file.path(output_dir, "factor_simple.rds"))
+
+# Ordered factor
+ord_fac <- ordered(c("low", "medium", "high", "low"),
+                   levels = c("low", "medium", "high"))
+saveRDS(ord_fac, file.path(output_dir, "factor_ordered.rds"))
+
 cat("Test RDS files generated successfully in", output_dir, "\n")
