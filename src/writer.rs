@@ -57,6 +57,7 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject) -> Result<()> {
         RObject::Complex(vec) => write_complex_vector(writer, vec),
         RObject::List(elements) => write_list(writer, elements),
         RObject::Pairlist(elements) => write_pairlist(writer, elements),
+        RObject::Language(elements) => write_language(writer, elements),
         RObject::DataFrame { columns, row_names } => {
             write_dataframe(writer, columns, row_names)
         }
@@ -173,6 +174,41 @@ fn write_list(writer: &mut Vec<u8>, elements: &[RObject]) -> Result<()> {
     for element in elements {
         write_object(writer, element)?;
     }
+    Ok(())
+}
+
+/// Write a language object (LANGSXP).
+/// Language objects represent unevaluated calls: function + arguments.
+fn write_language(writer: &mut Vec<u8>, elements: &[RObject]) -> Result<()> {
+    if elements.is_empty() {
+        // Empty language object? Just write NULL
+        return write_null(writer);
+    }
+
+    // Language objects are structured as: CAR (function) + CDR (argument list)
+    let has_tag = false; // Language objects typically don't have tags
+
+    write_flags(writer, LANGSXP, false, has_tag)?;
+
+    // Write the function (CAR)
+    write_object(writer, &elements[0])?;
+
+    // Write the arguments (CDR) as a pairlist or NULL
+    if elements.len() > 1 {
+        // Convert remaining elements to a pairlist
+        let args: Vec<PairlistElement> = elements[1..]
+            .iter()
+            .map(|obj| PairlistElement {
+                tag: None,
+                value: obj.clone(),
+            })
+            .collect();
+        write_pairlist(writer, &args)?;
+    } else {
+        // No arguments
+        write_null(writer)?;
+    }
+
     Ok(())
 }
 

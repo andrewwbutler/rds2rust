@@ -125,6 +125,7 @@ fn parse_object(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
         S4SXP => parse_s4_object(cursor)?,
         VECSXP => parse_list(cursor)?,
         LISTSXP => parse_pairlist(cursor, has_tag)?,
+        LANGSXP => parse_language(cursor, has_tag)?,
         CHARSXP => {
             // Sometimes CHARSXP appears standalone (like for encoding markers)
             let string = parse_charsxp_content(cursor)?;
@@ -353,6 +354,45 @@ fn parse_environment(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
 
     // For now, return NULL as we don't have an Environment type yet
     Ok(RObject::Null)
+}
+
+/// Parse a language object (LANGSXP).
+/// Language objects represent unevaluated expressions/calls.
+/// They're structured like pairlists: TAG (if present), CAR (function), CDR (arguments).
+fn parse_language(cursor: &mut Cursor<&[u8]>, has_tag: bool) -> Result<RObject> {
+    let mut elements = Vec::new();
+
+    // Parse the TAG if present (usually not for language objects)
+    if has_tag {
+        let _tag_obj = parse_object(cursor)?;
+        // Tags in language objects are rare, we'll skip them for now
+    }
+
+    // Parse the CAR (the function being called)
+    let car = parse_object(cursor)?;
+    elements.push(car);
+
+    // Parse the CDR (the argument list)
+    let cdr = parse_object(cursor)?;
+
+    // If CDR is a pairlist, extract all arguments
+    match cdr {
+        RObject::Null => {
+            // No arguments
+        }
+        RObject::Pairlist(pairlist_elements) => {
+            // Add all arguments from the pairlist
+            for elem in pairlist_elements {
+                elements.push(elem.value);
+            }
+        }
+        other => {
+            // Single argument (unusual but possible)
+            elements.push(other);
+        }
+    }
+
+    Ok(RObject::Language(elements))
 }
 
 /// Parse a pairlist (LISTSXP).

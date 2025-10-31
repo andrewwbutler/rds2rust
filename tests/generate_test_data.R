@@ -166,4 +166,17 @@ tank <- new("Aquarium",
             saltwater = TRUE)
 saveRDS(tank, file.path(output_dir, "s4_complex.rds"))
 
+# Language objects (unevaluated expressions/calls)
+# Simple function call: sum(1, 2, 3)
+lang_simple <- quote(sum(1, 2, 3))
+saveRDS(lang_simple, file.path(output_dir, "lang_simple.rds"))
+
+# Function call with variables: mean(x, na.rm = TRUE)
+lang_with_args <- quote(mean(x, na.rm = TRUE))
+saveRDS(lang_with_args, file.path(output_dir, "lang_with_args.rds"))
+
+# Nested expression: sqrt(sum(x, y))
+lang_nested <- quote(sqrt(sum(x, y)))
+saveRDS(lang_nested, file.path(output_dir, "lang_nested.rds"))
+
 cat("Test RDS files generated successfully in", output_dir, "\n")

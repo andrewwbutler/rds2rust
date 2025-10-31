@@ -32,6 +32,10 @@ pub enum RObject {
     /// Pairlist (LISTSXP) with optional tags
     Pairlist(Vec<PairlistElement>),
 
+    /// Language object (unevaluated call/expression)
+    /// Stored as a list: [function, arg1, arg2, ...]
+    Language(Vec<RObject>),
+
     /// Data frame (list with class="data.frame")
     DataFrame {
         columns: HashMap<String, RObject>,

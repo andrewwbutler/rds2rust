@@ -34,6 +34,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - `Complex` - Complex number vectors
      - `List` - Generic lists (VECSXP)
      - `Pairlist` - Pairlists (LISTSXP) with tags
+     - `Language` - Language objects (unevaluated expressions/calls)
      - `DataFrame` - Data frames with columns and row names
      - `Factor` - Factors (categorical variables with levels)
      - `S3Object` - S3 objects with class attribute
@@ -47,7 +48,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Integration test file: [tests/integration_tests.rs](tests/integration_tests.rs)
    - Roundtrip test file: [tests/roundtrip_tests.rs](tests/roundtrip_tests.rs)
    - R script to generate test data: [tests/generate_test_data.R](tests/generate_test_data.R)
-   - **61 passing tests** (3 unit + 33 integration + 25 roundtrip) covering:
+   - **67 passing tests** (3 unit + 36 integration + 28 roundtrip) covering:
      - NULL, integers, reals, logicals, characters
      - Empty vectors and vectors with NA values
      - Special float values (Inf, -Inf, NaN)
@@ -60,6 +61,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - Factors (simple, ordered)
      - S3 objects (simple, multi-class, on vectors)
      - S4 objects (simple, inheritance, complex slots)
+     - Language objects (simple calls, nested expressions, named arguments)
      - **Complete roundtrip coverage**: All types verified with read -> write -> read
 
 5. **Documentation**
@@ -205,32 +207,47 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Objects with attributes (WithAttributes)
 
 5. ✅ **Roundtrip Tests**
-   - 25 comprehensive roundtrip tests verifying read -> write -> read integrity
+   - 28 comprehensive roundtrip tests verifying read -> write -> read integrity
    - Tests for all basic types: NULL, vectors (integer, real, logical, character, raw, complex)
    - Tests for all complex types: lists, data frames (simple, mixed, with rownames)
    - Tests for all object-oriented types: factors (simple, ordered), S3 objects (simple, multi-class, vector), S4 objects (simple, inheritance, complex)
+   - Tests for language objects: simple calls, nested expressions, named arguments
    - All tests pass with byte-perfect equality
+
+### ✅ Phase 9: Language Objects (COMPLETED)
+
+1. ✅ **Language Objects (LANGSXP)**
+   - Added `Language` variant to RObject enum
+   - Implemented LANGSXP parsing (unevaluated expressions/calls)
+   - Structure: function + arguments as flat list
+   - Handles nested language objects
+   - Writing support for serialization
+   - Test data generation for simple, complex, and nested expressions
+   - Integration tests (3 tests for language objects)
 
 ## Next Steps
 
-### 📋 Phase 9: Language Objects and Additional Features (UPCOMING)
+### 📋 Phase 10: Additional Language Features (UPCOMING)
 
-1. **Language Objects**
-   - LANGSXP parsing
-   - Expression objects
-   - Formula objects
+1. **Expression Vectors**
+   - EXPRSXP parsing
+   - Vector of language objects
 
-2. **Full Closure and Environment Support**
+2. **Formulas**
+   - Formula object support (special language objects)
+   - Model formula parsing
+
+3. **Full Closure and Environment Support**
    - Complete function object parsing
    - Environment frame parsing
    - Binding resolution
 
-3. **Promises and Special Types**
+4. **Promises and Special Types**
    - PROMSXP handling
    - SPECIALSXP handling
    - BUILTINSXP handling
 
-### 📋 Phase 10: Advanced Features (UPCOMING)
+### 📋 Phase 11: Advanced Features (UPCOMING)
 
 1. **Reference Tracking**
    - Implement REFSXP handling
@@ -241,7 +258,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Bzip2 decompression support
    - XZ decompression support (if needed)
 
-### 📋 Phase 11: Performance & Polish (UPCOMING)
+### 📋 Phase 12: Performance & Polish (UPCOMING)
 
 1. **Optimization**
    - Benchmarking against rds2cpp

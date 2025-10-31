@@ -21,6 +21,9 @@ pub const CLOSXP: u32 = 3;
 /// Environment
 pub const ENVSXP: u32 = 4;
 
+/// Language construct (unevaluated call/expression)
+pub const LANGSXP: u32 = 6;
+
 /// Internal character string
 pub const CHARSXP: u32 = 9;
 

@@ -367,3 +367,53 @@ fn test_roundtrip_existing_s4_complex() {
 
     assert_eq!(obj, deserialized);
 }
+
+// Language objects
+#[test]
+fn test_roundtrip_existing_lang_simple() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("lang_simple.rds");
+    let obj = read_rds(&data).expect("Failed to read existing simple language object");
+
+    let serialized = write_rds(&obj).expect("Failed to write simple language object");
+    let deserialized = read_rds(&serialized).expect("Failed to read serialized simple language object");
+
+    assert_eq!(obj, deserialized);
+}
+
+#[test]
+fn test_roundtrip_existing_lang_with_args() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("lang_with_args.rds");
+    let obj = read_rds(&data).expect("Failed to read existing language object with args");
+
+    let serialized = write_rds(&obj).expect("Failed to write language object with args");
+    let deserialized = read_rds(&serialized).expect("Failed to read serialized language object with args");
+
+    assert_eq!(obj, deserialized);
+}
+
+#[test]
+fn test_roundtrip_existing_lang_nested() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("lang_nested.rds");
+    let obj = read_rds(&data).expect("Failed to read existing nested language object");
+
+    let serialized = write_rds(&obj).expect("Failed to write nested language object");
+    let deserialized = read_rds(&serialized).expect("Failed to read serialized nested language object");
+
+    assert_eq!(obj, deserialized);
+}
+
