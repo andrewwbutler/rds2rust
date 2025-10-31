@@ -107,7 +107,7 @@ class(my_obj) <- "my_custom_class"
 saveRDS(my_obj, file.path(output_dir, "s3_simple.rds"))
 
 # S3 object with multiple classes (class inheritance)
-my_obj2 <- list(value = 42, name = "answer")
+my_obj2 <- list(value = 137, name = "fine_structure")
 class(my_obj2) <- c("special_class", "base_class")
 saveRDS(my_obj2, file.path(output_dir, "s3_multi_class.rds"))
 
@@ -125,5 +125,45 @@ saveRDS(fac, file.path(output_dir, "factor_simple.rds"))
 ord_fac <- ordered(c("low", "medium", "high", "low"),
                    levels = c("low", "medium", "high"))
 saveRDS(ord_fac, file.path(output_dir, "factor_ordered.rds"))
+
+# S4 objects
+# Define a simple S4 class - Animal
+setClass("Animal",
+         slots = c(species = "character",
+                   age = "numeric",
+                   habitat = "character"))
+
+# Create an instance
+tiger <- new("Animal",
+             species = "Tiger",
+             age = 5,
+             habitat = "Rainforest")
+saveRDS(tiger, file.path(output_dir, "s4_simple.rds"))
+
+# S4 class with inheritance - Bird extends Animal
+setClass("Bird",
+         contains = "Animal",
+         slots = c(wingspan = "numeric",
+                   can_fly = "logical"))
+
+parrot <- new("Bird",
+              species = "Macaw",
+              age = 3,
+              habitat = "Tropical Forest",
+              wingspan = 1.2,
+              can_fly = TRUE)
+saveRDS(parrot, file.path(output_dir, "s4_inheritance.rds"))
+
+# S4 object with various slot types - Aquarium
+setClass("Aquarium",
+         slots = c(temperatures = "numeric",
+                   fish_species = "character",
+                   saltwater = "logical"))
+
+tank <- new("Aquarium",
+            temperatures = c(24.5, 25.0, 24.8),
+            fish_species = c("clownfish", "tang", "angelfish"),
+            saltwater = TRUE)
+saveRDS(tank, file.path(output_dir, "s4_complex.rds"))
 
 cat("Test RDS files generated successfully in", output_dir, "\n")

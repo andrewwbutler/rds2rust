@@ -21,6 +21,7 @@ const CPLXSXP: u32 = 15;
 const STRSXP: u32 = 16;
 const VECSXP: u32 = 19;
 const RAWSXP: u32 = 24;
+const S4SXP: u32 = 25;
 
 /// Special pseudo-types
 const ALTREP_SXP: u32 = 238; // 0xEE - ALTREP object (version 3)
@@ -145,6 +146,7 @@ fn parse_object(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
         LGLSXP => parse_logical_vector(cursor)?,
         STRSXP => parse_character_vector(cursor)?,
         RAWSXP => parse_raw_vector(cursor)?,
+        S4SXP => parse_s4_object(cursor)?,
         VECSXP => parse_list(cursor)?,
         LISTSXP => parse_pairlist(cursor, has_tag)?,
         CHARSXP => {
@@ -178,23 +180,32 @@ fn parse_object(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
         let attributes = parse_attributes(attr_obj)?;
 
         if !attributes.is_empty() {
-            // Check if this has a class attribute
-            let has_class = attributes.get("class").is_some();
-
-            if has_class {
-                // Check if this is a data.frame (special S3 object)
-                if let Some(dataframe) = try_convert_to_dataframe(&obj, &attributes) {
-                    obj = dataframe;
-                } else {
-                    // General S3 object with class attribute
-                    obj = convert_to_s3_object(obj, attributes);
-                }
+            // Check if this is an S4 object (S4SXP type)
+            if sexp_type == S4SXP {
+                // S4 object: all attributes become slots, except class
+                obj = convert_to_s4_object(attributes);
             } else {
-                // Regular object with attributes (no class)
-                obj = RObject::WithAttributes {
-                    object: Box::new(obj),
-                    attributes,
-                };
+                // Check if this has a class attribute (for S3 objects)
+                let has_class = attributes.get("class").is_some();
+
+                if has_class {
+                    // Check if this is a data.frame (special S3 object)
+                    if let Some(dataframe) = try_convert_to_dataframe(&obj, &attributes) {
+                        obj = dataframe;
+                    } else if let Some(factor) = try_convert_to_factor(&obj, &attributes) {
+                        // Check if this is a factor (special S3 object)
+                        obj = factor;
+                    } else {
+                        // General S3 object with class attribute
+                        obj = convert_to_s3_object(obj, attributes);
+                    }
+                } else {
+                    // Regular object with attributes (no class)
+                    obj = RObject::WithAttributes {
+                        object: Box::new(obj),
+                        attributes,
+                    };
+                }
             }
         }
     }
@@ -295,6 +306,16 @@ fn parse_complex_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     }
 
     Ok(RObject::Complex(vec))
+}
+
+/// Parse an S4 object (S4SXP).
+/// S4 objects in RDS are just markers - the actual data is in attributes.
+/// We return a placeholder NULL and let the attribute parsing handle it.
+fn parse_s4_object(_cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+    // S4SXP is just a marker type - it doesn't contain any data itself.
+    // All the S4 data (class and slots) is stored in attributes.
+    // Return a NULL as a placeholder - the attribute parsing will convert this to S4Object.
+    Ok(RObject::Null)
 }
 
 /// Parse a symbol (SYMSXP).
@@ -620,6 +641,45 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
     Some(RObject::DataFrame { columns, row_names })
 }
 
+/// Try to convert an object with attributes to a Factor.
+/// Returns Some(Factor) if it's a factor, None otherwise.
+fn try_convert_to_factor(obj: &RObject, attributes: &Attributes) -> Option<RObject> {
+    // Check if the class attribute indicates this is a factor
+    let class_attr = attributes.get("class")?;
+    let classes = match class_attr {
+        RObject::Character(classes) => classes,
+        _ => return None,
+    };
+
+    // Check if "factor" is in the class list
+    let is_factor = classes.contains(&"factor".to_string());
+    if !is_factor {
+        return None;
+    }
+
+    // Check if it's an ordered factor
+    let ordered = classes.contains(&"ordered".to_string());
+
+    // The base object should be an integer vector (the indices)
+    let values = match obj {
+        RObject::Integer(vals) => vals.clone(),
+        _ => return None,
+    };
+
+    // Get the levels from the "levels" attribute
+    let levels_attr = attributes.get("levels")?;
+    let levels = match levels_attr {
+        RObject::Character(levels) => levels.clone(),
+        _ => return None,
+    };
+
+    Some(RObject::Factor {
+        values,
+        levels,
+        ordered,
+    })
+}
+
 /// Convert an object with attributes to an S3 object.
 /// Assumes the class attribute has already been checked.
 fn convert_to_s3_object(obj: RObject, mut attributes: Attributes) -> RObject {
@@ -635,6 +695,37 @@ fn convert_to_s3_object(obj: RObject, mut attributes: Attributes) -> RObject {
         class: classes,
         attributes,
     }
+}
+
+/// Convert attributes to an S4 object.
+/// For S4 objects, the class is in attributes, and all other attributes are slots.
+fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
+    use std::collections::HashMap;
+
+    // Extract the class attribute
+    // The class may be wrapped in WithAttributes if it has a package attribute
+    let class = match attributes.attrs.remove("class") {
+        Some(RObject::Character(classes)) => classes,
+        Some(RObject::WithAttributes { object, .. }) => {
+            // Unwrap the WithAttributes to get the actual class vector
+            match *object {
+                RObject::Character(classes) => classes,
+                _ => vec![],
+            }
+        }
+        _ => vec![], // S4 objects should always have a class
+    };
+
+    // Extract package attribute (S4 objects often have this, but we don't need it for slots)
+    attributes.attrs.remove("package");
+
+    // All remaining attributes are the slots
+    let mut slots = HashMap::new();
+    for (key, value) in attributes.attrs {
+        slots.insert(key, value);
+    }
+
+    RObject::S4Object { class, slots }
 }
 
 #[cfg(test)]

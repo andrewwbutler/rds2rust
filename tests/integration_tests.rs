@@ -795,3 +795,217 @@ fn test_s3_vector() {
         _ => panic!("Expected S3Object, got {:?}", obj),
     }
 }
+
+#[test]
+fn test_s4_simple() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("s4_simple.rds");
+    let obj = read_rds(&data).expect("Failed to parse simple S4 object");
+
+    match obj {
+        RObject::S4Object { class, slots } => {
+            // Check the class
+            assert_eq!(class.len(), 1);
+            assert_eq!(class[0], "Animal");
+
+            // Check the slots
+            assert_eq!(slots.len(), 3);
+
+            // Check species slot
+            match slots.get("species") {
+                Some(RObject::Character(species)) => {
+                    assert_eq!(species.len(), 1);
+                    assert_eq!(species[0], "Tiger");
+                }
+                _ => panic!("Expected 'species' slot with character value"),
+            }
+
+            // Check age slot
+            match slots.get("age") {
+                Some(RObject::Real(age)) => {
+                    assert_eq!(age.len(), 1);
+                    assert_eq!(age[0], 5.0);
+                }
+                _ => panic!("Expected 'age' slot with numeric value"),
+            }
+
+            // Check habitat slot
+            match slots.get("habitat") {
+                Some(RObject::Character(habitat)) => {
+                    assert_eq!(habitat.len(), 1);
+                    assert_eq!(habitat[0], "Rainforest");
+                }
+                _ => panic!("Expected 'habitat' slot with character value"),
+            }
+        }
+        _ => panic!("Expected S4Object, got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_s4_inheritance() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("s4_inheritance.rds");
+    let obj = read_rds(&data).expect("Failed to parse S4 object with inheritance");
+
+    match obj {
+        RObject::S4Object { class, slots } => {
+            // Check the class (should show inheritance)
+            assert!(class.len() >= 1);
+            assert_eq!(class[0], "Bird");
+
+            // Check slots from both parent and child classes
+            assert!(slots.len() >= 5);
+
+            // Parent class slots (from Animal)
+            assert!(slots.get("species").is_some());
+            assert!(slots.get("age").is_some());
+            assert!(slots.get("habitat").is_some());
+
+            // Child class slots (from Bird)
+            match slots.get("wingspan") {
+                Some(RObject::Real(wingspan)) => {
+                    assert_eq!(wingspan.len(), 1);
+                    assert_eq!(wingspan[0], 1.2);
+                }
+                _ => panic!("Expected 'wingspan' slot"),
+            }
+
+            match slots.get("can_fly") {
+                Some(RObject::Logical(can_fly)) => {
+                    assert_eq!(can_fly.len(), 1);
+                    assert_eq!(can_fly[0], rds2rust::Logical::True);
+                }
+                _ => panic!("Expected 'can_fly' slot"),
+            }
+        }
+        _ => panic!("Expected S4Object, got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_s4_complex() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("s4_complex.rds");
+    let obj = read_rds(&data).expect("Failed to parse complex S4 object");
+
+    match obj {
+        RObject::S4Object { class, slots } => {
+            // Check the class
+            assert_eq!(class.len(), 1);
+            assert_eq!(class[0], "Aquarium");
+
+            // Check the slots
+            assert_eq!(slots.len(), 3);
+
+            // Check temperatures slot (numeric vector)
+            match slots.get("temperatures") {
+                Some(RObject::Real(temps)) => {
+                    assert_eq!(temps.len(), 3);
+                    assert_eq!(temps[0], 24.5);
+                    assert_eq!(temps[1], 25.0);
+                    assert_eq!(temps[2], 24.8);
+                }
+                _ => panic!("Expected 'temperatures' slot with numeric vector"),
+            }
+
+            // Check fish_species slot (character vector)
+            match slots.get("fish_species") {
+                Some(RObject::Character(species)) => {
+                    assert_eq!(species.len(), 3);
+                    assert_eq!(species, &vec!["clownfish", "tang", "angelfish"]);
+                }
+                _ => panic!("Expected 'fish_species' slot with character vector"),
+            }
+
+            // Check saltwater slot (logical)
+            match slots.get("saltwater") {
+                Some(RObject::Logical(saltwater)) => {
+                    assert_eq!(saltwater.len(), 1);
+                    assert_eq!(saltwater[0], rds2rust::Logical::True);
+                }
+                _ => panic!("Expected 'saltwater' slot with logical value"),
+            }
+        }
+        _ => panic!("Expected S4Object, got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_factor_simple() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("factor_simple.rds");
+    let obj = read_rds(&data).expect("Failed to parse simple factor");
+
+    match obj {
+        RObject::Factor { values, levels, ordered } => {
+            // Check it's not ordered
+            assert!(!ordered);
+
+            // Check levels
+            assert_eq!(levels.len(), 3);
+            assert_eq!(levels, vec!["high", "low", "medium"]);
+
+            // Check values (1-based indices into levels)
+            assert_eq!(values.len(), 5);
+            // R factor: c("low", "high", "medium", "low", "high")
+            // levels = c("high", "low", "medium")
+            // So: low=2, high=1, medium=3
+            assert_eq!(values[0], 2); // "low"
+            assert_eq!(values[1], 1); // "high"
+            assert_eq!(values[2], 3); // "medium"
+            assert_eq!(values[3], 2); // "low"
+            assert_eq!(values[4], 1); // "high"
+        }
+        _ => panic!("Expected Factor, got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_factor_ordered() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("factor_ordered.rds");
+    let obj = read_rds(&data).expect("Failed to parse ordered factor");
+
+    match obj {
+        RObject::Factor { values, levels, ordered } => {
+            // Check it's ordered
+            assert!(ordered);
+
+            // Check levels (in order)
+            assert_eq!(levels.len(), 3);
+            assert_eq!(levels, vec!["low", "medium", "high"]);
+
+            // Check values (1-based indices into levels)
+            assert_eq!(values.len(), 4);
+            // R factor: ordered(c("low", "medium", "high", "low"), levels = c("low", "medium", "high"))
+            // So: low=1, medium=2, high=3
+            assert_eq!(values[0], 1); // "low"
+            assert_eq!(values[1], 2); // "medium"
+            assert_eq!(values[2], 3); // "high"
+            assert_eq!(values[3], 1); // "low"
+        }
+        _ => panic!("Expected Factor, got {:?}", obj),
+    }
+}
+

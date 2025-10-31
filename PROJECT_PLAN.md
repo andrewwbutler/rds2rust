@@ -35,6 +35,9 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - `List` - Generic lists (VECSXP)
      - `Pairlist` - Pairlists (LISTSXP) with tags
      - `DataFrame` - Data frames with columns and row names
+     - `Factor` - Factors (categorical variables with levels)
+     - `S3Object` - S3 objects with class attribute
+     - `S4Object` - S4 objects with slots
      - `WithAttributes` - Objects with attributes
    - Special value handling (NA, NaN, Inf)
    - `PairlistElement` struct for tagged pairlist elements
@@ -43,7 +46,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
 4. **Test Infrastructure**
    - Integration test file: [tests/integration_tests.rs](tests/integration_tests.rs)
    - R script to generate test data: [tests/generate_test_data.R](tests/generate_test_data.R)
-   - **22 passing integration tests** covering:
+   - **33 passing integration tests** covering:
      - NULL, integers, reals, logicals, characters
      - Empty vectors and vectors with NA values
      - Special float values (Inf, -Inf, NaN)
@@ -51,6 +54,11 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - Named vectors (integer, real, character)
      - Matrices (integer, real, with dimnames)
      - Data frames (simple, mixed types, with row names)
+     - Raw vectors (byte arrays)
+     - Complex vectors (complex numbers)
+     - Factors (simple, ordered)
+     - S3 objects (simple, multi-class, on vectors)
+     - S4 objects (simple, inheritance, complex slots)
 
 5. **Documentation**
    - [RDS_FORMAT.md](RDS_FORMAT.md) - Detailed RDS format specification
@@ -131,19 +139,63 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Mixed column types
    - Custom row names
 
+### ✅ Phase 5: Remaining Basic Types (COMPLETED)
+
+1. ✅ **Raw Vectors (RAWSXP)**
+   - Parse byte vectors
+   - Integration tests added
+
+2. ✅ **Complex Vectors (CPLXSXP)**
+   - Parse complex number vectors (real + imaginary pairs)
+   - Integration tests added
+
+### ✅ Phase 6: Object-Oriented Systems (COMPLETED)
+
+1. ✅ **S3 Objects**
+   - Automatic S3 object detection via class attribute
+   - Conversion from objects-with-attributes
+   - Support for multiple classes (inheritance)
+   - S3 objects on vectors with additional attributes
+   - Integration tests (simple, multi-class, vector-based)
+
+2. ✅ **S4 Objects**
+   - S4SXP type (25) parsing
+   - Slot extraction from attributes
+   - Class attribute handling (unwrapping WithAttributes wrapper)
+   - Package attribute filtering
+   - Support for S4 inheritance
+   - Integration tests (simple Animal class, Bird inheritance, Aquarium with multiple slot types)
+
+### ✅ Phase 7: Factors (COMPLETED)
+
+1. ✅ **Factor Support**
+   - Dedicated `Factor` variant in RObject enum
+   - Automatic factor detection via class attribute
+   - Integer values (1-based indices into levels)
+   - Level labels (character vector)
+   - Ordered factor support (ordered flag)
+   - Integration tests (simple factor, ordered factor)
+
 ## Next Steps
 
-### 🔄 Phase 5: Remaining Basic Types (IN PROGRESS)
+### 📋 Phase 8: Language Objects and Additional Features (UPCOMING)
 
-1. **Raw Vectors (RAWSXP)**
-   - Parse byte vectors
-   - Add integration tests
+1. **Language Objects**
+   - LANGSXP parsing
+   - Expression objects
+   - Formula objects
 
-2. **Complex Vectors (CPLXSXP)**
-   - Parse complex number vectors
-   - Add integration tests
+2. **Full Closure and Environment Support**
+   - Complete function object parsing
+   - Environment frame parsing
+   - Binding resolution
 
-### 📋 Phase 6: Advanced Features (UPCOMING)
+3. **Promises and Special Types**
+   - PROMSXP handling
+   - SPECIALSXP handling
+   - BUILTINSXP handling
+
+### 📋 Phase 9: Advanced Features (UPCOMING)
 
 1. **Reference Tracking**
    - Implement REFSXP handling
@@ -154,31 +206,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Bzip2 decompression support
    - XZ decompression support (if needed)
 
-3. **S3/S4 Objects**
-   - Full S3 class support
-   - S4 object structure parsing
-   - Slot handling
-
-4. **Factors**
-   - Factor level parsing
-   - Ordered factor support
-
-5. **Language Objects**
-   - LANGSXP parsing
-   - Expression objects
-   - Formula objects
-
-6. **Full Closure and Environment Support**
-   - Complete function object parsing
-   - Environment frame parsing
-   - Binding resolution
-
-7. **Promises and Special Types**
-   - PROMSXP handling
-   - SPECIALSXP handling
-   - BUILTINSXP handling
-
-### 📋 Phase 7: Writing Support (UPCOMING)
+### 📋 Phase 10: Writing Support (UPCOMING)
 
 1. **Basic Serialization**
    - Header writing
@@ -198,7 +226,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - read -> write -> read comparison
    - Verify data integrity
 
-### 📋 Phase 8: Performance & Polish (UPCOMING)
+### 📋 Phase 11: Performance & Polish (UPCOMING)
 
 1. **Optimization**
    - Benchmarking against rds2cpp
@@ -277,6 +305,19 @@ cargo test
    - Automatic detection via class attribute
    - Conversion from list-with-attributes structure
    - Mixed column type support
+
+7. **S4 Object Parsing**
+   - S4SXP is a marker type with no data payload
+   - All S4 data (class and slots) stored in attributes
+   - Class attribute may be wrapped in WithAttributes (with package info)
+   - Slots are all attributes except class and package
+   - HashMap-based slot storage for O(1) access
+
+8. **Factor Recognition**
+   - Automatic detection via class attribute ("factor" or "ordered")
+   - Conversion from integer vector + attributes structure
+   - Priority order: data.frame > factor > S3 object > attributes
+   - 1-based integer indices into level labels
 
 ## Resources
 

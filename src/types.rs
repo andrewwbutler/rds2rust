@@ -38,11 +38,24 @@ pub enum RObject {
         row_names: Vec<String>,
     },
 
+    /// Factor (categorical variable with levels)
+    Factor {
+        values: Vec<i32>,      // Integer indices (1-based, 0 = NA)
+        levels: Vec<String>,   // Level labels
+        ordered: bool,         // Whether it's an ordered factor
+    },
+
     /// S3 object (any object with a class attribute)
     S3Object {
         base: Box<RObject>,
         class: Vec<String>,
         attributes: Attributes,
+    },
+
+    /// S4 object (formal object with slots)
+    S4Object {
+        class: Vec<String>,
+        slots: HashMap<String, RObject>,
     },
 
     /// Object with attributes (no class)
