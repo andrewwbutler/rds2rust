@@ -174,10 +174,15 @@ fn parse_object(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
         let attributes = parse_attributes(attr_obj)?;
 
         if !attributes.is_empty() {
-            obj = RObject::WithAttributes {
-                object: Box::new(obj),
-                attributes,
-            };
+            // Check if this is a data.frame
+            if let Some(dataframe) = try_convert_to_dataframe(&obj, &attributes) {
+                obj = dataframe;
+            } else {
+                obj = RObject::WithAttributes {
+                    object: Box::new(obj),
+                    attributes,
+                };
+            }
         }
     }
 
@@ -489,6 +494,88 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
             )));
         }
     }
+}
+
+/// Try to convert a list with attributes to a data.frame if it has the right structure.
+fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RObject> {
+    use std::collections::HashMap;
+
+    // Check if this has class="data.frame"
+    let class_attr = attributes.get("class")?;
+    let is_dataframe = match class_attr {
+        RObject::Character(classes) => classes.iter().any(|c| c == "data.frame"),
+        _ => false,
+    };
+
+    if !is_dataframe {
+        return None;
+    }
+
+    // The object should be a list (columns)
+    let columns_list = match obj {
+        RObject::List(cols) => cols,
+        _ => return None,
+    };
+
+    // Get the column names from the "names" attribute
+    let names_attr = attributes.get("names")?;
+    let column_names = match names_attr {
+        RObject::Character(names) => names.clone(),
+        _ => return None,
+    };
+
+    // Check that we have the same number of names as columns
+    if column_names.len() != columns_list.len() {
+        return None;
+    }
+
+    // Build the columns HashMap
+    let mut columns = HashMap::new();
+    for (name, column) in column_names.iter().zip(columns_list.iter()) {
+        columns.insert(name.clone(), column.clone());
+    }
+
+    // Get row names from the "row.names" attribute
+    let row_names = if let Some(row_names_attr) = attributes.get("row.names") {
+        match row_names_attr {
+            RObject::Character(names) => names.clone(),
+            RObject::Integer(indices) => {
+                // R uses a compact representation for default row names:
+                // A 2-element vector [NA_integer_, -n] represents row names 1:n
+                // where n is the number of rows
+                if indices.len() == 2 && indices[0] == RObject::NA_INTEGER && indices[1] < 0 {
+                    // Compact format: expand to ["1", "2", ..., "n"]
+                    let n = -indices[1] as usize;
+                    (1..=n).map(|i| i.to_string()).collect()
+                } else {
+                    // Explicit integer row names: convert to strings
+                    indices.iter().map(|i| i.to_string()).collect()
+                }
+            }
+            _ => {
+                // Default row names: just number them based on first column length
+                (1..=columns_list.first().map(|c| match c {
+                    RObject::Integer(v) => v.len(),
+                    RObject::Real(v) => v.len(),
+                    RObject::Logical(v) => v.len(),
+                    RObject::Character(v) => v.len(),
+                    _ => 0,
+                }).unwrap_or(0)).map(|i| i.to_string()).collect()
+            }
+        }
+    } else {
+        // No row.names attribute, create default based on first column length
+        let n = columns_list.first().map(|c| match c {
+            RObject::Integer(v) => v.len(),
+            RObject::Real(v) => v.len(),
+            RObject::Logical(v) => v.len(),
+            RObject::Character(v) => v.len(),
+            _ => 0,
+        }).unwrap_or(0);
+        (1..=n).map(|i| i.to_string()).collect()
+    };
+
+    Some(RObject::DataFrame { columns, row_names })
 }
 
 #[cfg(test)]

@@ -32,6 +32,12 @@ pub enum RObject {
     /// Pairlist (LISTSXP) with optional tags
     Pairlist(Vec<PairlistElement>),
 
+    /// Data frame (list with class="data.frame")
+    DataFrame {
+        columns: HashMap<String, RObject>,
+        row_names: Vec<String>,
+    },
+
     /// Object with attributes
     WithAttributes {
         object: Box<RObject>,

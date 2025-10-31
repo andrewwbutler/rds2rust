@@ -72,4 +72,32 @@ mat3 <- matrix(1:4, nrow=2, ncol=2)
 dimnames(mat3) <- list(c("row1", "row2"), c("col1", "col2"))
 saveRDS(mat3, file.path(output_dir, "matrix_dimnames.rds"))
 
+# Data frames
+df1 <- data.frame(
+  x = 1:3,
+  y = c("a", "b", "c"),
+  z = c(TRUE, FALSE, TRUE),
+  stringsAsFactors = FALSE
+)
+saveRDS(df1, file.path(output_dir, "dataframe_simple.rds"))
+
+# Data frame with different column types
+df2 <- data.frame(
+  int_col = c(1L, 2L, 3L, 4L),
+  real_col = c(1.1, 2.2, 3.3, 4.4),
+  char_col = c("foo", "bar", "baz", "qux"),
+  logical_col = c(TRUE, FALSE, TRUE, FALSE),
+  stringsAsFactors = FALSE
+)
+saveRDS(df2, file.path(output_dir, "dataframe_mixed.rds"))
+
+# Data frame with row names
+df3 <- data.frame(
+  name = c("Alice", "Bob", "Charlie"),
+  age = c(25L, 30L, 35L),
+  stringsAsFactors = FALSE
+)
+rownames(df3) <- c("person1", "person2", "person3")
+saveRDS(df3, file.path(output_dir, "dataframe_rownames.rds"))
+
 cat("Test RDS files generated successfully in", output_dir, "\n")
