@@ -304,6 +304,77 @@ fn test_integer_with_na() {
 }
 
 #[test]
+fn test_raw_vector() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("raw_vector.rds");
+    let obj = read_rds(&data).expect("Failed to parse raw vector");
+
+    match obj {
+        RObject::Raw(vec) => {
+            assert_eq!(vec.len(), 3);
+            assert_eq!(vec[0], 0x01);
+            assert_eq!(vec[1], 0x02);
+            assert_eq!(vec[2], 0xFF);
+        }
+        other => panic!("Expected Raw vector, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_complex_single() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("complex_single.rds");
+    let obj = read_rds(&data).expect("Failed to parse single complex number");
+
+    match obj {
+        RObject::Complex(vec) => {
+            assert_eq!(vec.len(), 1);
+            assert_eq!(vec[0].real, 1.0);
+            assert_eq!(vec[0].imaginary, 2.0);
+        }
+        other => panic!("Expected Complex vector, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_complex_vector() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("complex_vector.rds");
+    let obj = read_rds(&data).expect("Failed to parse complex vector");
+
+    match obj {
+        RObject::Complex(vec) => {
+            assert_eq!(vec.len(), 3);
+
+            // 1+2i
+            assert_eq!(vec[0].real, 1.0);
+            assert_eq!(vec[0].imaginary, 2.0);
+
+            // 3+4i
+            assert_eq!(vec[1].real, 3.0);
+            assert_eq!(vec[1].imaginary, 4.0);
+
+            // 5+6i
+            assert_eq!(vec[2].real, 5.0);
+            assert_eq!(vec[2].imaginary, 6.0);
+        }
+        other => panic!("Expected Complex vector, got {:?}", other),
+    }
+}
+
+#[test]
 fn test_list_simple() {
     if !test_data_exists() {
         eprintln!("Skipping test: test data not generated");

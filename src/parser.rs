@@ -17,8 +17,10 @@ const CHARSXP: u32 = 9;
 const LGLSXP: u32 = 10;
 const INTSXP: u32 = 13;
 const REALSXP: u32 = 14;
+const CPLXSXP: u32 = 15;
 const STRSXP: u32 = 16;
 const VECSXP: u32 = 19;
+const RAWSXP: u32 = 24;
 
 /// Special pseudo-types
 const ALTREP_SXP: u32 = 238; // 0xEE - ALTREP object (version 3)
@@ -139,8 +141,10 @@ fn parse_object(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
         SYMSXP => parse_symbol(cursor)?,
         INTSXP => parse_integer_vector(cursor)?,
         REALSXP => parse_real_vector(cursor)?,
+        CPLXSXP => parse_complex_vector(cursor)?,
         LGLSXP => parse_logical_vector(cursor)?,
         STRSXP => parse_character_vector(cursor)?,
+        RAWSXP => parse_raw_vector(cursor)?,
         VECSXP => parse_list(cursor)?,
         LISTSXP => parse_pairlist(cursor, has_tag)?,
         CHARSXP => {
@@ -253,6 +257,35 @@ fn parse_character_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     }
 
     Ok(RObject::Character(vec))
+}
+
+/// Parse a raw vector (RAWSXP - a vector of bytes).
+fn parse_raw_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+    let length = cursor.read_u32::<BigEndian>()? as usize;
+    let mut vec = vec![0u8; length];
+
+    // Read the raw bytes directly
+    cursor.read_exact(&mut vec)?;
+
+    Ok(RObject::Raw(vec))
+}
+
+/// Parse a complex vector (CPLXSXP).
+fn parse_complex_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+    use crate::types::Complex;
+
+    let length = cursor.read_u32::<BigEndian>()? as usize;
+    let mut vec = Vec::with_capacity(length);
+
+    for _ in 0..length {
+        // Each complex number is two 64-bit floats: real part then imaginary part
+        let real = cursor.read_f64::<BigEndian>()?;
+        let imaginary = cursor.read_f64::<BigEndian>()?;
+
+        vec.push(Complex { real, imaginary });
+    }
+
+    Ok(RObject::Complex(vec))
 }
 
 /// Parse a symbol (SYMSXP).
