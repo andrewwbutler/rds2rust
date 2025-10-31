@@ -3,6 +3,7 @@
 //! This library provides functionality to serialize and deserialize R objects to/from
 //! the RDS binary format.
 
+mod constants;
 mod error;
 mod parser;
 mod types;
@@ -17,8 +18,9 @@ pub fn read_rds(data: &[u8]) -> Result<RObject> {
 }
 
 /// Write an RObject to RDS format.
-pub fn write_rds(_obj: &RObject) -> Result<Vec<u8>> {
-    todo!("Writing RDS files not yet implemented")
+/// Returns gzip-compressed RDS data.
+pub fn write_rds(obj: &RObject) -> Result<Vec<u8>> {
+    writer::write_rds(obj)
 }
 
 #[cfg(test)]

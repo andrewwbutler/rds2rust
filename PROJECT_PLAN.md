@@ -45,8 +45,9 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
 
 4. **Test Infrastructure**
    - Integration test file: [tests/integration_tests.rs](tests/integration_tests.rs)
+   - Roundtrip test file: [tests/roundtrip_tests.rs](tests/roundtrip_tests.rs)
    - R script to generate test data: [tests/generate_test_data.R](tests/generate_test_data.R)
-   - **33 passing integration tests** covering:
+   - **61 passing tests** (3 unit + 33 integration + 25 roundtrip) covering:
      - NULL, integers, reals, logicals, characters
      - Empty vectors and vectors with NA values
      - Special float values (Inf, -Inf, NaN)
@@ -59,6 +60,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - Factors (simple, ordered)
      - S3 objects (simple, multi-class, on vectors)
      - S4 objects (simple, inheritance, complex slots)
+     - **Complete roundtrip coverage**: All types verified with read -> write -> read
 
 5. **Documentation**
    - [RDS_FORMAT.md](RDS_FORMAT.md) - Detailed RDS format specification
@@ -176,9 +178,42 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Ordered factor support (ordered flag)
    - Integration tests (simple factor, ordered factor)
 
+### ✅ Phase 8: Writing Support (COMPLETED)
+
+1. ✅ **Basic Serialization**
+   - Header writing (XDR format, version 2)
+   - Type flag encoding (SEXP type + attribute/tag bits)
+   - Gzip compression
+
+2. ✅ **Vector Writing**
+   - Integer vectors (INTSXP)
+   - Real vectors (REALSXP)
+   - Logical vectors (LGLSXP) with TRUE/FALSE/NA
+   - Character vectors (STRSXP) with CHARSXP encoding
+   - Raw vectors (RAWSXP)
+   - Complex vectors (CPLXSXP)
+
+3. ✅ **Complex Type Writing**
+   - Lists (VECSXP)
+   - Pairlists (LISTSXP) with tags
+   - Data frames (list with attributes)
+   - Factors (integer vector with levels and class attributes)
+
+4. ✅ **Object-Oriented Writing**
+   - S3 objects (base object with class attribute)
+   - S4 objects (S4SXP with slots as attributes)
+   - Objects with attributes (WithAttributes)
+
+5. ✅ **Roundtrip Tests**
+   - 25 comprehensive roundtrip tests verifying read -> write -> read integrity
+   - Tests for all basic types: NULL, vectors (integer, real, logical, character, raw, complex)
+   - Tests for all complex types: lists, data frames (simple, mixed, with rownames)
+   - Tests for all object-oriented types: factors (simple, ordered), S3 objects (simple, multi-class, vector), S4 objects (simple, inheritance, complex)
+   - All tests pass with byte-perfect equality
+
 ## Next Steps
 
-### 📋 Phase 8: Language Objects and Additional Features (UPCOMING)
+### 📋 Phase 9: Language Objects and Additional Features (UPCOMING)
 
 1. **Language Objects**
    - LANGSXP parsing
@@ -195,7 +230,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - SPECIALSXP handling
    - BUILTINSXP handling
 
-### 📋 Phase 9: Advanced Features (UPCOMING)
+### 📋 Phase 10: Advanced Features (UPCOMING)
 
 1. **Reference Tracking**
    - Implement REFSXP handling
@@ -205,26 +240,6 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
 2. **Additional Compression**
    - Bzip2 decompression support
    - XZ decompression support (if needed)
-
-### 📋 Phase 10: Writing Support (UPCOMING)
-
-1. **Basic Serialization**
-   - Header writing
-   - Type flag encoding
-   - Basic vector writing
-
-2. **Complex Type Writing**
-   - Attributes serialization
-   - Pairlist serialization
-   - List serialization
-
-3. **Data Frame Writing**
-   - Convert DataFrame to list-with-attributes
-   - Row names serialization (including compact format)
-
-4. **Roundtrip Tests**
-   - read -> write -> read comparison
-   - Verify data integrity
 
 ### 📋 Phase 11: Performance & Polish (UPCOMING)
 

@@ -1,36 +1,12 @@
 //! Parser for RDS files.
 
+use crate::constants::*;
 use crate::error::{Error, Result};
 use crate::types::{Attributes, Logical, PairlistElement, RObject};
 use byteorder::{BigEndian, ReadBytesExt};
 use flate2::read::GzDecoder;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
-
-/// SEXP type constants
-const NILSXP: u32 = 0;
-const SYMSXP: u32 = 1;
-const LISTSXP: u32 = 2;
-const CLOSXP: u32 = 3;
-const ENVSXP: u32 = 4;
-const CHARSXP: u32 = 9;
-const LGLSXP: u32 = 10;
-const INTSXP: u32 = 13;
-const REALSXP: u32 = 14;
-const CPLXSXP: u32 = 15;
-const STRSXP: u32 = 16;
-const VECSXP: u32 = 19;
-const RAWSXP: u32 = 24;
-const S4SXP: u32 = 25;
-
-/// Special pseudo-types
-const ALTREP_SXP: u32 = 238; // 0xEE - ALTREP object (version 3)
-const REFSXP: u32 = 255; // 0xFF - Reference to an already seen object
-const NILVALUE_SXP: u32 = 254; // 0xFE - Singleton NULL value
-
-/// Flag bit masks
-const HAS_ATTR_BIT: u32 = 1 << 9;
-const HAS_TAG_BIT: u32 = 1 << 10;
 
 /// Parse an RDS file from a byte slice.
 pub fn parse_rds(data: &[u8]) -> Result<RObject> {
