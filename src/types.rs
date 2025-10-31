@@ -1,0 +1,95 @@
+//! Type definitions for R objects.
+
+use std::collections::HashMap;
+
+/// Represents any R object that can be stored in an RDS file.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RObject {
+    /// NULL object
+    Null,
+
+    /// Integer vector
+    Integer(Vec<i32>),
+
+    /// Real (double) vector
+    Real(Vec<f64>),
+
+    /// Logical vector
+    Logical(Vec<Logical>),
+
+    /// Character vector
+    Character(Vec<String>),
+
+    /// Raw (byte) vector
+    Raw(Vec<u8>),
+
+    /// Complex vector
+    Complex(Vec<Complex>),
+
+    /// Generic list (VECSXP)
+    List(Vec<RObject>),
+
+    /// Object with attributes
+    WithAttributes {
+        object: Box<RObject>,
+        attributes: Attributes,
+    },
+}
+
+/// Represents a logical value in R (TRUE, FALSE, or NA)
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Logical {
+    True,
+    False,
+    Na,
+}
+
+/// Represents a complex number
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Complex {
+    pub real: f64,
+    pub imaginary: f64,
+}
+
+/// Attributes attached to R objects
+#[derive(Debug, Clone, PartialEq)]
+pub struct Attributes {
+    pub attrs: HashMap<String, RObject>,
+}
+
+impl Attributes {
+    pub fn new() -> Self {
+        Self {
+            attrs: HashMap::new(),
+        }
+    }
+
+    pub fn insert(&mut self, key: String, value: RObject) {
+        self.attrs.insert(key, value);
+    }
+
+    pub fn get(&self, key: &str) -> Option<&RObject> {
+        self.attrs.get(key)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.attrs.is_empty()
+    }
+}
+
+impl Default for Attributes {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// Special NA values for different types
+impl RObject {
+    /// Integer NA value in R
+    pub const NA_INTEGER: i32 = i32::MIN;
+
+    /// Check if an integer is NA
+    pub fn is_na_integer(val: i32) -> bool {
+        val == Self::NA_INTEGER
+    }
+}
