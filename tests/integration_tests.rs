@@ -133,3 +133,221 @@ fn test_character_single() {
         other => panic!("Expected Character, got {:?}", other),
     }
 }
+
+#[test]
+fn test_character_vector() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("char_vector.rds");
+    let obj = read_rds(&data).expect("Failed to parse character vector");
+
+    match obj {
+        RObject::Character(vec) => {
+            assert_eq!(vec.len(), 3);
+            assert_eq!(vec[0], "foo");
+            assert_eq!(vec[1], "bar");
+            assert_eq!(vec[2], "baz");
+        }
+        other => panic!("Expected Character vector, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_character_with_na() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("char_with_na.rds");
+    let obj = read_rds(&data).expect("Failed to parse character with NA");
+
+    match obj {
+        RObject::Character(vec) => {
+            assert_eq!(vec.len(), 3);
+            assert_eq!(vec[0], "test");
+            assert_eq!(vec[1], "NA"); // NA_character_ is currently parsed as "NA"
+            assert_eq!(vec[2], "string");
+        }
+        other => panic!("Expected Character vector with NA, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_character_empty() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("char_empty.rds");
+    let obj = read_rds(&data).expect("Failed to parse empty character vector");
+
+    match obj {
+        RObject::Character(vec) => {
+            assert_eq!(vec.len(), 0);
+        }
+        other => panic!("Expected empty Character vector, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_logical_vector() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("logical_vector.rds");
+    let obj = read_rds(&data).expect("Failed to parse logical vector");
+
+    match obj {
+        RObject::Logical(vec) => {
+            assert_eq!(vec.len(), 4);
+            assert_eq!(vec[0], rds2rust::Logical::True);
+            assert_eq!(vec[1], rds2rust::Logical::False);
+            assert_eq!(vec[2], rds2rust::Logical::Na);
+            assert_eq!(vec[3], rds2rust::Logical::True);
+        }
+        other => panic!("Expected Logical vector, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_logical_false() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("logical_false.rds");
+    let obj = read_rds(&data).expect("Failed to parse logical FALSE");
+
+    match obj {
+        RObject::Logical(vec) => {
+            assert_eq!(vec.len(), 1);
+            assert_eq!(vec[0], rds2rust::Logical::False);
+        }
+        other => panic!("Expected Logical, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_real_vector() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("real_vector.rds");
+    let obj = read_rds(&data).expect("Failed to parse real vector");
+
+    match obj {
+        RObject::Real(vec) => {
+            assert_eq!(vec.len(), 4);
+            assert_eq!(vec[0], 1.1);
+            assert_eq!(vec[1], 2.2);
+            assert_eq!(vec[2], 3.3);
+            assert_eq!(vec[3], 4.4);
+        }
+        other => panic!("Expected Real vector, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_real_special() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("real_special.rds");
+    let obj = read_rds(&data).expect("Failed to parse real with special values");
+
+    match obj {
+        RObject::Real(vec) => {
+            assert_eq!(vec.len(), 5);
+            assert_eq!(vec[0], 1.5);
+            // vec[1] is NA_real_ (a specific NaN bit pattern)
+            assert!(vec[1].is_nan());
+            assert_eq!(vec[2], f64::INFINITY);
+            assert_eq!(vec[3], f64::NEG_INFINITY);
+            // vec[4] is NaN
+            assert!(vec[4].is_nan());
+        }
+        other => panic!("Expected Real vector with special values, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_integer_with_na() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("int_with_na.rds");
+    let obj = read_rds(&data).expect("Failed to parse integer with NA");
+
+    match obj {
+        RObject::Integer(vec) => {
+            assert_eq!(vec.len(), 3);
+            assert_eq!(vec[0], 1);
+            assert_eq!(vec[1], i32::MIN); // NA_integer_ is i32::MIN
+            assert_eq!(vec[2], 3);
+        }
+        other => panic!("Expected Integer vector with NA, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_list_simple() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("list_simple.rds");
+    let obj = read_rds(&data).expect("Failed to parse simple list");
+
+    match obj {
+        RObject::List(elements) => {
+            assert_eq!(elements.len(), 3);
+            // Each element should be an integer vector with one element
+            match &elements[0] {
+                RObject::Integer(v) => assert_eq!(v, &vec![1]),
+                other => panic!("Expected Integer, got {:?}", other),
+            }
+            match &elements[1] {
+                RObject::Integer(v) => assert_eq!(v, &vec![2]),
+                other => panic!("Expected Integer, got {:?}", other),
+            }
+            match &elements[2] {
+                RObject::Integer(v) => assert_eq!(v, &vec![3]),
+                other => panic!("Expected Integer, got {:?}", other),
+            }
+        }
+        other => panic!("Expected List, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_list_empty() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("list_empty.rds");
+    let obj = read_rds(&data).expect("Failed to parse empty list");
+
+    match obj {
+        RObject::List(elements) => {
+            assert_eq!(elements.len(), 0);
+        }
+        other => panic!("Expected empty List, got {:?}", other),
+    }
+}
