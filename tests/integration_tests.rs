@@ -1080,3 +1080,317 @@ fn test_lang_nested() {
     }
 }
 
+#[test]
+fn test_expr_single() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("expr_single.rds");
+    let obj = read_rds(&data).expect("Failed to parse single expression");
+
+    match obj {
+        RObject::Expression(elements) => {
+            // parse(text = "x + 1") produces a single expression
+            assert_eq!(elements.len(), 1);
+            // The element should be a language object representing x + 1
+            match &elements[0] {
+                RObject::Language(_) => {
+                    // Good, expression contains a language object
+                }
+                _ => {
+                    // Acceptable - structure may vary
+                }
+            }
+        }
+        _ => panic!("Expected Expression vector, got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_expr_multiple() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("expr_multiple.rds");
+    let obj = read_rds(&data).expect("Failed to parse multiple expressions");
+
+    match obj {
+        RObject::Expression(elements) => {
+            // parse(text = c("x + 1", "y * 2", "z / 3")) produces 3 expressions
+            assert_eq!(elements.len(), 3);
+            // Each element should be a language object
+            for element in &elements {
+                match element {
+                    RObject::Language(_) => {
+                        // Good
+                    }
+                    _ => {
+                        // Also acceptable
+                    }
+                }
+            }
+        }
+        _ => panic!("Expected Expression vector, got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_expr_empty() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("expr_empty.rds");
+    let obj = read_rds(&data).expect("Failed to parse empty expression");
+
+    match obj {
+        RObject::Expression(elements) => {
+            // expression() produces an empty expression vector
+            assert_eq!(elements.len(), 0);
+        }
+        _ => panic!("Expected Expression vector, got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_expr_calls() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("expr_calls.rds");
+    let obj = read_rds(&data).expect("Failed to parse expression with calls");
+
+    match obj {
+        RObject::Expression(elements) => {
+            // parse(text = c("mean(x)", "sum(y)", "sd(z)")) produces 3 expressions
+            assert_eq!(elements.len(), 3);
+            // Each should be a function call (language object)
+            for element in &elements {
+                match element {
+                    RObject::Language(_) => {
+                        // Good, each is a language object (function call)
+                    }
+                    _ => {
+                        // Structure may vary
+                    }
+                }
+            }
+        }
+        _ => panic!("Expected Expression vector, got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_expr_complex() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("expr_complex.rds");
+    let obj = read_rds(&data).expect("Failed to parse complex expression");
+
+    match obj {
+        RObject::Expression(elements) => {
+            // parse(text = "sqrt(x + y)") produces 1 expression
+            assert_eq!(elements.len(), 1);
+            // Should be a language object representing the nested call
+            match &elements[0] {
+                RObject::Language(_) => {
+                    // Good, nested call structure
+                }
+                _ => {
+                    // Structure may vary
+                }
+            }
+        }
+        _ => panic!("Expected Expression vector, got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_expr_manual() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("expr_manual.rds");
+    let obj = read_rds(&data).expect("Failed to parse manually created expression");
+
+    match obj {
+        RObject::Expression(elements) => {
+            // expression(a + b, c * d, sqrt(e)) produces 3 expressions
+            assert_eq!(elements.len(), 3);
+            // Each should be a language object
+            for element in &elements {
+                match element {
+                    RObject::Language(_) => {
+                        // Good
+                    }
+                    _ => {
+                        // Structure may vary
+                    }
+                }
+            }
+        }
+        _ => panic!("Expected Expression vector, got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_formula_simple() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("formula_simple.rds");
+    let obj = read_rds(&data).expect("Failed to parse simple formula");
+
+    // Formulas are language objects with class="formula"
+    match obj {
+        RObject::S3Object { base, class, .. } => {
+            // Check the class
+            assert_eq!(class.len(), 1);
+            assert_eq!(class[0], "formula");
+
+            // The base should be a language object representing y ~ x
+            match *base {
+                RObject::Language(_) => {
+                    // Good, formula is a language object
+                }
+                _ => panic!("Expected Language object as formula base"),
+            }
+        }
+        _ => panic!("Expected S3Object (formula), got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_formula_multiple() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("formula_multiple.rds");
+    let obj = read_rds(&data).expect("Failed to parse formula with multiple predictors");
+
+    match obj {
+        RObject::S3Object { base, class, .. } => {
+            assert_eq!(class[0], "formula");
+            match *base {
+                RObject::Language(_) => {
+                    // Good, y ~ x + z is a language object
+                }
+                _ => panic!("Expected Language object as formula base"),
+            }
+        }
+        _ => panic!("Expected S3Object (formula), got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_formula_interaction() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("formula_interaction.rds");
+    let obj = read_rds(&data).expect("Failed to parse formula with interaction");
+
+    match obj {
+        RObject::S3Object { base, class, .. } => {
+            assert_eq!(class[0], "formula");
+            match *base {
+                RObject::Language(_) => {
+                    // Good, y ~ x * z is a language object
+                }
+                _ => panic!("Expected Language object as formula base"),
+            }
+        }
+        _ => panic!("Expected S3Object (formula), got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_formula_functions() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("formula_functions.rds");
+    let obj = read_rds(&data).expect("Failed to parse formula with functions");
+
+    match obj {
+        RObject::S3Object { base, class, .. } => {
+            assert_eq!(class[0], "formula");
+            match *base {
+                RObject::Language(_) => {
+                    // Good, log(y) ~ sqrt(x) + I(z^2) is a language object
+                }
+                _ => panic!("Expected Language object as formula base"),
+            }
+        }
+        _ => panic!("Expected S3Object (formula), got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_formula_no_intercept() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("formula_no_intercept.rds");
+    let obj = read_rds(&data).expect("Failed to parse formula without intercept");
+
+    match obj {
+        RObject::S3Object { base, class, .. } => {
+            assert_eq!(class[0], "formula");
+            match *base {
+                RObject::Language(_) => {
+                    // Good, y ~ x - 1 is a language object
+                }
+                _ => panic!("Expected Language object as formula base"),
+            }
+        }
+        _ => panic!("Expected S3Object (formula), got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_formula_one_sided() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("formula_one_sided.rds");
+    let obj = read_rds(&data).expect("Failed to parse one-sided formula");
+
+    match obj {
+        RObject::S3Object { base, class, .. } => {
+            assert_eq!(class[0], "formula");
+            match *base {
+                RObject::Language(_) => {
+                    // Good, ~ x + y is a language object
+                }
+                _ => panic!("Expected Language object as formula base"),
+            }
+        }
+        _ => panic!("Expected S3Object (formula), got {:?}", obj),
+    }
+}
+

@@ -48,7 +48,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Integration test file: [tests/integration_tests.rs](tests/integration_tests.rs)
    - Roundtrip test file: [tests/roundtrip_tests.rs](tests/roundtrip_tests.rs)
    - R script to generate test data: [tests/generate_test_data.R](tests/generate_test_data.R)
-   - **67 passing tests** (3 unit + 36 integration + 28 roundtrip) covering:
+   - **91 passing tests** (3 unit + 48 integration + 40 roundtrip) covering:
      - NULL, integers, reals, logicals, characters
      - Empty vectors and vectors with NA values
      - Special float values (Inf, -Inf, NaN)
@@ -62,6 +62,8 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - S3 objects (simple, multi-class, on vectors)
      - S4 objects (simple, inheritance, complex slots)
      - Language objects (simple calls, nested expressions, named arguments)
+     - Expression vectors (single, multiple, empty, calls, nested, manual)
+     - Formulas (simple, multiple predictors, interactions, functions, no intercept, one-sided)
      - **Complete roundtrip coverage**: All types verified with read -> write -> read
 
 5. **Documentation**
@@ -225,29 +227,57 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Test data generation for simple, complex, and nested expressions
    - Integration tests (3 tests for language objects)
 
+### ✅ Phase 10: Expression Vectors (COMPLETED)
+
+1. ✅ **Expression Vectors (EXPRSXP)**
+   - Added `Expression` variant to RObject enum
+   - Implemented EXPRSXP parsing (collections of unevaluated expressions)
+   - Identical structure to VECSXP but semantically represents parsed code
+   - Typically result of `parse()` or `expression()` in R
+   - Writing support for serialization
+   - Test data generation:
+     - Single expression: `parse(text = "x + 1")`
+     - Multiple expressions: `parse(text = c("x + 1", "y * 2", "z / 3"))`
+     - Empty expression vector: `expression()`
+     - Function calls: `parse(text = c("mean(x)", "sum(y)", "sd(z)"))`
+     - Nested calls: `parse(text = "sqrt(x + y)")`
+     - Manual creation: `expression(a + b, c * d, sqrt(e))`
+   - Integration tests (6 tests for expression vectors)
+   - Roundtrip tests (6 tests for expression vectors)
+
+### ✅ Phase 11: Formulas (COMPLETED)
+
+1. ✅ **Formula Support**
+   - Formulas are S3 objects (Language base with class="formula")
+   - Fixed LANGSXP/LISTSXP attribute parsing (attributes come BEFORE CAR/CDR)
+   - Added GLOBALENV_SXP constant (253) for global environment references
+   - Updated parser to handle early attribute parsing for pairlists and language objects
+   - Updated writer to write attributes before CAR/CDR for language objects
+   - Test data generation:
+     - Simple formula: `y ~ x`
+     - Multiple predictors: `y ~ x + z`
+     - Interaction terms: `y ~ x * z`
+     - Functions in formula: `log(y) ~ sqrt(x) + I(z^2)`
+     - No intercept: `y ~ x - 1`
+     - One-sided formula: `~ x + y`
+   - Integration tests (6 tests for formulas)
+   - Roundtrip tests (6 tests for formulas)
+
 ## Next Steps
 
-### 📋 Phase 10: Additional Language Features (UPCOMING)
+### 📋 Phase 12: Additional Language Features (UPCOMING)
 
-1. **Expression Vectors**
-   - EXPRSXP parsing
-   - Vector of language objects
-
-2. **Formulas**
-   - Formula object support (special language objects)
-   - Model formula parsing
-
-3. **Full Closure and Environment Support**
+1. **Full Closure and Environment Support**
    - Complete function object parsing
    - Environment frame parsing
    - Binding resolution
 
-4. **Promises and Special Types**
+2. **Promises and Special Types**
    - PROMSXP handling
    - SPECIALSXP handling
    - BUILTINSXP handling
 
-### 📋 Phase 11: Advanced Features (UPCOMING)
+### 📋 Phase 13: Advanced Features (UPCOMING)
 
 1. **Reference Tracking**
    - Implement REFSXP handling
@@ -258,7 +288,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Bzip2 decompression support
    - XZ decompression support (if needed)
 
-### 📋 Phase 12: Performance & Polish (UPCOMING)
+### 📋 Phase 14: Performance & Polish (UPCOMING)
 
 1. **Optimization**
    - Benchmarking against rds2cpp

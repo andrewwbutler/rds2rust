@@ -56,6 +56,7 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject) -> Result<()> {
         RObject::Raw(vec) => write_raw_vector(writer, vec),
         RObject::Complex(vec) => write_complex_vector(writer, vec),
         RObject::List(elements) => write_list(writer, elements),
+        RObject::Expression(elements) => write_expression(writer, elements),
         RObject::Pairlist(elements) => write_pairlist(writer, elements),
         RObject::Language(elements) => write_language(writer, elements),
         RObject::DataFrame { columns, row_names } => {
@@ -170,6 +171,18 @@ fn write_complex_vector(writer: &mut Vec<u8>, vec: &[Complex]) -> Result<()> {
 /// Write a list (VECSXP).
 fn write_list(writer: &mut Vec<u8>, elements: &[RObject]) -> Result<()> {
     write_flags(writer, VECSXP, false, false)?;
+    writer.write_u32::<BigEndian>(elements.len() as u32)?;
+    for element in elements {
+        write_object(writer, element)?;
+    }
+    Ok(())
+}
+
+/// Write an expression vector (EXPRSXP).
+/// Expression vectors are structurally identical to VECSXP, but semantically represent
+/// collections of unevaluated expressions (typically language objects).
+fn write_expression(writer: &mut Vec<u8>, elements: &[RObject]) -> Result<()> {
+    write_flags(writer, EXPRSXP, false, false)?;
     writer.write_u32::<BigEndian>(elements.len() as u32)?;
     for element in elements {
         write_object(writer, element)?;
@@ -343,6 +356,40 @@ fn write_s3_object(
             for val in vec {
                 writer.write_f64::<BigEndian>(*val)?;
             }
+        }
+        RObject::Language(elements) => {
+            // Language objects with attributes (e.g., formulas)
+            // Attributes come BEFORE CAR/CDR for language objects
+            let has_tag = false;
+            write_flags(writer, LANGSXP, true, has_tag)?;
+
+            // Write attributes FIRST (before CAR/CDR)
+            let mut attrs = attributes.clone();
+            attrs.insert("class".to_string(), RObject::Character(class.to_vec()));
+            write_attributes(writer, &attrs)?;
+
+            // Now write the CAR/CDR
+            if elements.is_empty() {
+                return write_null(writer);
+            }
+
+            // Write the function (CAR)
+            write_object(writer, &elements[0])?;
+
+            // Write the arguments (CDR) as a pairlist or NULL
+            if elements.len() > 1 {
+                let args: Vec<PairlistElement> = elements[1..]
+                    .iter()
+                    .map(|obj| PairlistElement {
+                        tag: None,
+                        value: obj.clone(),
+                    })
+                    .collect();
+                write_pairlist(writer, &args)?;
+            } else {
+                write_null(writer)?;
+            }
+            return Ok(());
         }
         _ => {
             return Err(Error::Unsupported(

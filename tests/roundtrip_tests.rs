@@ -417,3 +417,197 @@ fn test_roundtrip_existing_lang_nested() {
     assert_eq!(obj, deserialized);
 }
 
+// Expression vectors
+#[test]
+fn test_roundtrip_existing_expr_single() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("expr_single.rds");
+    let obj = read_rds(&data).expect("Failed to read existing single expression");
+
+    let serialized = write_rds(&obj).expect("Failed to write single expression");
+    let deserialized = read_rds(&serialized).expect("Failed to read serialized single expression");
+
+    assert_eq!(obj, deserialized);
+}
+
+#[test]
+fn test_roundtrip_existing_expr_multiple() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("expr_multiple.rds");
+    let obj = read_rds(&data).expect("Failed to read existing multiple expressions");
+
+    let serialized = write_rds(&obj).expect("Failed to write multiple expressions");
+    let deserialized = read_rds(&serialized).expect("Failed to read serialized multiple expressions");
+
+    assert_eq!(obj, deserialized);
+}
+
+#[test]
+fn test_roundtrip_existing_expr_empty() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("expr_empty.rds");
+    let obj = read_rds(&data).expect("Failed to read existing empty expression");
+
+    let serialized = write_rds(&obj).expect("Failed to write empty expression");
+    let deserialized = read_rds(&serialized).expect("Failed to read serialized empty expression");
+
+    assert_eq!(obj, deserialized);
+}
+
+#[test]
+fn test_roundtrip_existing_expr_calls() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("expr_calls.rds");
+    let obj = read_rds(&data).expect("Failed to read existing expression with calls");
+
+    let serialized = write_rds(&obj).expect("Failed to write expression with calls");
+    let deserialized = read_rds(&serialized).expect("Failed to read serialized expression with calls");
+
+    assert_eq!(obj, deserialized);
+}
+
+#[test]
+fn test_roundtrip_existing_expr_complex() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("expr_complex.rds");
+    let obj = read_rds(&data).expect("Failed to read existing complex expression");
+
+    let serialized = write_rds(&obj).expect("Failed to write complex expression");
+    let deserialized = read_rds(&serialized).expect("Failed to read serialized complex expression");
+
+    assert_eq!(obj, deserialized);
+}
+
+#[test]
+fn test_roundtrip_existing_expr_manual() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("expr_manual.rds");
+    let obj = read_rds(&data).expect("Failed to read existing manually created expression");
+
+    let serialized = write_rds(&obj).expect("Failed to write manually created expression");
+    let deserialized = read_rds(&serialized).expect("Failed to read serialized manually created expression");
+
+    assert_eq!(obj, deserialized);
+}
+
+// Formulas (S3 objects with language base)
+#[test]
+fn test_roundtrip_existing_formula_simple() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("formula_simple.rds");
+    let obj = read_rds(&data).expect("Failed to read existing simple formula");
+
+    let serialized = write_rds(&obj).expect("Failed to write simple formula");
+    let deserialized = read_rds(&serialized).expect("Failed to read serialized simple formula");
+
+    assert_eq!(obj, deserialized);
+}
+
+#[test]
+fn test_roundtrip_existing_formula_multiple() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("formula_multiple.rds");
+    let obj = read_rds(&data).expect("Failed to read existing formula with multiple predictors");
+
+    let serialized = write_rds(&obj).expect("Failed to write formula with multiple predictors");
+    let deserialized = read_rds(&serialized).expect("Failed to read serialized formula with multiple predictors");
+
+    assert_eq!(obj, deserialized);
+}
+
+#[test]
+fn test_roundtrip_existing_formula_interaction() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("formula_interaction.rds");
+    let obj = read_rds(&data).expect("Failed to read existing formula with interaction");
+
+    let serialized = write_rds(&obj).expect("Failed to write formula with interaction");
+    let deserialized = read_rds(&serialized).expect("Failed to read serialized formula with interaction");
+
+    assert_eq!(obj, deserialized);
+}
+
+#[test]
+fn test_roundtrip_existing_formula_functions() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("formula_functions.rds");
+    let obj = read_rds(&data).expect("Failed to read existing formula with functions");
+
+    let serialized = write_rds(&obj).expect("Failed to write formula with functions");
+    let deserialized = read_rds(&serialized).expect("Failed to read serialized formula with functions");
+
+    assert_eq!(obj, deserialized);
+}
+
+#[test]
+fn test_roundtrip_existing_formula_no_intercept() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("formula_no_intercept.rds");
+    let obj = read_rds(&data).expect("Failed to read existing formula without intercept");
+
+    let serialized = write_rds(&obj).expect("Failed to write formula without intercept");
+    let deserialized = read_rds(&serialized).expect("Failed to read serialized formula without intercept");
+
+    assert_eq!(obj, deserialized);
+}
+
+#[test]
+fn test_roundtrip_existing_formula_one_sided() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("formula_one_sided.rds");
+    let obj = read_rds(&data).expect("Failed to read existing one-sided formula");
+
+    let serialized = write_rds(&obj).expect("Failed to write one-sided formula");
+    let deserialized = read_rds(&serialized).expect("Failed to read serialized one-sided formula");
+
+    assert_eq!(obj, deserialized);
+}
+

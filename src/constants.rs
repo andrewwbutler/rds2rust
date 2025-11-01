@@ -45,6 +45,9 @@ pub const STRSXP: u32 = 16;
 /// Generic list (VECSXP)
 pub const VECSXP: u32 = 19;
 
+/// Expression vector (vector of language objects)
+pub const EXPRSXP: u32 = 20;
+
 /// Raw (byte) vector
 pub const RAWSXP: u32 = 24;
 
@@ -56,6 +59,9 @@ pub const S4SXP: u32 = 25;
 
 /// ALTREP object (version 3 feature)
 pub const ALTREP_SXP: u32 = 238; // 0xEE
+
+/// Global environment
+pub const GLOBALENV_SXP: u32 = 253; // 0xFD
 
 /// Singleton NULL value
 pub const NILVALUE_SXP: u32 = 254; // 0xFE

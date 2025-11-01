@@ -36,6 +36,10 @@ pub enum RObject {
     /// Stored as a list: [function, arg1, arg2, ...]
     Language(Vec<RObject>),
 
+    /// Expression vector (vector of language objects)
+    /// Typically the result of parse() - a collection of unevaluated expressions
+    Expression(Vec<RObject>),
+
     /// Data frame (list with class="data.frame")
     DataFrame {
         columns: HashMap<String, RObject>,

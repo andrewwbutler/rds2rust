@@ -82,7 +82,8 @@ fn parse_object(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
         // This is likely a packaged type - read as single byte
         let _packed_type = cursor.read_u8()?;
         // For now, treat all packaged types as NULL
-        // TODO: Handle GLOBALENV_SXP, UNBOUNDVALUE_SXP, MISSINGARG_SXP properly
+        // GLOBALENV_SXP, UNBOUNDVALUE_SXP, MISSINGARG_SXP are all treated as NULL
+        // as they represent singleton environments/values that don't carry data
         return Ok(RObject::Null);
     }
 
@@ -112,9 +113,19 @@ fn parse_object(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let has_tag = (flags & HAS_TAG_BIT) != 0;
 
 
+    // For pairlists and language objects, attributes come BEFORE the data (CAR/CDR)
+    // Parse them early if present
+    let early_attributes = if has_attr && (sexp_type == LISTSXP || sexp_type == LANGSXP) {
+        let attr_obj = parse_object(cursor)?;
+        Some(parse_attributes(attr_obj)?)
+    } else {
+        None
+    };
+
     // Parse the object based on type
     let mut obj = match sexp_type {
         NILSXP | NILVALUE_SXP => RObject::Null,
+        GLOBALENV_SXP => RObject::Null, // Global environment - treat as NULL
         SYMSXP => parse_symbol(cursor)?,
         INTSXP => parse_integer_vector(cursor)?,
         REALSXP => parse_real_vector(cursor)?,
@@ -124,6 +135,7 @@ fn parse_object(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
         RAWSXP => parse_raw_vector(cursor)?,
         S4SXP => parse_s4_object(cursor)?,
         VECSXP => parse_list(cursor)?,
+        EXPRSXP => parse_expression(cursor)?,
         LISTSXP => parse_pairlist(cursor, has_tag)?,
         LANGSXP => parse_language(cursor, has_tag)?,
         CHARSXP => {
@@ -151,11 +163,18 @@ fn parse_object(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
         }
     };
 
-    // Parse attributes if present
-    if has_attr {
+    // Parse attributes if present (unless already parsed early for LISTSXP/LANGSXP)
+    let attributes = if let Some(attrs) = early_attributes {
+        attrs
+    } else if has_attr {
         let attr_obj = parse_object(cursor)?;
-        let attributes = parse_attributes(attr_obj)?;
+        parse_attributes(attr_obj)?
+    } else {
+        Attributes::new()
+    };
 
+    // Apply attributes if non-empty
+    if has_attr {
         if !attributes.is_empty() {
             // Check if this is an S4 object (S4SXP type)
             if sexp_type == S4SXP {
@@ -321,6 +340,22 @@ fn parse_list(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     }
 
     Ok(RObject::List(elements))
+}
+
+/// Parse an expression vector (EXPRSXP).
+/// Expression vectors are identical in structure to VECSXP - they're vectors of R objects,
+/// typically language objects. The difference is semantic: EXPRSXP is used for collections
+/// of unevaluated expressions (e.g., the result of parse()).
+fn parse_expression(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+    let length = cursor.read_u32::<BigEndian>()? as usize;
+    let mut elements = Vec::with_capacity(length);
+
+    for _ in 0..length {
+        let element = parse_object(cursor)?;
+        elements.push(element);
+    }
+
+    Ok(RObject::Expression(elements))
 }
 
 /// Parse a closure (CLOSXP).

@@ -55,7 +55,7 @@ STRSXP  16      Character vector
 DOTSXP  17      Dot-dot-dot object
 ANYSXP  18      Any type (for matching)
 VECSXP  19      List (generic vector)
-EXPRSXP 20      Expression vector
+EXPRSXP 20      Expression vector (vector of language objects)
 BCODESXP 21     Byte code
 EXTPTRSXP 22    External pointer
 WEAKREFSXP 23   Weak reference
@@ -168,6 +168,15 @@ N*16 bytes:  N complex numbers
 4 bytes:   Length (N) as big-endian int32
 N*X bytes: N serialized R objects (recursive)
 ```
+
+### Expression Vector (EXPRSXP)
+
+```
+4 bytes:   Length (N) as big-endian int32
+N*X bytes: N serialized R objects (recursive)
+```
+
+Note: EXPRSXP is structurally identical to VECSXP. The difference is semantic - EXPRSXP represents collections of unevaluated expressions (typically language objects), most often as the result of `parse()` or `expression()` in R.
 
 ## Attributes
 

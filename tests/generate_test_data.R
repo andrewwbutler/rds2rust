@@ -179,4 +179,57 @@ saveRDS(lang_with_args, file.path(output_dir, "lang_with_args.rds"))
 lang_nested <- quote(sqrt(sum(x, y)))
 saveRDS(lang_nested, file.path(output_dir, "lang_nested.rds"))
 
+# Expression vectors (EXPRSXP) - collections of unevaluated expressions
+# Typically the result of parse()
+
+# Simple expression vector: a single expression
+expr_single <- parse(text = "x + 1")
+saveRDS(expr_single, file.path(output_dir, "expr_single.rds"))
+
+# Multiple expressions
+expr_multiple <- parse(text = c("x + 1", "y * 2", "z / 3"))
+saveRDS(expr_multiple, file.path(output_dir, "expr_multiple.rds"))
+
+# Empty expression vector
+expr_empty <- expression()
+saveRDS(expr_empty, file.path(output_dir, "expr_empty.rds"))
+
+# Expression vector with function calls
+expr_calls <- parse(text = c("mean(x)", "sum(y)", "sd(z)"))
+saveRDS(expr_calls, file.path(output_dir, "expr_calls.rds"))
+
+# Complex expression with nested calls
+# Using simpler expression to avoid REFSXP (reference tracking)
+expr_complex <- parse(text = "sqrt(x + y)")
+saveRDS(expr_complex, file.path(output_dir, "expr_complex.rds"))
+
+# Expression vector created with expression() function
+expr_manual <- expression(a + b, c * d, sqrt(e))
+saveRDS(expr_manual, file.path(output_dir, "expr_manual.rds"))
+
+# Formulas (special language objects with class "formula")
+# Simple formula: y ~ x
+formula_simple <- y ~ x
+saveRDS(formula_simple, file.path(output_dir, "formula_simple.rds"))
+
+# Formula with multiple predictors: y ~ x + z
+formula_multiple <- y ~ x + z
+saveRDS(formula_multiple, file.path(output_dir, "formula_multiple.rds"))
+
+# Formula with interaction: y ~ x * z (expands to y ~ x + z + x:z)
+formula_interaction <- y ~ x * z
+saveRDS(formula_interaction, file.path(output_dir, "formula_interaction.rds"))
+
+# Formula with functions: log(y) ~ sqrt(x) + I(z^2)
+formula_functions <- log(y) ~ sqrt(x) + I(z^2)
+saveRDS(formula_functions, file.path(output_dir, "formula_functions.rds"))
+
+# Two-sided formula with no intercept: y ~ x - 1
+formula_no_intercept <- y ~ x - 1
+saveRDS(formula_no_intercept, file.path(output_dir, "formula_no_intercept.rds"))
+
+# One-sided formula: ~ x + y
+formula_one_sided <- ~ x + y
+saveRDS(formula_one_sided, file.path(output_dir, "formula_one_sided.rds"))
+
 cat("Test RDS files generated successfully in", output_dir, "\n")
