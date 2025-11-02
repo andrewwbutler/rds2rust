@@ -9,6 +9,43 @@ use flate2::Compression;
 use std::collections::HashMap;
 use std::io::Write;
 
+/// Reference table for tracking objects during serialization.
+/// R's serialization uses reference tracking to avoid duplicating shared objects.
+/// When the same object appears multiple times, the first occurrence is written normally,
+/// and subsequent occurrences are written as REFSXP with an index pointing to the first.
+///
+/// Note: For now, this is a placeholder that doesn't actually perform deduplication.
+/// True reference tracking requires tracking object identity across the entire object graph,
+/// which is complex in Rust. This infrastructure is in place for future enhancement.
+struct RefTable {
+    /// Placeholder for future reference tracking
+    #[allow(dead_code)]
+    next_index: u32,
+}
+
+impl RefTable {
+    fn new() -> Self {
+        RefTable {
+            next_index: 1, // R uses 1-based indexing for references
+        }
+    }
+}
+
+/// Determine if an object type should be tracked for references.
+/// This matches the same logic used in the parser.
+#[allow(dead_code)]
+fn should_track_reference_type(obj: &RObject) -> bool {
+    matches!(
+        obj,
+        RObject::List(_)
+            | RObject::Expression(_)
+            | RObject::Language(_)
+            | RObject::Pairlist(_)
+            | RObject::S4Object { .. }
+            | RObject::WithAttributes { .. }
+    )
+}
+
 /// Write an RObject to RDS format.
 /// Returns the serialized bytes (gzip compressed).
 pub fn write_rds(obj: &RObject) -> Result<Vec<u8>> {
@@ -17,8 +54,11 @@ pub fn write_rds(obj: &RObject) -> Result<Vec<u8>> {
     // Write header
     write_header(&mut buffer)?;
 
+    // Create reference table for tracking shared objects
+    let mut ref_table = RefTable::new();
+
     // Write the object
-    write_object(&mut buffer, obj)?;
+    write_object(&mut buffer, obj, &mut ref_table)?;
 
     // Compress with gzip
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
@@ -46,7 +86,7 @@ fn write_header(writer: &mut Vec<u8>) -> Result<()> {
 }
 
 /// Write an R object to the stream.
-fn write_object(writer: &mut Vec<u8>, obj: &RObject) -> Result<()> {
+fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -> Result<()> {
     match obj {
         RObject::Null => write_null(writer),
         RObject::Integer(vec) => write_integer_vector(writer, vec),
@@ -55,22 +95,22 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject) -> Result<()> {
         RObject::Character(vec) => write_character_vector(writer, vec),
         RObject::Raw(vec) => write_raw_vector(writer, vec),
         RObject::Complex(vec) => write_complex_vector(writer, vec),
-        RObject::List(elements) => write_list(writer, elements),
-        RObject::Expression(elements) => write_expression(writer, elements),
-        RObject::Pairlist(elements) => write_pairlist(writer, elements),
-        RObject::Language(elements) => write_language(writer, elements),
+        RObject::List(elements) => write_list(writer, elements, ref_table),
+        RObject::Expression(elements) => write_expression(writer, elements, ref_table),
+        RObject::Pairlist(elements) => write_pairlist(writer, elements, ref_table),
+        RObject::Language(elements) => write_language(writer, elements, ref_table),
         RObject::DataFrame { columns, row_names } => {
-            write_dataframe(writer, columns, row_names)
+            write_dataframe(writer, columns, row_names, ref_table)
         }
         RObject::Factor { values, levels, ordered } => {
-            write_factor(writer, values, levels, *ordered)
+            write_factor(writer, values, levels, *ordered, ref_table)
         }
         RObject::S3Object { base, class, attributes } => {
-            write_s3_object(writer, base, class, attributes)
+            write_s3_object(writer, base, class, attributes, ref_table)
         }
-        RObject::S4Object { class, slots } => write_s4_object(writer, class, slots),
+        RObject::S4Object { class, slots } => write_s4_object(writer, class, slots, ref_table),
         RObject::WithAttributes { object, attributes } => {
-            write_object_with_attributes(writer, object, attributes)
+            write_object_with_attributes(writer, object, attributes, ref_table)
         }
     }
 }
@@ -169,11 +209,11 @@ fn write_complex_vector(writer: &mut Vec<u8>, vec: &[Complex]) -> Result<()> {
 }
 
 /// Write a list (VECSXP).
-fn write_list(writer: &mut Vec<u8>, elements: &[RObject]) -> Result<()> {
+fn write_list(writer: &mut Vec<u8>, elements: &[RObject], ref_table: &mut RefTable) -> Result<()> {
     write_flags(writer, VECSXP, false, false)?;
     writer.write_u32::<BigEndian>(elements.len() as u32)?;
     for element in elements {
-        write_object(writer, element)?;
+        write_object(writer, element, ref_table)?;
     }
     Ok(())
 }
@@ -181,18 +221,18 @@ fn write_list(writer: &mut Vec<u8>, elements: &[RObject]) -> Result<()> {
 /// Write an expression vector (EXPRSXP).
 /// Expression vectors are structurally identical to VECSXP, but semantically represent
 /// collections of unevaluated expressions (typically language objects).
-fn write_expression(writer: &mut Vec<u8>, elements: &[RObject]) -> Result<()> {
+fn write_expression(writer: &mut Vec<u8>, elements: &[RObject], ref_table: &mut RefTable) -> Result<()> {
     write_flags(writer, EXPRSXP, false, false)?;
     writer.write_u32::<BigEndian>(elements.len() as u32)?;
     for element in elements {
-        write_object(writer, element)?;
+        write_object(writer, element, ref_table)?;
     }
     Ok(())
 }
 
 /// Write a language object (LANGSXP).
 /// Language objects represent unevaluated calls: function + arguments.
-fn write_language(writer: &mut Vec<u8>, elements: &[RObject]) -> Result<()> {
+fn write_language(writer: &mut Vec<u8>, elements: &[RObject], ref_table: &mut RefTable) -> Result<()> {
     if elements.is_empty() {
         // Empty language object? Just write NULL
         return write_null(writer);
@@ -204,7 +244,7 @@ fn write_language(writer: &mut Vec<u8>, elements: &[RObject]) -> Result<()> {
     write_flags(writer, LANGSXP, false, has_tag)?;
 
     // Write the function (CAR)
-    write_object(writer, &elements[0])?;
+    write_object(writer, &elements[0], ref_table)?;
 
     // Write the arguments (CDR) as a pairlist or NULL
     if elements.len() > 1 {
@@ -216,7 +256,7 @@ fn write_language(writer: &mut Vec<u8>, elements: &[RObject]) -> Result<()> {
                 value: obj.clone(),
             })
             .collect();
-        write_pairlist(writer, &args)?;
+        write_pairlist(writer, &args, ref_table)?;
     } else {
         // No arguments
         write_null(writer)?;
@@ -226,7 +266,7 @@ fn write_language(writer: &mut Vec<u8>, elements: &[RObject]) -> Result<()> {
 }
 
 /// Write a pairlist (LISTSXP).
-fn write_pairlist(writer: &mut Vec<u8>, elements: &[PairlistElement]) -> Result<()> {
+fn write_pairlist(writer: &mut Vec<u8>, elements: &[PairlistElement], ref_table: &mut RefTable) -> Result<()> {
     for (i, element) in elements.iter().enumerate() {
         let has_tag = element.tag.is_some();
         let is_last = i == elements.len() - 1;
@@ -239,7 +279,7 @@ fn write_pairlist(writer: &mut Vec<u8>, elements: &[PairlistElement]) -> Result<
         }
 
         // Write the value
-        write_object(writer, &element.value)?;
+        write_object(writer, &element.value, ref_table)?;
 
         // Write the CDR (tail)
         if is_last {
@@ -269,6 +309,7 @@ fn write_dataframe(
     writer: &mut Vec<u8>,
     columns: &HashMap<String, RObject>,
     row_names: &[String],
+    ref_table: &mut RefTable,
 ) -> Result<()> {
     // Convert HashMap to Vec for consistent ordering
     let mut cols_vec: Vec<_> = columns.iter().collect();
@@ -283,7 +324,7 @@ fn write_dataframe(
 
     // Write each column
     for col in &column_values {
-        write_object(writer, col)?;
+        write_object(writer, col, ref_table)?;
     }
 
     // Write attributes (names, row.names, class)
@@ -292,7 +333,7 @@ fn write_dataframe(
     attrs.insert("row.names".to_string(), RObject::Character(row_names.to_vec()));
     attrs.insert("class".to_string(), RObject::Character(vec!["data.frame".to_string()]));
 
-    write_attributes(writer, &attrs)?;
+    write_attributes(writer, &attrs, ref_table)?;
 
     Ok(())
 }
@@ -303,6 +344,7 @@ fn write_factor(
     values: &[i32],
     levels: &[String],
     ordered: bool,
+    ref_table: &mut RefTable,
 ) -> Result<()> {
     // Write the integer vector with attributes
     write_flags(writer, INTSXP, true, false)?;
@@ -322,7 +364,7 @@ fn write_factor(
     };
     attrs.insert("class".to_string(), RObject::Character(class));
 
-    write_attributes(writer, &attrs)?;
+    write_attributes(writer, &attrs, ref_table)?;
 
     Ok(())
 }
@@ -333,6 +375,7 @@ fn write_s3_object(
     base: &RObject,
     class: &[String],
     attributes: &Attributes,
+    ref_table: &mut RefTable,
 ) -> Result<()> {
     // Write the base object with attributes
     match base {
@@ -340,7 +383,7 @@ fn write_s3_object(
             write_flags(writer, VECSXP, true, false)?;
             writer.write_u32::<BigEndian>(elements.len() as u32)?;
             for element in elements {
-                write_object(writer, element)?;
+                write_object(writer, element, ref_table)?;
             }
         }
         RObject::Integer(vec) => {
@@ -366,7 +409,7 @@ fn write_s3_object(
             // Write attributes FIRST (before CAR/CDR)
             let mut attrs = attributes.clone();
             attrs.insert("class".to_string(), RObject::Character(class.to_vec()));
-            write_attributes(writer, &attrs)?;
+            write_attributes(writer, &attrs, ref_table)?;
 
             // Now write the CAR/CDR
             if elements.is_empty() {
@@ -374,7 +417,7 @@ fn write_s3_object(
             }
 
             // Write the function (CAR)
-            write_object(writer, &elements[0])?;
+            write_object(writer, &elements[0], ref_table)?;
 
             // Write the arguments (CDR) as a pairlist or NULL
             if elements.len() > 1 {
@@ -385,7 +428,7 @@ fn write_s3_object(
                         value: obj.clone(),
                     })
                     .collect();
-                write_pairlist(writer, &args)?;
+                write_pairlist(writer, &args, ref_table)?;
             } else {
                 write_null(writer)?;
             }
@@ -401,13 +444,13 @@ fn write_s3_object(
     // Write attributes with class added
     let mut attrs = attributes.clone();
     attrs.insert("class".to_string(), RObject::Character(class.to_vec()));
-    write_attributes(writer, &attrs)?;
+    write_attributes(writer, &attrs, ref_table)?;
 
     Ok(())
 }
 
 /// Write an S4 object.
-fn write_s4_object(writer: &mut Vec<u8>, class: &[String], slots: &HashMap<String, RObject>) -> Result<()> {
+fn write_s4_object(writer: &mut Vec<u8>, class: &[String], slots: &HashMap<String, RObject>, ref_table: &mut RefTable) -> Result<()> {
     // S4 objects are written as S4SXP with attributes
     write_flags(writer, S4SXP, true, false)?;
 
@@ -420,7 +463,7 @@ fn write_s4_object(writer: &mut Vec<u8>, class: &[String], slots: &HashMap<Strin
         attrs.insert(name.clone(), value.clone());
     }
 
-    write_attributes(writer, &attrs)?;
+    write_attributes(writer, &attrs, ref_table)?;
 
     Ok(())
 }
@@ -430,6 +473,7 @@ fn write_object_with_attributes(
     writer: &mut Vec<u8>,
     object: &RObject,
     attributes: &Attributes,
+    ref_table: &mut RefTable,
 ) -> Result<()> {
     // Write the base object with HAS_ATTR flag set
     match object {
@@ -451,7 +495,7 @@ fn write_object_with_attributes(
             write_flags(writer, VECSXP, true, false)?;
             writer.write_u32::<BigEndian>(elements.len() as u32)?;
             for element in elements {
-                write_object(writer, element)?;
+                write_object(writer, element, ref_table)?;
             }
         }
         _ => {
@@ -461,13 +505,13 @@ fn write_object_with_attributes(
         }
     }
 
-    write_attributes(writer, attributes)?;
+    write_attributes(writer, attributes, ref_table)?;
 
     Ok(())
 }
 
 /// Write attributes as a pairlist.
-fn write_attributes(writer: &mut Vec<u8>, attributes: &Attributes) -> Result<()> {
+fn write_attributes(writer: &mut Vec<u8>, attributes: &Attributes, ref_table: &mut RefTable) -> Result<()> {
     if attributes.is_empty() {
         return Ok(());
     }
@@ -489,7 +533,7 @@ fn write_attributes(writer: &mut Vec<u8>, attributes: &Attributes) -> Result<()>
     }
 
     // Write the pairlist
-    write_pairlist(writer, &elements)?;
+    write_pairlist(writer, &elements, ref_table)?;
 
     Ok(())
 }

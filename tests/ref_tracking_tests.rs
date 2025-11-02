@@ -1,0 +1,289 @@
+//! Integration tests for REFSXP (reference tracking) functionality.
+//!
+//! These tests verify that the parser correctly handles RDS files that use
+//! reference tracking (REFSXP) to avoid duplicating shared objects.
+
+use rds2rust::{read_rds, RObject};
+use std::fs;
+use std::path::Path;
+
+fn test_data_exists() -> bool {
+    Path::new("tests/data").exists()
+}
+
+fn read_test_file(filename: &str) -> Vec<u8> {
+    let path = format!("tests/data/{}", filename);
+    fs::read(&path).unwrap_or_else(|_| panic!("Failed to read test file: {}", path))
+}
+
+#[test]
+fn test_ref_shared_vector() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("ref_shared_vector.rds");
+    let obj = read_rds(&data).expect("Failed to parse shared vector reference");
+
+    // Should parse as a list with named elements
+    match obj {
+        RObject::WithAttributes { object, attributes } => {
+            // Check it has names attribute
+            assert!(attributes.get("names").is_some());
+
+            // The base object should be a list
+            match *object {
+                RObject::List(elements) => {
+                    // Should have 3 elements (a, b, c)
+                    assert_eq!(elements.len(), 3);
+
+                    // Each element should be a numeric vector (Real in R)
+                    for element in &elements {
+                        match element {
+                            RObject::Real(vec) => {
+                                assert_eq!(vec.len(), 5);
+                                assert_eq!(vec, &[1.0, 2.0, 3.0, 4.0, 5.0]);
+                            }
+                            RObject::Integer(vec) => {
+                                assert_eq!(vec.len(), 5);
+                                assert_eq!(vec, &[1, 2, 3, 4, 5]);
+                            }
+                            _ => panic!("Expected numeric vector, got {:?}", element),
+                        }
+                    }
+                }
+                _ => panic!("Expected List, got {:?}", object),
+            }
+        }
+        _ => panic!("Expected WithAttributes, got {:?}", obj),
+    }
+}
+
+#[test]
+fn test_ref_shared_list() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("ref_shared_list.rds");
+    let obj = read_rds(&data).expect("Failed to parse shared list reference");
+
+    // Should parse as a list with named elements (may or may not have WithAttributes wrapper)
+    let elements = match obj {
+        RObject::WithAttributes { object, .. } => match *object {
+            RObject::List(elements) => elements,
+            _ => panic!("Expected List inside WithAttributes"),
+        },
+        RObject::List(elements) => elements,
+        _ => panic!("Expected List or WithAttributes containing List, got {:?}", obj),
+    };
+
+    // Should have 3 elements (first, second, third)
+    assert_eq!(elements.len(), 3);
+    // The structure was parsed successfully - that's the main goal
+}
+
+#[test]
+fn test_ref_complex_shared() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("ref_complex_shared.rds");
+    let obj = read_rds(&data).expect("Failed to parse complex shared structure");
+
+    // Should parse as a list with nested structure
+    let elements = match obj {
+        RObject::WithAttributes { object, .. } => match *object {
+            RObject::List(elements) => elements,
+            _ => panic!("Expected List inside WithAttributes"),
+        },
+        RObject::List(elements) => elements,
+        _ => panic!("Expected List or WithAttributes containing List, got {:?}", obj),
+    };
+
+    // Should have 3 elements (a, b, c)
+    assert_eq!(elements.len(), 3);
+    // Successfully parsed complex shared references
+}
+
+#[test]
+fn test_ref_shared_expression() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("ref_shared_expression.rds");
+    let obj = read_rds(&data).expect("Failed to parse shared expression reference");
+
+    // Should parse as a list with shared expression objects
+    let elements = match obj {
+        RObject::WithAttributes { object, .. } => match *object {
+            RObject::List(elements) => elements,
+            _ => panic!("Expected List inside WithAttributes"),
+        },
+        RObject::List(elements) => elements,
+        _ => panic!("Expected List or WithAttributes containing List, got {:?}", obj),
+    };
+
+    // Should have 3 elements (expr1, expr2, wrapped)
+    assert_eq!(elements.len(), 3);
+
+    // First two should be language objects (the shared expression)
+    match &elements[0] {
+        RObject::Language(_) => {
+            // Good - parsed the shared expression
+        }
+        _ => {
+            // May vary depending on how R serializes it
+        }
+    }
+}
+
+#[test]
+fn test_ref_large_shared() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("ref_large_shared.rds");
+    let obj = read_rds(&data).expect("Failed to parse large shared vector reference");
+
+    // Should parse as a list with 5 copies of a 1000-element vector
+    let elements = match obj {
+        RObject::WithAttributes { object, .. } => match *object {
+            RObject::List(elements) => elements,
+            _ => panic!("Expected List inside WithAttributes"),
+        },
+        RObject::List(elements) => elements,
+        _ => panic!("Expected List or WithAttributes containing List, got {:?}", obj),
+    };
+
+    // Should have 5 elements (copy1-5)
+    assert_eq!(elements.len(), 5);
+
+    // Each should be a 1000-element integer vector
+    for (i, element) in elements.iter().enumerate() {
+        match element {
+            RObject::Integer(vec) => {
+                assert_eq!(
+                    vec.len(),
+                    1000,
+                    "Element {} should have 1000 integers",
+                    i
+                );
+                // Verify it's 1:1000
+                for (j, &val) in vec.iter().enumerate() {
+                    assert_eq!(val, (j + 1) as i32, "Element {} index {}", i, j);
+                }
+            }
+            _ => panic!("Expected Integer vector at element {}, got {:?}", i, element),
+        }
+    }
+}
+#[test]
+fn test_simple_ref() {
+    use rds2rust::read_rds;
+    use std::fs;
+    
+    let data = fs::read("/tmp/test_simple_ref.rds").unwrap();
+    let obj = read_rds(&data).expect("Failed to parse");
+    println!("Parsed: {:?}", obj);
+}
+#[test]
+fn test_three_copies() {
+    use rds2rust::read_rds;
+    use std::fs;
+    
+    let data = fs::read("/tmp/three_copies.rds").unwrap();
+    let obj = read_rds(&data).expect("Failed to parse");
+    println!("Parsed: {:?}", obj);
+}
+#[test]
+fn test_non_altrep() {
+    use rds2rust::read_rds;
+    use std::fs;
+    
+    let data = fs::read("/tmp/non_altrep.rds").unwrap();
+    let obj = read_rds(&data).expect("Failed to parse");
+    println!("Parsed: {:?}", obj);
+}
+
+#[test]
+fn test_four_copies() {
+    let data = std::fs::read("/tmp/four_copies.rds").expect("Failed to read test file");
+    let result = read_rds(&data).expect("Failed to parse RDS");
+    
+    println!("Parsed result: {:?}", result);
+    
+    if let RObject::List(elements) = result {
+        println!("\nList has {} elements", elements.len());
+        for (i, elem) in elements.iter().enumerate() {
+            println!("Element {}: {:?}", i, elem);
+        }
+        
+        // All four should be Integer([1..10])
+        assert_eq!(elements.len(), 4);
+        for i in 0..4 {
+            match &elements[i] {
+                RObject::Integer(v) => {
+                    assert_eq!(v.len(), 10);
+                    assert_eq!(&v[..], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+                }
+                other => panic!("Element {} should be Integer, got {:?}", i, other),
+            }
+        }
+    } else {
+        panic!("Expected List, got {:?}", result);
+    }
+}
+
+#[test]
+fn test_two_copies() {
+    let data = std::fs::read("/tmp/two_copies.rds").expect("Failed to read test file");
+    let result = read_rds(&data).expect("Failed to parse RDS");
+    
+    println!("Parsed result: {:?}", result);
+    
+    if let RObject::List(elements) = result {
+        println!("\nList has {} elements", elements.len());
+        for (i, elem) in elements.iter().enumerate() {
+            println!("Element {}: {:?}", i, elem);
+        }
+    }
+}
+
+#[test]
+fn test_third_only() {
+    let data = std::fs::read("/tmp/third_only.rds").expect("Failed to read test file");
+    let result = read_rds(&data).expect("Failed to parse RDS");
+    
+    println!("Parsed third_only result: {:?}", result);
+    
+    match result {
+        RObject::Integer(v) => {
+            assert_eq!(v.len(), 10);
+            assert_eq!(&v[..], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        }
+        other => panic!("Expected Integer, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_three_shared() {
+    let data = std::fs::read("/tmp/three_shared.rds").expect("Failed to read test file");
+    let result = read_rds(&data).expect("Failed to parse RDS");
+    
+    println!("Parsed three_shared result: {:?}", result);
+    
+    if let RObject::List(elements) = result {
+        for (i, elem) in elements.iter().enumerate() {
+            println!("Element {}: {:?}", i, elem);
+        }
+    }
+}

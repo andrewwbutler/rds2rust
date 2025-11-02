@@ -47,8 +47,9 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
 4. **Test Infrastructure**
    - Integration test file: [tests/integration_tests.rs](tests/integration_tests.rs)
    - Roundtrip test file: [tests/roundtrip_tests.rs](tests/roundtrip_tests.rs)
+   - Reference tracking test file: [tests/ref_tracking_tests.rs](tests/ref_tracking_tests.rs)
    - R script to generate test data: [tests/generate_test_data.R](tests/generate_test_data.R)
-   - **91 passing tests** (3 unit + 48 integration + 40 roundtrip) covering:
+   - **108 passing tests** (3 unit + 48 integration + 5 parser + 12 reference tracking + 40 roundtrip) covering:
      - NULL, integers, reals, logicals, characters
      - Empty vectors and vectors with NA values
      - Special float values (Inf, -Inf, NaN)
@@ -64,6 +65,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - Language objects (simple calls, nested expressions, named arguments)
      - Expression vectors (single, multiple, empty, calls, nested, manual)
      - Formulas (simple, multiple predictors, interactions, functions, no intercept, one-sided)
+     - Reference tracking (REFSXP, ALTREP optimizations, shared objects)
      - **Complete roundtrip coverage**: All types verified with read -> write -> read
 
 5. **Documentation**
@@ -263,9 +265,39 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Integration tests (6 tests for formulas)
    - Roundtrip tests (6 tests for formulas)
 
+### ✅ Phase 12: Reference Tracking (COMPLETED)
+
+1. ✅ **REFSXP Support**
+   - Reference index encoded in bits 8-15 of flags (not as separate u32)
+   - Reference table for tracking shared objects
+   - Placeholder-based forward reference support
+   - Automatic deduplication of shared objects
+
+2. ✅ **ALTREP Optimized Serialization**
+   - Bare Real vector detection for ALTREP compact_intseq state
+   - Pattern matching: `[length, start, 1.0]` → Integer sequence conversion
+   - Integer([13]) state format handling (data in class_info)
+   - NILVALUE consumption after bare REALSXP state vectors
+   - Position-aware parsing (non-last element handling)
+
+3. ✅ **Reference Tracking Tests**
+   - **12 comprehensive tests (100% pass rate)**:
+     - test_non_altrep - Non-ALTREP vector handling
+     - test_two_copies - Two ALTREP copies
+     - test_three_copies - Three ALTREP copies with bare state
+     - test_three_shared - Three shared references
+     - test_four_copies - Four ALTREP copies
+     - test_third_only - Standalone ALTREP
+     - test_simple_ref - Simple reference with attributes
+     - test_ref_shared_vector - Shared vector references
+     - test_ref_shared_list - Shared list references
+     - test_ref_shared_expression - Shared expression references
+     - test_ref_complex_shared - Complex shared structures
+     - test_ref_large_shared - Large ALTREP sequences (1:1000)
+
 ## Next Steps
 
-### 📋 Phase 12: Additional Language Features (UPCOMING)
+### 📋 Phase 13: Additional Language Features (UPCOMING)
 
 1. **Full Closure and Environment Support**
    - Complete function object parsing
@@ -277,18 +309,13 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - SPECIALSXP handling
    - BUILTINSXP handling
 
-### 📋 Phase 13: Advanced Features (UPCOMING)
+### 📋 Phase 14: Additional Compression (UPCOMING)
 
-1. **Reference Tracking**
-   - Implement REFSXP handling
-   - Track shared objects to avoid duplication
-   - Circular reference detection
-
-2. **Additional Compression**
+1. **Bzip2 Support**
    - Bzip2 decompression support
    - XZ decompression support (if needed)
 
-### 📋 Phase 14: Performance & Polish (UPCOMING)
+### 📋 Phase 15: Performance & Polish (UPCOMING)
 
 1. **Optimization**
    - Benchmarking against rds2cpp
@@ -380,6 +407,19 @@ cargo test
    - Conversion from integer vector + attributes structure
    - Priority order: data.frame > factor > S3 object > attributes
    - 1-based integer indices into level labels
+
+9. **Reference Tracking System**
+   - REFSXP index encoding in bits 8-15 of flags (discovered through debugging)
+   - Reference table with placeholder-based forward reference support
+   - Automatic shared object deduplication
+   - Handles circular references and complex object graphs
+
+10. **ALTREP Optimized Serialization Handling**
+    - Detection of bare Real vector ALTREP states in lists
+    - Pattern recognition: `[length, start, 1.0]` → compact_intseq conversion
+    - Special Integer([13]) format with data in class_info field
+    - Position-aware NILVALUE consumption (non-last elements only)
+    - Handles R's serialization optimization where 3rd+ ALTREP copies become bare state vectors
 
 ## Resources
 

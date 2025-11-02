@@ -232,4 +232,56 @@ saveRDS(formula_no_intercept, file.path(output_dir, "formula_no_intercept.rds"))
 formula_one_sided <- ~ x + y
 saveRDS(formula_one_sided, file.path(output_dir, "formula_one_sided.rds"))
 
+# Reference tracking test cases
+# These test REFSXP (reference tracking) functionality
+
+# Shared reference: same vector appears multiple times in a list
+shared_vec <- c(1, 2, 3, 4, 5)
+list_with_shared <- list(a = shared_vec, b = shared_vec, c = shared_vec)
+saveRDS(list_with_shared, file.path(output_dir, "ref_shared_vector.rds"))
+
+# Shared list: same list appears multiple times
+shared_list <- list(x = 1:3, y = c("a", "b"))
+nested_with_shared <- list(
+  first = shared_list,
+  second = shared_list,
+  third = list(inner = shared_list)
+)
+saveRDS(nested_with_shared, file.path(output_dir, "ref_shared_list.rds"))
+
+# Circular reference: list that contains itself
+# Note: R doesn't allow simple circular references in normal construction,
+# but we can create them using environments or careful manipulation
+circular_list <- list(value = 42)
+# We can't easily create true circular references in base R without using
+# environments, so we'll create a structure that has repeated references
+# which will use REFSXP
+
+# Self-referential structure using repeated objects
+obj_a <- list(name = "A", data = 1:10)
+obj_b <- list(name = "B", ref_to_a = obj_a)
+obj_c <- list(name = "C", ref_to_a = obj_a, ref_to_b = obj_b)
+complex_shared <- list(a = obj_a, b = obj_b, c = obj_c)
+saveRDS(complex_shared, file.path(output_dir, "ref_complex_shared.rds"))
+
+# Expression with shared components
+shared_expr <- quote(x + y)
+expr_with_shared <- list(
+  expr1 = shared_expr,
+  expr2 = shared_expr,
+  wrapped = list(inner = shared_expr)
+)
+saveRDS(expr_with_shared, file.path(output_dir, "ref_shared_expression.rds"))
+
+# Large repeated structure to ensure REFSXP is used
+large_vec <- 1:1000
+list_with_large <- list(
+  copy1 = large_vec,
+  copy2 = large_vec,
+  copy3 = large_vec,
+  copy4 = large_vec,
+  copy5 = large_vec
+)
+saveRDS(list_with_large, file.path(output_dir, "ref_large_shared.rds"))
+
 cat("Test RDS files generated successfully in", output_dir, "\n")
