@@ -40,6 +40,22 @@ pub enum RObject {
     /// Typically the result of parse() - a collection of unevaluated expressions
     Expression(Vec<RObject>),
 
+    /// Closure (function)
+    /// Contains formal parameters, body, and enclosing environment
+    Closure {
+        formals: Box<RObject>,    // Parameter list (pairlist)
+        body: Box<RObject>,       // Function body (language object)
+        environment: Box<RObject>, // Closure environment
+    },
+
+    /// Environment
+    /// Contains parent environment, bindings frame, and hash table
+    Environment {
+        enclosing: Box<RObject>,  // Parent environment
+        frame: Box<RObject>,      // Bindings (pairlist)
+        hashtab: Box<RObject>,    // Hash table (VECSXP)
+    },
+
     /// Data frame (list with class="data.frame")
     DataFrame {
         columns: HashMap<String, RObject>,

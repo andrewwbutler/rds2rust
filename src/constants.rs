@@ -60,6 +60,12 @@ pub const S4SXP: u32 = 25;
 /// ALTREP object (version 3 feature)
 pub const ALTREP_SXP: u32 = 238; // 0xEE
 
+/// Unbound value (missing argument marker)
+pub const UNBOUNDVALUE_SXP: u32 = 251; // 0xFB
+
+/// Empty argument marker
+pub const EMPTYENV_SXP: u32 = 252; // 0xFC
+
 /// Global environment
 pub const GLOBALENV_SXP: u32 = 253; // 0xFD
 

@@ -99,6 +99,12 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
         RObject::Expression(elements) => write_expression(writer, elements, ref_table),
         RObject::Pairlist(elements) => write_pairlist(writer, elements, ref_table),
         RObject::Language(elements) => write_language(writer, elements, ref_table),
+        RObject::Closure { formals, body, environment } => {
+            write_closure(writer, formals, body, environment, ref_table)
+        }
+        RObject::Environment { enclosing, frame, hashtab } => {
+            write_environment(writer, enclosing, frame, hashtab, ref_table)
+        }
         RObject::DataFrame { columns, row_names } => {
             write_dataframe(writer, columns, row_names, ref_table)
         }
@@ -301,6 +307,53 @@ fn write_pairlist(writer: &mut Vec<u8>, elements: &[PairlistElement], ref_table:
 fn write_symbol(writer: &mut Vec<u8>, name: &str) -> Result<()> {
     write_flags(writer, SYMSXP, false, false)?;
     write_charsxp(writer, name)?;
+    Ok(())
+}
+
+/// Write a closure (CLOSXP).
+fn write_closure(
+    writer: &mut Vec<u8>,
+    formals: &RObject,
+    body: &RObject,
+    environment: &RObject,
+    ref_table: &mut RefTable,
+) -> Result<()> {
+    write_flags(writer, CLOSXP, false, false)?;
+
+    // Write formals (parameter list)
+    write_object(writer, formals, ref_table)?;
+
+    // Write body (function body)
+    write_object(writer, body, ref_table)?;
+
+    // Write environment (closure environment)
+    write_object(writer, environment, ref_table)?;
+
+    Ok(())
+}
+
+/// Write an environment (ENVSXP).
+fn write_environment(
+    writer: &mut Vec<u8>,
+    enclosing: &RObject,
+    frame: &RObject,
+    hashtab: &RObject,
+    ref_table: &mut RefTable,
+) -> Result<()> {
+    write_flags(writer, ENVSXP, false, false)?;
+
+    // Write locked flag (0 = unlocked)
+    write_integer_vector(writer, &[0])?;
+
+    // Write enclosing environment
+    write_object(writer, enclosing, ref_table)?;
+
+    // Write frame (bindings pairlist)
+    write_object(writer, frame, ref_table)?;
+
+    // Write hashtab
+    write_object(writer, hashtab, ref_table)?;
+
     Ok(())
 }
 

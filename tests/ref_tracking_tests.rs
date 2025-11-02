@@ -188,45 +188,90 @@ fn test_ref_large_shared() {
 }
 #[test]
 fn test_simple_ref() {
-    use rds2rust::read_rds;
-    use std::fs;
-    
-    let data = fs::read("/tmp/test_simple_ref.rds").unwrap();
-    let obj = read_rds(&data).expect("Failed to parse");
-    println!("Parsed: {:?}", obj);
+    if !test_data_exists() {
+        eprintln!("Warning: tests/data directory not found, skipping test");
+        return;
+    }
+
+    let data = read_test_file("ref_altrep_simple.rds");
+    let result = read_rds(&data);
+    assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+    let obj = result.unwrap();
+    if let RObject::List(elements) = obj {
+        assert_eq!(elements.len(), 3);
+        for element in elements {
+            match element {
+                RObject::Integer(v) => assert_eq!(&v[..], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+                other => panic!("Expected Integer, got {:?}", other),
+            }
+        }
+    } else {
+        panic!("Expected List, got {:?}", obj);
+    }
 }
+
 #[test]
 fn test_three_copies() {
-    use rds2rust::read_rds;
-    use std::fs;
-    
-    let data = fs::read("/tmp/three_copies.rds").unwrap();
-    let obj = read_rds(&data).expect("Failed to parse");
-    println!("Parsed: {:?}", obj);
+    if !test_data_exists() {
+        eprintln!("Warning: tests/data directory not found, skipping test");
+        return;
+    }
+
+    let data = read_test_file("ref_altrep_three_copies.rds");
+    let result = read_rds(&data);
+    assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+    let obj = result.unwrap();
+    if let RObject::List(elements) = obj {
+        assert_eq!(elements.len(), 3);
+        for element in elements {
+            match element {
+                RObject::Integer(v) => assert_eq!(&v[..], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+                other => panic!("Expected Integer, got {:?}", other),
+            }
+        }
+    } else {
+        panic!("Expected List, got {:?}", obj);
+    }
 }
+
 #[test]
 fn test_non_altrep() {
-    use rds2rust::read_rds;
-    use std::fs;
-    
-    let data = fs::read("/tmp/non_altrep.rds").unwrap();
-    let obj = read_rds(&data).expect("Failed to parse");
-    println!("Parsed: {:?}", obj);
+    if !test_data_exists() {
+        eprintln!("Warning: tests/data directory not found, skipping test");
+        return;
+    }
+
+    let data = read_test_file("ref_altrep_non_sequence.rds");
+    let result = read_rds(&data);
+    assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
+
+    let obj = result.unwrap();
+    if let RObject::List(elements) = obj {
+        assert_eq!(elements.len(), 3);
+        for element in elements {
+            match element {
+                RObject::Integer(v) => assert_eq!(&v[..], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+                other => panic!("Expected Integer, got {:?}", other),
+            }
+        }
+    } else {
+        panic!("Expected List, got {:?}", obj);
+    }
 }
 
 #[test]
 fn test_four_copies() {
-    let data = std::fs::read("/tmp/four_copies.rds").expect("Failed to read test file");
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("ref_altrep_four_copies.rds");
     let result = read_rds(&data).expect("Failed to parse RDS");
-    
-    println!("Parsed result: {:?}", result);
-    
+
     if let RObject::List(elements) = result {
-        println!("\nList has {} elements", elements.len());
-        for (i, elem) in elements.iter().enumerate() {
-            println!("Element {}: {:?}", i, elem);
-        }
-        
         // All four should be Integer([1..10])
         assert_eq!(elements.len(), 4);
         for i in 0..4 {
@@ -245,26 +290,41 @@ fn test_four_copies() {
 
 #[test]
 fn test_two_copies() {
-    let data = std::fs::read("/tmp/two_copies.rds").expect("Failed to read test file");
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("ref_altrep_two_copies.rds");
     let result = read_rds(&data).expect("Failed to parse RDS");
-    
-    println!("Parsed result: {:?}", result);
-    
+
     if let RObject::List(elements) = result {
-        println!("\nList has {} elements", elements.len());
-        for (i, elem) in elements.iter().enumerate() {
-            println!("Element {}: {:?}", i, elem);
+        // Both should be Integer([1..10])
+        assert_eq!(elements.len(), 2);
+        for i in 0..2 {
+            match &elements[i] {
+                RObject::Integer(v) => {
+                    assert_eq!(v.len(), 10);
+                    assert_eq!(&v[..], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+                }
+                other => panic!("Element {} should be Integer, got {:?}", i, other),
+            }
         }
+    } else {
+        panic!("Expected List, got {:?}", result);
     }
 }
 
 #[test]
 fn test_third_only() {
-    let data = std::fs::read("/tmp/third_only.rds").expect("Failed to read test file");
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("ref_altrep_single.rds");
     let result = read_rds(&data).expect("Failed to parse RDS");
-    
-    println!("Parsed third_only result: {:?}", result);
-    
+
     match result {
         RObject::Integer(v) => {
             assert_eq!(v.len(), 10);
@@ -276,14 +336,27 @@ fn test_third_only() {
 
 #[test]
 fn test_three_shared() {
-    let data = std::fs::read("/tmp/three_shared.rds").expect("Failed to read test file");
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("ref_altrep_three_shared.rds");
     let result = read_rds(&data).expect("Failed to parse RDS");
-    
-    println!("Parsed three_shared result: {:?}", result);
-    
+
     if let RObject::List(elements) = result {
-        for (i, elem) in elements.iter().enumerate() {
-            println!("Element {}: {:?}", i, elem);
+        // All three should be Integer([1, 2, 3, 4, 5])
+        assert_eq!(elements.len(), 3);
+        for i in 0..3 {
+            match &elements[i] {
+                RObject::Integer(v) => {
+                    assert_eq!(v.len(), 5);
+                    assert_eq!(&v[..], &[1, 2, 3, 4, 5]);
+                }
+                other => panic!("Element {} should be Integer, got {:?}", i, other),
+            }
         }
+    } else {
+        panic!("Expected List, got {:?}", result);
     }
 }

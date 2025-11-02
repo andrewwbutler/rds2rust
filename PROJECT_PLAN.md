@@ -6,6 +6,26 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
 
 ## Current Status
 
+**Project Progress**: 13 of 16 planned phases completed (81%)
+
+**Test Coverage**: 113 tests passing across all test suites
+- 3 unit tests
+- 48 integration tests
+- 12 reference tracking tests
+- 5 reference roundtrip tests
+- 40 roundtrip tests
+- 5 closure/environment tests
+
+**Key Features Implemented**:
+- ✅ All basic R types (NULL, vectors, matrices, data frames)
+- ✅ All object-oriented types (S3, S4, factors)
+- ✅ All language types (expressions, formulas, closures, environments)
+- ✅ Reference tracking and ALTREP optimization
+- ✅ Complete read/write roundtrip support
+- ✅ Gzip compression/decompression
+
+---
+
 ### ✅ Phase 1: Project Setup (COMPLETED)
 
 1. **Cargo Project Initialized**
@@ -35,6 +55,9 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - `List` - Generic lists (VECSXP)
      - `Pairlist` - Pairlists (LISTSXP) with tags
      - `Language` - Language objects (unevaluated expressions/calls)
+     - `Expression` - Expression vectors (collections of language objects)
+     - `Closure` - Function objects with formals, body, and environment
+     - `Environment` - Environment objects with enclosing, frame, and hashtab
      - `DataFrame` - Data frames with columns and row names
      - `Factor` - Factors (categorical variables with levels)
      - `S3Object` - S3 objects with class attribute
@@ -48,8 +71,9 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Integration test file: [tests/integration_tests.rs](tests/integration_tests.rs)
    - Roundtrip test file: [tests/roundtrip_tests.rs](tests/roundtrip_tests.rs)
    - Reference tracking test file: [tests/ref_tracking_tests.rs](tests/ref_tracking_tests.rs)
+   - Closure test file: [tests/closure_tests.rs](tests/closure_tests.rs)
    - R script to generate test data: [tests/generate_test_data.R](tests/generate_test_data.R)
-   - **108 passing tests** (3 unit + 48 integration + 5 parser + 12 reference tracking + 40 roundtrip) covering:
+   - **118 passing tests** (3 unit + 48 integration + 12 reference tracking + 5 reference roundtrip + 40 roundtrip + 5 closure + 5 closure roundtrip) covering:
      - NULL, integers, reals, logicals, characters
      - Empty vectors and vectors with NA values
      - Special float values (Inf, -Inf, NaN)
@@ -66,6 +90,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - Expression vectors (single, multiple, empty, calls, nested, manual)
      - Formulas (simple, multiple predictors, interactions, functions, no intercept, one-sided)
      - Reference tracking (REFSXP, ALTREP optimizations, shared objects)
+     - Closures (simple functions, closures with environments, standalone environments)
      - **Complete roundtrip coverage**: All types verified with read -> write -> read
 
 5. **Documentation**
@@ -124,10 +149,10 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Compact integer sequence expansion
    - Class info and state parsing
 
-6. ✅ **Closure and Environment Stubs**
-   - Basic CLOSXP parsing (returns NULL)
-   - Basic ENVSXP parsing (returns NULL)
-   - Structure parsing complete, full support pending
+6. ✅ **Closure and Environment Support** (See Phase 13)
+   - Full CLOSXP parsing (formals, body, environment)
+   - Full ENVSXP parsing (enclosing, frame, hashtab)
+   - Complete writing support for closures and environments
 
 ### ✅ Phase 4: Data Frames (COMPLETED)
 
@@ -295,27 +320,56 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - test_ref_complex_shared - Complex shared structures
      - test_ref_large_shared - Large ALTREP sequences (1:1000)
 
+### ✅ Phase 13: Closures and Environments (COMPLETED)
+
+1. ✅ **Closure Support (CLOSXP)**
+   - Added `Closure` variant to RObject enum with formals, body, and environment
+   - Implemented complex TAG encoding handling (environment in TAG slot when has_tag=true)
+   - Fixed extra NULL marker bug between formals and body
+   - Complete parsing and writing support
+   - Integration tests (test_simple_function, test_closure_with_environment)
+   - Roundtrip tests (test_simple_function_roundtrip)
+
+2. ✅ **Environment Support (ENVSXP)**
+   - Added `Environment` variant to RObject enum with enclosing, frame, and hashtab
+   - Implemented locked flag parsing (read but not stored)
+   - Support for global environment references (NULL enclosing)
+   - Complete parsing and writing support
+   - Integration tests (test_simple_environment)
+   - Roundtrip tests (test_environment_roundtrip)
+
+3. ✅ **Critical Bug Fixes**
+   - REFSXP flag interpretation: Reference index in bits 8-15, not separate u32
+   - Special-cased REFSXP to never check has_attr/has_tag flags
+   - Fixed CLOSXP TAG encoding with extra NILVALUE marker handling
+
+4. ✅ **Test Infrastructure Standardization**
+   - Centralized all test data generation in [tests/generate_test_data.R](tests/generate_test_data.R)
+   - Standardized test pattern with `test_data_exists()` and `read_test_file()` helpers
+   - All tests now use `tests/data/` directory consistently
+   - Added closure and environment test data generation
+   - Updated all ALTREP reference tracking tests to use consistent pattern
+
+5. ✅ **New Constants**
+   - Added UNBOUNDVALUE_SXP (251) for missing argument markers
+   - Added EMPTYENV_SXP (252) for empty argument markers
+
 ## Next Steps
 
-### 📋 Phase 13: Additional Language Features (UPCOMING)
+### 📋 Phase 14: Additional Language Features (UPCOMING)
 
-1. **Full Closure and Environment Support**
-   - Complete function object parsing
-   - Environment frame parsing
-   - Binding resolution
-
-2. **Promises and Special Types**
+1. **Promises and Special Types**
    - PROMSXP handling
    - SPECIALSXP handling
    - BUILTINSXP handling
 
-### 📋 Phase 14: Additional Compression (UPCOMING)
+### 📋 Phase 15: Additional Compression (UPCOMING)
 
 1. **Bzip2 Support**
    - Bzip2 decompression support
    - XZ decompression support (if needed)
 
-### 📋 Phase 15: Performance & Polish (UPCOMING)
+### 📋 Phase 16: Performance & Polish (UPCOMING)
 
 1. **Optimization**
    - Benchmarking against rds2cpp
@@ -420,6 +474,13 @@ cargo test
     - Special Integer([13]) format with data in class_info field
     - Position-aware NILVALUE consumption (non-last elements only)
     - Handles R's serialization optimization where 3rd+ ALTREP copies become bare state vectors
+
+11. **Closure and Environment Parsing**
+    - CLOSXP with complex TAG encoding (environment in TAG slot when has_tag=true)
+    - Extra NILVALUE marker detection and conditional skipping between formals and body
+    - ENVSXP with locked flag, enclosing environment, frame bindings, and hashtab
+    - Support for global environment references (NULL enclosing)
+    - Proper handling of closure environments with custom bindings
 
 ## Resources
 

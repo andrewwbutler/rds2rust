@@ -232,6 +232,28 @@ saveRDS(formula_no_intercept, file.path(output_dir, "formula_no_intercept.rds"))
 formula_one_sided <- ~ x + y
 saveRDS(formula_one_sided, file.path(output_dir, "formula_one_sided.rds"))
 
+# Closures (functions) and environments
+# Simple function with default parameters
+simple_func <- function(x, y = 10) { x + y }
+saveRDS(simple_func, file.path(output_dir, "closure_simple.rds"))
+
+# Function with no parameters (closure with custom environment)
+make_counter <- function() {
+    count <- 0
+    function() {
+        count <<- count + 1
+        count
+    }
+}
+counter <- make_counter()
+saveRDS(counter, file.path(output_dir, "closure_with_env.rds"))
+
+# Standalone environment
+env <- new.env()
+env$x <- 42
+env$y <- "hello"
+saveRDS(env, file.path(output_dir, "environment_simple.rds"))
+
 # Reference tracking test cases
 # These test REFSXP (reference tracking) functionality
 
@@ -283,5 +305,42 @@ list_with_large <- list(
   copy5 = large_vec
 )
 saveRDS(list_with_large, file.path(output_dir, "ref_large_shared.rds"))
+
+# ALTREP reference tracking tests
+# These test compact_intseq (ALTREP integer sequences) with reference tracking
+
+# Simple reference test: 3 copies of 1:10
+simple_ref_vec <- 1:10
+simple_ref_list <- list(simple_ref_vec, simple_ref_vec, simple_ref_vec)
+saveRDS(simple_ref_list, file.path(output_dir, "ref_altrep_simple.rds"))
+
+# Two copies of ALTREP sequence
+two_vec <- 1:10
+two_list <- list(two_vec, two_vec)
+saveRDS(two_list, file.path(output_dir, "ref_altrep_two_copies.rds"))
+
+# Three copies of ALTREP sequence
+three_vec <- 1:10
+three_list <- list(three_vec, three_vec, three_vec)
+saveRDS(three_list, file.path(output_dir, "ref_altrep_three_copies.rds"))
+
+# Four copies of ALTREP sequence
+four_vec <- 1:10
+four_list <- list(four_vec, four_vec, four_vec, four_vec)
+saveRDS(four_list, file.path(output_dir, "ref_altrep_four_copies.rds"))
+
+# Single ALTREP sequence (no references)
+third_only <- 1:10
+saveRDS(third_only, file.path(output_dir, "ref_altrep_single.rds"))
+
+# Non-ALTREP vector (regular integer vector, not sequence)
+non_altrep_vec <- c(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L)
+non_altrep_list <- list(non_altrep_vec, non_altrep_vec, non_altrep_vec)
+saveRDS(non_altrep_list, file.path(output_dir, "ref_altrep_non_sequence.rds"))
+
+# Three shared regular (non-ALTREP) vectors
+shared_regular <- c(1L, 2L, 3L, 4L, 5L)
+three_shared_list <- list(shared_regular, shared_regular, shared_regular)
+saveRDS(three_shared_list, file.path(output_dir, "ref_altrep_three_shared.rds"))
 
 cat("Test RDS files generated successfully in", output_dir, "\n")

@@ -167,17 +167,17 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable) -> Result<
     // Check for attribute and tag flags
     // Note: Due to XDR encoding, these bits might be in their documented positions
     // or shifted depending on the type
-    let has_attr = (flags & HAS_ATTR_BIT) != 0;
-    let has_tag = (flags & HAS_TAG_BIT) != 0;
-
-    eprintln!("DEBUG parse_object: sexp_type={} ({}), flags={:08x}, has_attr={}, has_tag={}",
-        sexp_type,
-        match sexp_type {
-            0 => "NILSXP", 1 => "SYMSXP", 2 => "LISTSXP", 13 => "INTSXP",
-            14 => "REALSXP", 16 => "STRSXP", 19 => "VECSXP", 238 => "ALTREP_SXP",
-            254 => "NILVALUE_SXP", 255 => "REFSXP", _ => "OTHER"
-        },
-        flags, has_attr, has_tag);
+    // IMPORTANT: For REFSXP, bits 8-15 contain the reference index, NOT attribute/tag flags
+    let has_attr = if sexp_type == REFSXP {
+        false // REFSXP uses bits 8-15 for reference index
+    } else {
+        (flags & HAS_ATTR_BIT) != 0
+    };
+    let has_tag = if sexp_type == REFSXP {
+        false // REFSXP uses bits 8-15 for reference index
+    } else {
+        (flags & HAS_TAG_BIT) != 0
+    };
 
     // For pairlists and language objects, attributes come BEFORE the data (CAR/CDR)
     // Parse them early if present
@@ -201,6 +201,8 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable) -> Result<
     // Parse the object based on type
     let mut obj = match sexp_type {
         NILSXP | NILVALUE_SXP => RObject::Null,
+        UNBOUNDVALUE_SXP => RObject::Null, // Unbound/missing argument marker
+        EMPTYENV_SXP => RObject::Null, // Empty environment marker
         GLOBALENV_SXP => RObject::Null, // Global environment - treat as NULL
         SYMSXP => parse_symbol(cursor, ref_table)?,
         INTSXP => parse_integer_vector(cursor)?,
@@ -220,7 +222,7 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable) -> Result<
             // Return as a single-element character vector for now
             RObject::Character(vec![string])
         }
-        CLOSXP => parse_closure(cursor, ref_table)?,
+        CLOSXP => parse_closure(cursor, has_tag, ref_table)?,
         ENVSXP => parse_environment(cursor, ref_table)?,
         REFSXP => {
             // Reference to a previously seen object
@@ -512,36 +514,60 @@ fn parse_expression(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable) -> Res
 }
 
 /// Parse a closure (CLOSXP).
-/// Closures consist of: formals (pairlist), body (any SEXP), environment (ENVSXP)
-fn parse_closure(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable) -> Result<RObject> {
-    // Parse formals (arguments)
-    let _formals = parse_object(cursor, ref_table)?;
-    // Parse body
-    let _body = parse_object(cursor, ref_table)?;
-    // Parse environment
-    let _env = parse_object(cursor, ref_table)?;
+/// When has_tag is true: TAG (environment), FORMALS, BODY
+/// When has_tag is false: FORMALS, BODY, ENVIRONMENT
+fn parse_closure(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut RefTable) -> Result<RObject> {
+    let (formals, body, environment) = if has_tag {
+        // TAG holds the environment
+        let env = parse_object(cursor, ref_table)?;
+        let form = parse_object(cursor, ref_table)?;
+        // When has_tag is true, there seems to be an extra NULL object between formals and body
+        // This might be related to how R stores closure attributes or srcref
+        let maybe_body = parse_object(cursor, ref_table)?;
+        let bod = if matches!(maybe_body, RObject::Null) {
+            // Skip this NULL and read the actual body
+            parse_object(cursor, ref_table)?
+        } else {
+            // This is the body
+            maybe_body
+        };
+        (form, bod, env)
+    } else {
+        // Standard order: formals, body, environment
+        let form = parse_object(cursor, ref_table)?;
+        let bod = parse_object(cursor, ref_table)?;
+        let env = parse_object(cursor, ref_table)?;
+        (form, bod, env)
+    };
 
-    // For now, return NULL as we don't have a Closure type yet
-    Ok(RObject::Null)
+    Ok(RObject::Closure {
+        formals: Box::new(formals),
+        body: Box::new(body),
+        environment: Box::new(environment),
+    })
 }
 
 /// Parse an environment (ENVSXP).
 /// Environments consist of: locked flag, enclosing environment, frame (pairlist), hashtab
 fn parse_environment(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable) -> Result<RObject> {
     // Parse locked flag (an integer: 0 or 1)
+    // We read it but don't currently store it in the Environment struct
     let _locked = parse_object(cursor, ref_table)?;
     // Parse enclosing environment (can be another environment or NULL for global env)
-    let _enclos = parse_object(cursor, ref_table)?;
+    let enclosing = parse_object(cursor, ref_table)?;
     // Parse frame (pairlist of bindings)
-    let _frame = parse_object(cursor, ref_table)?;
+    let frame = parse_object(cursor, ref_table)?;
     // Parse hashtab (can be NULL or a VECSXP)
-    let _hashtab = parse_object(cursor, ref_table)?;
+    let hashtab = parse_object(cursor, ref_table)?;
 
     // Note: attributes are NOT parsed here - they're handled by the HAS_ATTR flag
     // in parse_object
 
-    // For now, return NULL as we don't have an Environment type yet
-    Ok(RObject::Null)
+    Ok(RObject::Environment {
+        enclosing: Box::new(enclosing),
+        frame: Box::new(frame),
+        hashtab: Box::new(hashtab),
+    })
 }
 
 /// Parse a language object (LANGSXP).
