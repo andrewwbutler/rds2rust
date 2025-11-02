@@ -21,8 +21,17 @@ pub const CLOSXP: u32 = 3;
 /// Environment
 pub const ENVSXP: u32 = 4;
 
+/// Promise (lazy evaluation)
+pub const PROMSXP: u32 = 5;
+
 /// Language construct (unevaluated call/expression)
 pub const LANGSXP: u32 = 6;
+
+/// Special function (primitive like 'if', 'for')
+pub const SPECIALSXP: u32 = 7;
+
+/// Builtin function (primitive like 'sum', 'c')
+pub const BUILTINSXP: u32 = 8;
 
 /// Internal character string
 pub const CHARSXP: u32 = 9;

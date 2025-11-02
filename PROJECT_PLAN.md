@@ -6,11 +6,11 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
 
 ## Current Status
 
-**Project Progress**: 13 of 16 planned phases completed (81%)
+**Project Progress**: 14 of 16 planned phases completed (87.5%)
 
-**Test Coverage**: 113 tests passing across all test suites
+**Test Coverage**: 137 tests passing across all test suites
 - 3 unit tests
-- 48 integration tests
+- 72 integration tests (48 + 24 promise/special/builtin)
 - 12 reference tracking tests
 - 5 reference roundtrip tests
 - 40 roundtrip tests
@@ -20,6 +20,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
 - ✅ All basic R types (NULL, vectors, matrices, data frames)
 - ✅ All object-oriented types (S3, S4, factors)
 - ✅ All language types (expressions, formulas, closures, environments)
+- ✅ All special types (promises, special functions, builtin functions)
 - ✅ Reference tracking and ALTREP optimization
 - ✅ Complete read/write roundtrip support
 - ✅ Gzip compression/decompression
@@ -68,12 +69,22 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - `Attributes` struct with HashMap storage
 
 4. **Test Infrastructure**
-   - Integration test file: [tests/integration_tests.rs](tests/integration_tests.rs)
-   - Roundtrip test file: [tests/roundtrip_tests.rs](tests/roundtrip_tests.rs)
-   - Reference tracking test file: [tests/ref_tracking_tests.rs](tests/ref_tracking_tests.rs)
-   - Closure test file: [tests/closure_tests.rs](tests/closure_tests.rs)
+   - Feature-specific test files following consistent pattern:
+     - [tests/basic_types_tests.rs](tests/basic_types_tests.rs) - NULL, vectors, complex
+     - [tests/list_tests.rs](tests/list_tests.rs) - Lists and pairlists
+     - [tests/attribute_tests.rs](tests/attribute_tests.rs) - Named vectors and matrices
+     - [tests/dataframe_tests.rs](tests/dataframe_tests.rs) - Data frames
+     - [tests/factor_tests.rs](tests/factor_tests.rs) - Factors
+     - [tests/s3_tests.rs](tests/s3_tests.rs) - S3 objects
+     - [tests/s4_tests.rs](tests/s4_tests.rs) - S4 objects
+     - [tests/language_tests.rs](tests/language_tests.rs) - Language objects
+     - [tests/expression_tests.rs](tests/expression_tests.rs) - Expression vectors
+     - [tests/formula_tests.rs](tests/formula_tests.rs) - Formulas
+     - [tests/closure_tests.rs](tests/closure_tests.rs) - Closures and environments
+     - [tests/promise_tests.rs](tests/promise_tests.rs) - Promises, special and builtin functions
+     - [tests/ref_tracking_tests.rs](tests/ref_tracking_tests.rs) - Reference tracking
    - R script to generate test data: [tests/generate_test_data.R](tests/generate_test_data.R)
-   - **118 passing tests** (3 unit + 48 integration + 12 reference tracking + 5 reference roundtrip + 40 roundtrip + 5 closure + 5 closure roundtrip) covering:
+   - **137 passing tests** (3 unit + 72 integration + 12 reference tracking + 5 reference roundtrip + 40 roundtrip + 5 closure) covering:
      - NULL, integers, reals, logicals, characters
      - Empty vectors and vectors with NA values
      - Special float values (Inf, -Inf, NaN)
@@ -91,6 +102,9 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - Formulas (simple, multiple predictors, interactions, functions, no intercept, one-sided)
      - Reference tracking (REFSXP, ALTREP optimizations, shared objects)
      - Closures (simple functions, closures with environments, standalone environments)
+     - Promises (lazy evaluation in environments)
+     - Special functions (if, for, while, function, [)
+     - Builtin functions (sum, c, +, sqrt, length, min)
      - **Complete roundtrip coverage**: All types verified with read -> write -> read
 
 5. **Documentation**
@@ -354,22 +368,57 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Added UNBOUNDVALUE_SXP (251) for missing argument markers
    - Added EMPTYENV_SXP (252) for empty argument markers
 
+### ✅ Phase 14: Promises and Special Types (COMPLETED)
+
+1. ✅ **Promise Support (PROMSXP)**
+   - Added `Promise` variant to RObject enum with value, expression, and environment
+   - Implemented PROMSXP parsing (lazy evaluation constructs)
+   - Complete parsing and writing support
+   - Test data generation for promises in environments
+   - Integration and roundtrip tests (2 tests)
+
+2. ✅ **Special Function Support (SPECIALSXP)**
+   - Added `Special` variant to RObject enum with name field
+   - Implemented SPECIALSXP parsing for special primitive functions (if, for, while, function, [)
+   - Discovered direct string encoding: type flag + length + bytes (no SYMSXP wrapper)
+   - Complete parsing and writing support
+   - Test data generation for 5 special functions
+   - Integration and roundtrip tests (10 tests)
+
+3. ✅ **Builtin Function Support (BUILTINSXP)**
+   - Added `Builtin` variant to RObject enum with name field
+   - Implemented BUILTINSXP parsing for builtin primitive functions (sum, c, +, sqrt, length, min)
+   - Same direct string encoding as special functions
+   - Complete parsing and writing support
+   - Test data generation for 6 builtin functions
+   - Integration and roundtrip tests (12 tests)
+
+4. ✅ **Key Technical Discoveries**
+   - Special and Builtin functions use direct string encoding (length + bytes)
+   - NOT wrapped in SYMSXP like symbols in other contexts
+   - Format: type flag (u32) → length (i32) → name bytes (UTF-8)
+   - Operator `+` is BUILTINSXP (type 8), not SPECIALSXP (type 7)
+
+5. ✅ **New Constants**
+   - Added PROMSXP (5) for promises
+   - Added SPECIALSXP (7) for special functions
+   - Added BUILTINSXP (8) for builtin functions
+
+6. ✅ **Test Infrastructure**
+   - Created [tests/promise_tests.rs](tests/promise_tests.rs) following established pattern
+   - All 24 tests passing (2 promise + 10 special + 12 builtin)
+   - Complete roundtrip coverage for all new types
+
 ## Next Steps
 
-### 📋 Phase 14: Additional Language Features (UPCOMING)
-
-1. **Promises and Special Types**
-   - PROMSXP handling
-   - SPECIALSXP handling
-   - BUILTINSXP handling
-
-### 📋 Phase 15: Additional Compression (UPCOMING)
+### 📋 Phase 15: Additional Compression (OPTIONAL)
 
 1. **Bzip2 Support**
    - Bzip2 decompression support
    - XZ decompression support (if needed)
+   - Note: Gzip is the most common compression format for RDS files
 
-### 📋 Phase 16: Performance & Polish (UPCOMING)
+### 📋 Phase 16: Performance & Polish (OPTIONAL)
 
 1. **Optimization**
    - Benchmarking against rds2cpp
@@ -482,6 +531,13 @@ cargo test
     - Support for global environment references (NULL enclosing)
     - Proper handling of closure environments with custom bindings
 
+12. **Promise and Primitive Function Parsing**
+    - PROMSXP with three components: value, expression, environment
+    - SPECIALSXP and BUILTINSXP with direct string encoding (no SYMSXP wrapper)
+    - Format discovery: type flag → length (i32) → name bytes (UTF-8)
+    - Distinction between special functions (type 7) and builtin functions (type 8)
+    - Support for operators, control flow, and internal R functions
+
 ## Resources
 
 - Original C++ library: https://github.com/LTLA/rds2cpp
@@ -492,10 +548,11 @@ cargo test
 ## Testing Strategy
 
 - **Unit tests**: In each module ([src/parser.rs](src/parser.rs), etc.)
-- **Integration tests**: In [tests/integration_tests.rs](tests/integration_tests.rs)
+- **Integration tests**: Feature-specific test files (basic_types_tests.rs, list_tests.rs, etc.)
 - **Test data**: Generated from R using [tests/generate_test_data.R](tests/generate_test_data.R)
 - **Verification**: Compare against R's `readRDS()` output
-- **Roundtrip tests**: read -> write -> read comparison (Phase 5)
+- **Roundtrip tests**: read -> write -> read comparison for all types
+- **Consistent pattern**: Each test file includes `test_data_exists()` and `read_test_file()` helpers
 
 ## Project Structure
 
@@ -505,14 +562,27 @@ rds2rust/
 ├── PROJECT_PLAN.md               # This file
 ├── RDS_FORMAT.md                 # Format specification
 ├── src/
-│   ├── lib.rs                    # Public API
-│   ├── types.rs                  # R object types
-│   ├── error.rs                  # Error handling
-│   ├── parser.rs                 # RDS parsing
-│   └── writer.rs                 # RDS writing (future)
+│   ├── lib.rs                    # Public API (read_rds, write_rds)
+│   ├── types.rs                  # R object types and enums
+│   ├── constants.rs              # SEXP type constants
+│   ├── error.rs                  # Error handling with thiserror
+│   ├── parser.rs                 # RDS parsing implementation
+│   └── writer.rs                 # RDS writing implementation
 └── tests/
     ├── README.md                 # Test documentation
     ├── generate_test_data.R      # R script to create test files
-    ├── integration_tests.rs      # Integration tests
-    └── data/                     # Test RDS files (generated)
+    ├── basic_types_tests.rs      # Tests for NULL, vectors, complex
+    ├── list_tests.rs             # Tests for lists and pairlists
+    ├── attribute_tests.rs        # Tests for named vectors, matrices
+    ├── dataframe_tests.rs        # Tests for data frames
+    ├── factor_tests.rs           # Tests for factors
+    ├── s3_tests.rs               # Tests for S3 objects
+    ├── s4_tests.rs               # Tests for S4 objects
+    ├── language_tests.rs         # Tests for language objects
+    ├── expression_tests.rs       # Tests for expression vectors
+    ├── formula_tests.rs          # Tests for formulas
+    ├── closure_tests.rs          # Tests for closures and environments
+    ├── promise_tests.rs          # Tests for promises, special, builtin
+    ├── ref_tracking_tests.rs     # Tests for reference tracking
+    └── data/                     # Test RDS files (generated by R)
 ```

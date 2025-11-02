@@ -105,6 +105,11 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
         RObject::Environment { enclosing, frame, hashtab } => {
             write_environment(writer, enclosing, frame, hashtab, ref_table)
         }
+        RObject::Promise { value, expression, environment } => {
+            write_promise(writer, value, expression, environment, ref_table)
+        }
+        RObject::Special { name } => write_special(writer, name),
+        RObject::Builtin { name } => write_builtin(writer, name),
         RObject::DataFrame { columns, row_names } => {
             write_dataframe(writer, columns, row_names, ref_table)
         }
@@ -354,6 +359,48 @@ fn write_environment(
     // Write hashtab
     write_object(writer, hashtab, ref_table)?;
 
+    Ok(())
+}
+
+/// Write a promise (PROMSXP).
+fn write_promise(
+    writer: &mut Vec<u8>,
+    value: &RObject,
+    expression: &RObject,
+    environment: &RObject,
+    ref_table: &mut RefTable,
+) -> Result<()> {
+    write_flags(writer, PROMSXP, false, false)?;
+
+    // Write the three components: value, expression, environment
+    write_object(writer, value, ref_table)?;
+    write_object(writer, expression, ref_table)?;
+    write_object(writer, environment, ref_table)?;
+
+    Ok(())
+}
+
+/// Write a special primitive function (SPECIALSXP).
+/// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
+fn write_special(writer: &mut Vec<u8>, name: &str) -> Result<()> {
+    write_flags(writer, SPECIALSXP, false, false)?;
+    // Write the string length
+    let bytes = name.as_bytes();
+    writer.write_u32::<BigEndian>(bytes.len() as u32)?;
+    // Write the string bytes
+    writer.write_all(bytes)?;
+    Ok(())
+}
+
+/// Write a builtin primitive function (BUILTINSXP).
+/// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
+fn write_builtin(writer: &mut Vec<u8>, name: &str) -> Result<()> {
+    write_flags(writer, BUILTINSXP, false, false)?;
+    // Write the string length
+    let bytes = name.as_bytes();
+    writer.write_u32::<BigEndian>(bytes.len() as u32)?;
+    // Write the string bytes
+    writer.write_all(bytes)?;
     Ok(())
 }
 

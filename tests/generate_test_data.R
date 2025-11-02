@@ -343,4 +343,54 @@ shared_regular <- c(1L, 2L, 3L, 4L, 5L)
 three_shared_list <- list(shared_regular, shared_regular, shared_regular)
 saveRDS(three_shared_list, file.path(output_dir, "ref_altrep_three_shared.rds"))
 
+# Promises (PROMSXP)
+# Promises are created through lazy evaluation - they're not typically
+# user-facing objects. We can create them through delayedAssign or by
+# capturing function arguments
+
+# Simple promise: delayedAssign creates an unevaluated promise
+delayedAssign("promise_simple", x + 1)
+# Note: We can't directly save a promise, as saveRDS will evaluate it
+# We need to save the environment containing the promise
+env_with_promise <- new.env()
+delayedAssign("value", 2 + 2, eval.env = env_with_promise, assign.env = env_with_promise)
+saveRDS(env_with_promise, file.path(output_dir, "promise_in_env.rds"))
+
+# Special functions (SPECIALSXP)
+# Special primitive functions with special evaluation rules
+special_if <- `if`
+saveRDS(special_if, file.path(output_dir, "special_if.rds"))
+
+special_for <- `for`
+saveRDS(special_for, file.path(output_dir, "special_for.rds"))
+
+special_while <- `while`
+saveRDS(special_while, file.path(output_dir, "special_while.rds"))
+
+special_function <- `function`
+saveRDS(special_function, file.path(output_dir, "special_function.rds"))
+
+special_bracket <- `[`
+saveRDS(special_bracket, file.path(output_dir, "special_bracket.rds"))
+
+# Builtin functions (BUILTINSXP)
+# Builtin primitive functions evaluated normally
+builtin_sum <- sum
+saveRDS(builtin_sum, file.path(output_dir, "builtin_sum.rds"))
+
+builtin_c <- c
+saveRDS(builtin_c, file.path(output_dir, "builtin_c.rds"))
+
+builtin_plus <- `+`
+saveRDS(builtin_plus, file.path(output_dir, "builtin_plus.rds"))
+
+builtin_sqrt <- sqrt
+saveRDS(builtin_sqrt, file.path(output_dir, "builtin_sqrt.rds"))
+
+builtin_length <- length
+saveRDS(builtin_length, file.path(output_dir, "builtin_length.rds"))
+
+builtin_min <- min
+saveRDS(builtin_min, file.path(output_dir, "builtin_min.rds"))
+
 cat("Test RDS files generated successfully in", output_dir, "\n")

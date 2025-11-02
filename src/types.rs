@@ -56,6 +56,26 @@ pub enum RObject {
         hashtab: Box<RObject>,    // Hash table (VECSXP)
     },
 
+    /// Promise (lazy evaluation)
+    /// Contains value, expression, and environment
+    Promise {
+        value: Box<RObject>,       // Evaluated value (or unbound)
+        expression: Box<RObject>,  // Expression to evaluate
+        environment: Box<RObject>, // Evaluation environment
+    },
+
+    /// Special primitive function (like 'if', 'for', 'while')
+    /// These are internal R functions with special evaluation rules
+    Special {
+        name: String,  // Function name
+    },
+
+    /// Builtin primitive function (like 'sum', 'c', '+')
+    /// These are internal R functions evaluated normally
+    Builtin {
+        name: String,  // Function name
+    },
+
     /// Data frame (list with class="data.frame")
     DataFrame {
         columns: HashMap<String, RObject>,

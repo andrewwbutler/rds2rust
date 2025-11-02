@@ -224,6 +224,9 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable) -> Result<
         }
         CLOSXP => parse_closure(cursor, has_tag, ref_table)?,
         ENVSXP => parse_environment(cursor, ref_table)?,
+        PROMSXP => parse_promise(cursor, ref_table)?,
+        SPECIALSXP => parse_special(cursor, ref_table)?,
+        BUILTINSXP => parse_builtin(cursor, ref_table)?,
         REFSXP => {
             // Reference to a previously seen object
             // The reference index is encoded in bits 8-15 of the flags
@@ -661,6 +664,63 @@ fn extract_tag_name(tag_obj: RObject) -> Option<String> {
         RObject::Null => None,
         _ => None,
     }
+}
+
+/// Parse a promise (PROMSXP).
+/// Promises are lazy evaluation constructs containing: value, expression, environment
+fn parse_promise(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable) -> Result<RObject> {
+    // Parse the three components of a promise
+    let value = parse_object(cursor, ref_table)?;
+    let expression = parse_object(cursor, ref_table)?;
+    let environment = parse_object(cursor, ref_table)?;
+
+    Ok(RObject::Promise {
+        value: Box::new(value),
+        expression: Box::new(expression),
+        environment: Box::new(environment),
+    })
+}
+
+/// Parse a special primitive function (SPECIALSXP).
+/// Special functions like 'if', 'for', 'while' have special evaluation rules.
+/// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
+fn parse_special(cursor: &mut Cursor<&[u8]>, _ref_table: &mut RefTable) -> Result<RObject> {
+    // Read the string length
+    let length = cursor.read_i32::<BigEndian>()?;
+
+    if length < 0 {
+        return Err(Error::InvalidFormat("Negative length for special function name".to_string()));
+    }
+
+    // Read the string bytes
+    let mut bytes = vec![0u8; length as usize];
+    cursor.read_exact(&mut bytes)?;
+
+    // Convert to UTF-8 string
+    let name = String::from_utf8(bytes)?;
+
+    Ok(RObject::Special { name })
+}
+
+/// Parse a builtin primitive function (BUILTINSXP).
+/// Builtin functions like 'sum', 'c', '+' are internal R functions.
+/// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
+fn parse_builtin(cursor: &mut Cursor<&[u8]>, _ref_table: &mut RefTable) -> Result<RObject> {
+    // Read the string length
+    let length = cursor.read_i32::<BigEndian>()?;
+
+    if length < 0 {
+        return Err(Error::InvalidFormat("Negative length for builtin function name".to_string()));
+    }
+
+    // Read the string bytes
+    let mut bytes = vec![0u8; length as usize];
+    cursor.read_exact(&mut bytes)?;
+
+    // Convert to UTF-8 string
+    let name = String::from_utf8(bytes)?;
+
+    Ok(RObject::Builtin { name })
 }
 
 /// Convert an ALTREP object to its native representation.
