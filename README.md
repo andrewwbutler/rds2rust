@@ -1,6 +1,7 @@
 # rds2rust
 
-A pure Rust library for reading and writing R's RDS (R Data Serialization) files without requiring an R runtime.
+A pure Rust library for reading and writing R's RDS (R Data Serialization) files without requiring an R runtime. Inspired by [rds2cpp](https://github.com/LTLA/rds2cpp), which provides similar functionality with a C++ implementation.
+
 
 [![Crates.io](https://img.shields.io/crates/v/rds2rust.svg)](https://crates.io/crates/rds2rust)
 [![Documentation](https://docs.rs/rds2rust/badge.svg)](https://docs.rs/rds2rust)
@@ -313,11 +314,6 @@ let obj2 = Arc::clone(&obj);
 Licensed under: 
 
 - MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
-
-## Acknowledgments
-
-- Based on the RDS format specification from the [R project](https://www.r-project.org/)
-- Inspired by [rds2cpp](https://github.com/LTLA/rds2cpp) C++ implementation
 
 ## Resources
 
