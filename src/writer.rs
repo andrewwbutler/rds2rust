@@ -8,6 +8,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::collections::HashMap;
 use std::io::Write;
+use std::sync::Arc;
 
 /// Reference table for tracking objects during serialization.
 /// R's serialization uses reference tracking to avoid duplicating shared objects.
@@ -92,7 +93,7 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
         RObject::Integer(vec) => write_integer_vector(writer, vec),
         RObject::Real(vec) => write_real_vector(writer, vec),
         RObject::Logical(vec) => write_logical_vector(writer, vec),
-        RObject::Character(vec) => write_character_vector(writer, vec),
+        RObject::Character(vec) => write_character_vector(writer, vec.as_slice()),
         RObject::Raw(vec) => write_raw_vector(writer, vec),
         RObject::Complex(vec) => write_complex_vector(writer, vec),
         RObject::List(elements) => write_list(writer, elements, ref_table),
@@ -108,18 +109,18 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
         RObject::Promise { value, expression, environment } => {
             write_promise(writer, value, expression, environment, ref_table)
         }
-        RObject::Special { name } => write_special(writer, name),
-        RObject::Builtin { name } => write_builtin(writer, name),
-        RObject::DataFrame { columns, row_names } => {
-            write_dataframe(writer, columns, row_names, ref_table)
+        RObject::Special { name } => write_special(writer, name.as_ref()),
+        RObject::Builtin { name } => write_builtin(writer, name.as_ref()),
+        RObject::DataFrame(data) => {
+            write_dataframe(writer, &data.columns, &data.row_names, ref_table)
         }
-        RObject::Factor { values, levels, ordered } => {
-            write_factor(writer, values, levels, *ordered, ref_table)
+        RObject::Factor(data) => {
+            write_factor(writer, &data.values, &data.levels, data.ordered, ref_table)
         }
-        RObject::S3Object { base, class, attributes } => {
-            write_s3_object(writer, base, class, attributes, ref_table)
+        RObject::S3Object(data) => {
+            write_s3_object(writer, &data.base, &data.class, &data.attributes, ref_table)
         }
-        RObject::S4Object { class, slots } => write_s4_object(writer, class, slots, ref_table),
+        RObject::S4Object(data) => write_s4_object(writer, &data.class, &data.slots, ref_table),
         RObject::WithAttributes { object, attributes } => {
             write_object_with_attributes(writer, object, attributes, ref_table)
         }
@@ -182,11 +183,11 @@ fn write_logical_vector(writer: &mut Vec<u8>, vec: &[Logical]) -> Result<()> {
 }
 
 /// Write a character vector.
-fn write_character_vector(writer: &mut Vec<u8>, vec: &[String]) -> Result<()> {
+fn write_character_vector(writer: &mut Vec<u8>, vec: &[Arc<str>]) -> Result<()> {
     write_flags(writer, STRSXP, false, false)?;
     writer.write_u32::<BigEndian>(vec.len() as u32)?;
     for s in vec {
-        write_charsxp(writer, s)?;
+        write_charsxp(writer, s.as_ref())?;
     }
     Ok(())
 }
@@ -407,15 +408,15 @@ fn write_builtin(writer: &mut Vec<u8>, name: &str) -> Result<()> {
 /// Write a data frame.
 fn write_dataframe(
     writer: &mut Vec<u8>,
-    columns: &HashMap<String, RObject>,
-    row_names: &[String],
+    columns: &HashMap<Arc<str>, RObject>,
+    row_names: &[Arc<str>],
     ref_table: &mut RefTable,
 ) -> Result<()> {
     // Convert HashMap to Vec for consistent ordering
     let mut cols_vec: Vec<_> = columns.iter().collect();
-    cols_vec.sort_by_key(|(name, _)| *name);
+    cols_vec.sort_by(|(a, _), (b, _)| a.as_ref().cmp(b.as_ref()));
 
-    let column_names: Vec<String> = cols_vec.iter().map(|(name, _)| (*name).clone()).collect();
+    let column_names: Vec<Arc<str>> = cols_vec.iter().map(|(name, _)| (*name).clone()).collect();
     let column_values: Vec<&RObject> = cols_vec.iter().map(|(_, obj)| *obj).collect();
 
     // Write as a list with attributes
@@ -429,9 +430,9 @@ fn write_dataframe(
 
     // Write attributes (names, row.names, class)
     let mut attrs = Attributes::new();
-    attrs.insert("names".to_string(), RObject::Character(column_names));
-    attrs.insert("row.names".to_string(), RObject::Character(row_names.to_vec()));
-    attrs.insert("class".to_string(), RObject::Character(vec!["data.frame".to_string()]));
+    attrs.insert(Arc::from("names"), RObject::Character(column_names));
+    attrs.insert(Arc::from("row.names"), RObject::Character(row_names.to_vec()));
+    attrs.insert(Arc::from("class"), RObject::Character(vec![Arc::from("data.frame")]));
 
     write_attributes(writer, &attrs, ref_table)?;
 
@@ -442,7 +443,7 @@ fn write_dataframe(
 fn write_factor(
     writer: &mut Vec<u8>,
     values: &[i32],
-    levels: &[String],
+    levels: &[Arc<str>],
     ordered: bool,
     ref_table: &mut RefTable,
 ) -> Result<()> {
@@ -455,14 +456,14 @@ fn write_factor(
 
     // Write attributes (levels and class)
     let mut attrs = Attributes::new();
-    attrs.insert("levels".to_string(), RObject::Character(levels.to_vec()));
+    attrs.insert(Arc::from("levels"), RObject::Character(levels.to_vec()));
 
     let class = if ordered {
-        vec!["ordered".to_string(), "factor".to_string()]
+        vec![Arc::from("ordered"), Arc::from("factor")]
     } else {
-        vec!["factor".to_string()]
+        vec![Arc::from("factor")]
     };
-    attrs.insert("class".to_string(), RObject::Character(class));
+    attrs.insert(Arc::from("class"), RObject::Character(class));
 
     write_attributes(writer, &attrs, ref_table)?;
 
@@ -473,7 +474,7 @@ fn write_factor(
 fn write_s3_object(
     writer: &mut Vec<u8>,
     base: &RObject,
-    class: &[String],
+    class: &[Arc<str>],
     attributes: &Attributes,
     ref_table: &mut RefTable,
 ) -> Result<()> {
@@ -508,7 +509,7 @@ fn write_s3_object(
 
             // Write attributes FIRST (before CAR/CDR)
             let mut attrs = attributes.clone();
-            attrs.insert("class".to_string(), RObject::Character(class.to_vec()));
+            attrs.insert(Arc::from("class"), RObject::Character(class.to_vec()));
             write_attributes(writer, &attrs, ref_table)?;
 
             // Now write the CAR/CDR
@@ -543,20 +544,20 @@ fn write_s3_object(
 
     // Write attributes with class added
     let mut attrs = attributes.clone();
-    attrs.insert("class".to_string(), RObject::Character(class.to_vec()));
+    attrs.insert(Arc::from("class"), RObject::Character(class.to_vec()));
     write_attributes(writer, &attrs, ref_table)?;
 
     Ok(())
 }
 
 /// Write an S4 object.
-fn write_s4_object(writer: &mut Vec<u8>, class: &[String], slots: &HashMap<String, RObject>, ref_table: &mut RefTable) -> Result<()> {
+fn write_s4_object(writer: &mut Vec<u8>, class: &[Arc<str>], slots: &HashMap<Arc<str>, RObject>, ref_table: &mut RefTable) -> Result<()> {
     // S4 objects are written as S4SXP with attributes
     write_flags(writer, S4SXP, true, false)?;
 
     // Write attributes (class + slots)
     let mut attrs = Attributes::new();
-    attrs.insert("class".to_string(), RObject::Character(class.to_vec()));
+    attrs.insert(Arc::from("class"), RObject::Character(class.to_vec()));
 
     // Add all slots as attributes
     for (name, value) in slots {
@@ -619,17 +620,15 @@ fn write_attributes(writer: &mut Vec<u8>, attributes: &Attributes, ref_table: &m
     // Convert to pairlist elements
     let mut elements = Vec::new();
 
-    // Sort keys for consistent output
-    let mut keys: Vec<_> = attributes.attrs.keys().collect();
-    keys.sort();
+    // Sort keys for consistent output (sort by string content)
+    let mut sorted_attrs: Vec<_> = attributes.attrs.iter().collect();
+    sorted_attrs.sort_by_key(|(k, _)| k.as_ref());
 
-    for key in keys {
-        if let Some(value) = attributes.attrs.get(key) {
-            elements.push(PairlistElement {
-                tag: Some(key.clone()),
-                value: value.clone(),
-            });
-        }
+    for (key, value) in sorted_attrs {
+        elements.push(PairlistElement {
+            tag: Some(key.clone()),
+            value: (**value).clone(),  // Unbox the RObject
+        });
     }
 
     // Write the pairlist

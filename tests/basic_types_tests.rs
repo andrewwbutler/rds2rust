@@ -5,6 +5,7 @@
 use rds2rust::{read_rds, write_rds, Logical, RObject};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 fn test_data_exists() -> bool {
     Path::new("tests/data").exists()
@@ -329,7 +330,7 @@ fn test_character_single() {
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 1);
-            assert_eq!(vec[0], "hello");
+            assert_eq!(vec[0].as_ref(), "hello");
         }
         other => panic!("Expected Character, got {:?}", other),
     }
@@ -348,9 +349,9 @@ fn test_character_vector() {
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 3);
-            assert_eq!(vec[0], "foo");
-            assert_eq!(vec[1], "bar");
-            assert_eq!(vec[2], "baz");
+            assert_eq!(vec[0].as_ref(), "foo");
+            assert_eq!(vec[1].as_ref(), "bar");
+            assert_eq!(vec[2].as_ref(), "baz");
         }
         other => panic!("Expected Character vector, got {:?}", other),
     }
@@ -369,9 +370,9 @@ fn test_character_with_na() {
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 3);
-            assert_eq!(vec[0], "test");
-            assert_eq!(vec[1], "NA"); // NA_character_ is currently parsed as "NA"
-            assert_eq!(vec[2], "string");
+            assert_eq!(vec[0].as_ref(), "test");
+            assert_eq!(vec[1].as_ref(), "NA"); // NA_character_ is currently parsed as "NA"
+            assert_eq!(vec[2].as_ref(), "string");
         }
         other => panic!("Expected Character vector with NA, got {:?}", other),
     }
@@ -397,7 +398,7 @@ fn test_character_empty() {
 
 #[test]
 fn test_character_roundtrip() {
-    let obj = RObject::Character(vec!["hello".to_string(), "world".to_string()]);
+    let obj = RObject::Character(vec![Arc::from("hello"), Arc::from("world")]);
     let serialized = write_rds(&obj).expect("Failed to write character vector");
     let deserialized = read_rds(&serialized).expect("Failed to read character vector");
     assert_eq!(obj, deserialized);

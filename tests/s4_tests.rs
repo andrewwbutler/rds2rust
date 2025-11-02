@@ -3,6 +3,7 @@
 use rds2rust::{read_rds, write_rds, Logical, RObject};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 fn test_data_exists() -> bool {
     Path::new("tests/data").exists()
@@ -28,25 +29,28 @@ fn test_s4_simple() {
     let obj = read_rds(&data).expect("Failed to parse simple S4 object");
 
     match obj {
-        RObject::S4Object { class, slots } => {
+        RObject::S4Object(s4_data) => {
+            let class = &s4_data.class;
+            let slots = &s4_data.slots;
+
             // Check the class
             assert_eq!(class.len(), 1);
-            assert_eq!(class[0], "Animal");
+            assert_eq!(class[0].as_ref(), "Animal");
 
             // Check the slots
             assert_eq!(slots.len(), 3);
 
             // Check species slot
-            match slots.get("species") {
+            match slots.get(&Arc::from("species")) {
                 Some(RObject::Character(species)) => {
                     assert_eq!(species.len(), 1);
-                    assert_eq!(species[0], "Tiger");
+                    assert_eq!(species[0].as_ref(), "Tiger");
                 }
                 _ => panic!("Expected 'species' slot with character value"),
             }
 
             // Check age slot
-            match slots.get("age") {
+            match slots.get(&Arc::from("age")) {
                 Some(RObject::Real(age)) => {
                     assert_eq!(age.len(), 1);
                     assert_eq!(age[0], 5.0);
@@ -55,10 +59,10 @@ fn test_s4_simple() {
             }
 
             // Check habitat slot
-            match slots.get("habitat") {
+            match slots.get(&Arc::from("habitat")) {
                 Some(RObject::Character(habitat)) => {
                     assert_eq!(habitat.len(), 1);
-                    assert_eq!(habitat[0], "Rainforest");
+                    assert_eq!(habitat[0].as_ref(), "Rainforest");
                 }
                 _ => panic!("Expected 'habitat' slot with character value"),
             }
@@ -78,21 +82,24 @@ fn test_s4_inheritance() {
     let obj = read_rds(&data).expect("Failed to parse S4 object with inheritance");
 
     match obj {
-        RObject::S4Object { class, slots } => {
+        RObject::S4Object(s4_data) => {
+            let class = &s4_data.class;
+            let slots = &s4_data.slots;
+
             // Check the class (should show inheritance)
             assert!(class.len() >= 1);
-            assert_eq!(class[0], "Bird");
+            assert_eq!(class[0].as_ref(), "Bird");
 
             // Check slots from both parent and child classes
             assert!(slots.len() >= 5);
 
             // Parent class slots (from Animal)
-            assert!(slots.get("species").is_some());
-            assert!(slots.get("age").is_some());
-            assert!(slots.get("habitat").is_some());
+            assert!(slots.get(&Arc::from("species")).is_some());
+            assert!(slots.get(&Arc::from("age")).is_some());
+            assert!(slots.get(&Arc::from("habitat")).is_some());
 
             // Child class slots (from Bird)
-            match slots.get("wingspan") {
+            match slots.get(&Arc::from("wingspan")) {
                 Some(RObject::Real(wingspan)) => {
                     assert_eq!(wingspan.len(), 1);
                     assert_eq!(wingspan[0], 1.2);
@@ -100,7 +107,7 @@ fn test_s4_inheritance() {
                 _ => panic!("Expected 'wingspan' slot"),
             }
 
-            match slots.get("can_fly") {
+            match slots.get(&Arc::from("can_fly")) {
                 Some(RObject::Logical(can_fly)) => {
                     assert_eq!(can_fly.len(), 1);
                     assert_eq!(can_fly[0], Logical::True);
@@ -123,16 +130,19 @@ fn test_s4_complex() {
     let obj = read_rds(&data).expect("Failed to parse complex S4 object");
 
     match obj {
-        RObject::S4Object { class, slots } => {
+        RObject::S4Object(s4_data) => {
+            let class = &s4_data.class;
+            let slots = &s4_data.slots;
+
             // Check the class
             assert_eq!(class.len(), 1);
-            assert_eq!(class[0], "Aquarium");
+            assert_eq!(class[0].as_ref(), "Aquarium");
 
             // Check the slots
             assert_eq!(slots.len(), 3);
 
             // Check temperatures slot (numeric vector)
-            match slots.get("temperatures") {
+            match slots.get(&Arc::from("temperatures")) {
                 Some(RObject::Real(temps)) => {
                     assert_eq!(temps.len(), 3);
                     assert_eq!(temps[0], 24.5);
@@ -143,16 +153,18 @@ fn test_s4_complex() {
             }
 
             // Check fish_species slot (character vector)
-            match slots.get("fish_species") {
+            match slots.get(&Arc::from("fish_species")) {
                 Some(RObject::Character(species)) => {
                     assert_eq!(species.len(), 3);
-                    assert_eq!(species, &vec!["clownfish", "tang", "angelfish"]);
+                    assert_eq!(species[0].as_ref(), "clownfish");
+                    assert_eq!(species[1].as_ref(), "tang");
+                    assert_eq!(species[2].as_ref(), "angelfish");
                 }
                 _ => panic!("Expected 'fish_species' slot with character vector"),
             }
 
             // Check saltwater slot (logical)
-            match slots.get("saltwater") {
+            match slots.get(&Arc::from("saltwater")) {
                 Some(RObject::Logical(saltwater)) => {
                     assert_eq!(saltwater.len(), 1);
                     assert_eq!(saltwater[0], Logical::True);

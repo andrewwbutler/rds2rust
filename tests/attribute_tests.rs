@@ -51,9 +51,9 @@ fn test_int_named() {
             match names.unwrap() {
                 RObject::Character(names_vec) => {
                     assert_eq!(names_vec.len(), 3);
-                    assert_eq!(names_vec[0], "a");
-                    assert_eq!(names_vec[1], "b");
-                    assert_eq!(names_vec[2], "c");
+                    assert_eq!(names_vec[0].as_ref(), "a");
+                    assert_eq!(names_vec[1].as_ref(), "b");
+                    assert_eq!(names_vec[2].as_ref(), "c");
                 }
                 _ => panic!("Expected Character vector for names"),
             }
@@ -92,9 +92,9 @@ fn test_real_named() {
             match names.unwrap() {
                 RObject::Character(names_vec) => {
                     assert_eq!(names_vec.len(), 3);
-                    assert_eq!(names_vec[0], "x");
-                    assert_eq!(names_vec[1], "y");
-                    assert_eq!(names_vec[2], "z");
+                    assert_eq!(names_vec[0].as_ref(), "x");
+                    assert_eq!(names_vec[1].as_ref(), "y");
+                    assert_eq!(names_vec[2].as_ref(), "z");
                 }
                 _ => panic!("Expected Character vector for names"),
             }

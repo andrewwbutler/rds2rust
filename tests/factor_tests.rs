@@ -3,6 +3,7 @@
 use rds2rust::{read_rds, write_rds, RObject};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 fn test_data_exists() -> bool {
     Path::new("tests/data").exists()
@@ -28,13 +29,19 @@ fn test_factor_simple() {
     let obj = read_rds(&data).expect("Failed to parse simple factor");
 
     match obj {
-        RObject::Factor { values, levels, ordered } => {
+        RObject::Factor(factor_data) => {
+            let values = &factor_data.values;
+            let levels = &factor_data.levels;
+            let ordered = factor_data.ordered;
+
             // Check it's not ordered
             assert!(!ordered);
 
             // Check levels
             assert_eq!(levels.len(), 3);
-            assert_eq!(levels, vec!["high", "low", "medium"]);
+            assert_eq!(levels[0].as_ref(), "high");
+            assert_eq!(levels[1].as_ref(), "low");
+            assert_eq!(levels[2].as_ref(), "medium");
 
             // Check values (1-based indices into levels)
             assert_eq!(values.len(), 5);
@@ -62,13 +69,19 @@ fn test_factor_ordered() {
     let obj = read_rds(&data).expect("Failed to parse ordered factor");
 
     match obj {
-        RObject::Factor { values, levels, ordered } => {
+        RObject::Factor(factor_data) => {
+            let values = &factor_data.values;
+            let levels = &factor_data.levels;
+            let ordered = factor_data.ordered;
+
             // Check it's ordered
             assert!(ordered);
 
             // Check levels (in order)
             assert_eq!(levels.len(), 3);
-            assert_eq!(levels, vec!["low", "medium", "high"]);
+            assert_eq!(levels[0].as_ref(), "low");
+            assert_eq!(levels[1].as_ref(), "medium");
+            assert_eq!(levels[2].as_ref(), "high");
 
             // Check values (1-based indices into levels)
             assert_eq!(values.len(), 4);

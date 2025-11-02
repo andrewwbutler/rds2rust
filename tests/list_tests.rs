@@ -3,6 +3,7 @@
 use rds2rust::{read_rds, write_rds, RObject};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 fn test_data_exists() -> bool {
     Path::new("tests/data").exists()
@@ -70,7 +71,7 @@ fn test_list_empty() {
 fn test_list_roundtrip() {
     let obj = RObject::List(vec![
         RObject::Integer(vec![1, 2, 3]),
-        RObject::Character(vec!["test".to_string()]),
+        RObject::Character(vec![Arc::from("test")]),
         RObject::Real(vec![4.5]),
     ]);
     let serialized = write_rds(&obj).expect("Failed to write list");

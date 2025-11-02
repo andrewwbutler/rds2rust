@@ -3,6 +3,7 @@
 use rds2rust::{read_rds, write_rds, Logical, RObject};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 fn test_data_exists() -> bool {
     Path::new("tests/data").exists()
@@ -28,12 +29,15 @@ fn test_dataframe_simple() {
     let obj = read_rds(&data).expect("Failed to parse simple data frame");
 
     match obj {
-        RObject::DataFrame { columns, row_names } => {
+        RObject::DataFrame(data) => {
+            let columns = &data.columns;
+            let row_names = &data.row_names;
+
             // Check that we have 3 columns
             assert_eq!(columns.len(), 3);
 
             // Check column "x" (integers 1, 2, 3)
-            match columns.get("x") {
+            match columns.get(&Arc::from("x")) {
                 Some(RObject::Integer(vec)) => {
                     assert_eq!(vec.len(), 3);
                     assert_eq!(vec, &vec![1, 2, 3]);
@@ -42,18 +46,18 @@ fn test_dataframe_simple() {
             }
 
             // Check column "y" (characters "a", "b", "c")
-            match columns.get("y") {
+            match columns.get(&Arc::from("y")) {
                 Some(RObject::Character(vec)) => {
                     assert_eq!(vec.len(), 3);
-                    assert_eq!(vec[0], "a");
-                    assert_eq!(vec[1], "b");
-                    assert_eq!(vec[2], "c");
+                    assert_eq!(vec[0].as_ref(), "a");
+                    assert_eq!(vec[1].as_ref(), "b");
+                    assert_eq!(vec[2].as_ref(), "c");
                 }
                 _ => panic!("Expected character column 'y'"),
             }
 
             // Check column "z" (logicals TRUE, FALSE, TRUE)
-            match columns.get("z") {
+            match columns.get(&Arc::from("z")) {
                 Some(RObject::Logical(vec)) => {
                     assert_eq!(vec.len(), 3);
                     assert_eq!(vec[0], Logical::True);
@@ -81,12 +85,14 @@ fn test_dataframe_mixed() {
     let obj = read_rds(&data).expect("Failed to parse mixed data frame");
 
     match obj {
-        RObject::DataFrame { columns, .. } => {
+        RObject::DataFrame(data) => {
+            let columns = &data.columns;
+
             // Check that we have 4 columns
             assert_eq!(columns.len(), 4);
 
             // Verify int_col
-            match columns.get("int_col") {
+            match columns.get(&Arc::from("int_col")) {
                 Some(RObject::Integer(vec)) => {
                     assert_eq!(vec, &vec![1, 2, 3, 4]);
                 }
@@ -94,7 +100,7 @@ fn test_dataframe_mixed() {
             }
 
             // Verify real_col
-            match columns.get("real_col") {
+            match columns.get(&Arc::from("real_col")) {
                 Some(RObject::Real(vec)) => {
                     assert_eq!(vec.len(), 4);
                     assert_eq!(vec[0], 1.1);
@@ -104,17 +110,17 @@ fn test_dataframe_mixed() {
             }
 
             // Verify char_col
-            match columns.get("char_col") {
+            match columns.get(&Arc::from("char_col")) {
                 Some(RObject::Character(vec)) => {
                     assert_eq!(vec.len(), 4);
-                    assert_eq!(vec[0], "foo");
-                    assert_eq!(vec[3], "qux");
+                    assert_eq!(vec[0].as_ref(), "foo");
+                    assert_eq!(vec[3].as_ref(), "qux");
                 }
                 _ => panic!("Expected character column 'char_col'"),
             }
 
             // Verify logical_col
-            match columns.get("logical_col") {
+            match columns.get(&Arc::from("logical_col")) {
                 Some(RObject::Logical(vec)) => {
                     assert_eq!(vec.len(), 4);
                     assert_eq!(vec[0], Logical::True);
@@ -138,25 +144,30 @@ fn test_dataframe_rownames() {
     let obj = read_rds(&data).expect("Failed to parse data frame with row names");
 
     match obj {
-        RObject::DataFrame { columns, row_names } => {
+        RObject::DataFrame(data) => {
+            let columns = &data.columns;
+            let row_names = &data.row_names;
+
             // Check columns
             assert_eq!(columns.len(), 2);
 
             // Check row names
             assert_eq!(row_names.len(), 3);
-            assert_eq!(row_names[0], "person1");
-            assert_eq!(row_names[1], "person2");
-            assert_eq!(row_names[2], "person3");
+            assert_eq!(row_names[0].as_ref(), "person1");
+            assert_eq!(row_names[1].as_ref(), "person2");
+            assert_eq!(row_names[2].as_ref(), "person3");
 
             // Verify data
-            match columns.get("name") {
+            match columns.get(&Arc::from("name")) {
                 Some(RObject::Character(vec)) => {
-                    assert_eq!(vec, &vec!["Alice", "Bob", "Charlie"]);
+                    assert_eq!(vec[0].as_ref(), "Alice");
+                    assert_eq!(vec[1].as_ref(), "Bob");
+                    assert_eq!(vec[2].as_ref(), "Charlie");
                 }
                 _ => panic!("Expected character column 'name'"),
             }
 
-            match columns.get("age") {
+            match columns.get(&Arc::from("age")) {
                 Some(RObject::Integer(vec)) => {
                     assert_eq!(vec, &vec![25, 30, 35]);
                 }

@@ -1,6 +1,8 @@
 //! Type definitions for R objects.
 
+use smallvec::SmallVec;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// Represents any R object that can be stored in an RDS file.
 #[derive(Debug, Clone, PartialEq)]
@@ -17,8 +19,8 @@ pub enum RObject {
     /// Logical vector
     Logical(Vec<Logical>),
 
-    /// Character vector
-    Character(Vec<String>),
+    /// Character vector (using Arc<str> for string interning)
+    Character(Vec<Arc<str>>),
 
     /// Raw (byte) vector
     Raw(Vec<u8>),
@@ -67,40 +69,30 @@ pub enum RObject {
     /// Special primitive function (like 'if', 'for', 'while')
     /// These are internal R functions with special evaluation rules
     Special {
-        name: String,  // Function name
+        name: Arc<str>,  // Function name (interned)
     },
 
     /// Builtin primitive function (like 'sum', 'c', '+')
     /// These are internal R functions evaluated normally
     Builtin {
-        name: String,  // Function name
+        name: Arc<str>,  // Function name (interned)
     },
 
     /// Data frame (list with class="data.frame")
-    DataFrame {
-        columns: HashMap<String, RObject>,
-        row_names: Vec<String>,
-    },
+    /// Boxed to reduce enum size
+    DataFrame(Box<DataFrameData>),
 
     /// Factor (categorical variable with levels)
-    Factor {
-        values: Vec<i32>,      // Integer indices (1-based, 0 = NA)
-        levels: Vec<String>,   // Level labels
-        ordered: bool,         // Whether it's an ordered factor
-    },
+    /// Boxed to reduce enum size
+    Factor(Box<FactorData>),
 
     /// S3 object (any object with a class attribute)
-    S3Object {
-        base: Box<RObject>,
-        class: Vec<String>,
-        attributes: Attributes,
-    },
+    /// Boxed to reduce enum size
+    S3Object(Box<S3ObjectData>),
 
     /// S4 object (formal object with slots)
-    S4Object {
-        class: Vec<String>,
-        slots: HashMap<String, RObject>,
-    },
+    /// Boxed to reduce enum size
+    S4Object(Box<S4ObjectData>),
 
     /// Object with attributes (no class)
     WithAttributes {
@@ -109,10 +101,40 @@ pub enum RObject {
     },
 }
 
+/// Data frame structure (boxed to reduce RObject enum size)
+#[derive(Debug, Clone, PartialEq)]
+pub struct DataFrameData {
+    pub columns: HashMap<Arc<str>, RObject>,
+    pub row_names: Vec<Arc<str>>,
+}
+
+/// Factor structure (boxed to reduce RObject enum size)
+#[derive(Debug, Clone, PartialEq)]
+pub struct FactorData {
+    pub values: Vec<i32>,       // Integer indices (1-based, 0 = NA)
+    pub levels: Vec<Arc<str>>,  // Level labels (interned)
+    pub ordered: bool,          // Whether it's an ordered factor
+}
+
+/// S3 object structure (boxed to reduce RObject enum size)
+#[derive(Debug, Clone, PartialEq)]
+pub struct S3ObjectData {
+    pub base: Box<RObject>,
+    pub class: Vec<Arc<str>>,  // Class names (interned)
+    pub attributes: Attributes,
+}
+
+/// S4 object structure (boxed to reduce RObject enum size)
+#[derive(Debug, Clone, PartialEq)]
+pub struct S4ObjectData {
+    pub class: Vec<Arc<str>>,           // Class names (interned)
+    pub slots: HashMap<Arc<str>, RObject>,  // Slot names (interned)
+}
+
 /// An element in a pairlist, optionally tagged
 #[derive(Debug, Clone, PartialEq)]
 pub struct PairlistElement {
-    pub tag: Option<String>,
+    pub tag: Option<Arc<str>>,  // Tag name (interned)
     pub value: RObject,
 }
 
@@ -132,28 +154,48 @@ pub struct Complex {
 }
 
 /// Attributes attached to R objects
+/// Optimized with SmallVec to avoid heap allocation for common case of 0-2 attributes
 #[derive(Debug, Clone, PartialEq)]
 pub struct Attributes {
-    pub attrs: HashMap<String, RObject>,
+    /// Most R objects have 0-2 attributes (names, class, dim, etc.)
+    /// SmallVec stores up to 2 inline, avoiding HashMap overhead
+    /// Box<RObject> breaks the recursion cycle between Attributes and RObject
+    pub attrs: SmallVec<[(Arc<str>, Box<RObject>); 2]>,
 }
 
 impl Attributes {
     pub fn new() -> Self {
         Self {
-            attrs: HashMap::new(),
+            attrs: SmallVec::new(),
         }
     }
 
-    pub fn insert(&mut self, key: String, value: RObject) {
-        self.attrs.insert(key, value);
+    pub fn insert(&mut self, key: Arc<str>, value: RObject) {
+        // Check if key already exists and update it
+        for (k, v) in self.attrs.iter_mut() {
+            if k.as_ref() == key.as_ref() {
+                *v = Box::new(value);
+                return;
+            }
+        }
+        // Key doesn't exist, add new entry
+        self.attrs.push((key, Box::new(value)));
     }
 
     pub fn get(&self, key: &str) -> Option<&RObject> {
-        self.attrs.get(key)
+        self.attrs
+            .iter()
+            .find(|(k, _)| k.as_ref() == key)
+            .map(|(_, v)| v.as_ref())
     }
 
     pub fn is_empty(&self) -> bool {
         self.attrs.is_empty()
+    }
+
+    /// Get iterator over attribute entries
+    pub fn iter(&self) -> impl Iterator<Item = (&Arc<str>, &RObject)> {
+        self.attrs.iter().map(|(k, v)| (k, v.as_ref()))
     }
 }
 

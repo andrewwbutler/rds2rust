@@ -3,6 +3,7 @@
 use rds2rust::{read_rds, write_rds, RObject};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 fn test_data_exists() -> bool {
     Path::new("tests/data").exists()
@@ -28,14 +29,18 @@ fn test_s3_simple() {
     let obj = read_rds(&data).expect("Failed to parse simple S3 object");
 
     match obj {
-        RObject::S3Object { base, class, attributes } => {
+        RObject::S3Object(s3_data) => {
+            let base = &s3_data.base;
+            let class = &s3_data.class;
+            let attributes = &s3_data.attributes;
+
             // Check the class
             assert_eq!(class.len(), 1);
-            assert_eq!(class[0], "my_custom_class");
+            assert_eq!(class[0].as_ref(), "my_custom_class");
 
             // Check the base object is a list
-            match *base {
-                RObject::List(ref elements) => {
+            match base.as_ref() {
+                RObject::List(elements) => {
                     assert_eq!(elements.len(), 3);
                 }
                 _ => panic!("Expected List as base object"),
@@ -59,15 +64,18 @@ fn test_s3_multi_class() {
     let obj = read_rds(&data).expect("Failed to parse S3 object with multiple classes");
 
     match obj {
-        RObject::S3Object { base, class, .. } => {
+        RObject::S3Object(s3_data) => {
+            let base = &s3_data.base;
+            let class = &s3_data.class;
+
             // Check multiple classes (inheritance)
             assert_eq!(class.len(), 2);
-            assert_eq!(class[0], "special_class");
-            assert_eq!(class[1], "base_class");
+            assert_eq!(class[0].as_ref(), "special_class");
+            assert_eq!(class[1].as_ref(), "base_class");
 
             // Check the base object
-            match *base {
-                RObject::List(ref elements) => {
+            match base.as_ref() {
+                RObject::List(elements) => {
                     assert_eq!(elements.len(), 2);
                 }
                 _ => panic!("Expected List as base object"),
@@ -88,14 +96,18 @@ fn test_s3_vector() {
     let obj = read_rds(&data).expect("Failed to parse S3 object on vector");
 
     match obj {
-        RObject::S3Object { base, class, attributes } => {
+        RObject::S3Object(s3_data) => {
+            let base = &s3_data.base;
+            let class = &s3_data.class;
+            let attributes = &s3_data.attributes;
+
             // Check the class
             assert_eq!(class.len(), 1);
-            assert_eq!(class[0], "custom_vector");
+            assert_eq!(class[0].as_ref(), "custom_vector");
 
             // Check the base object is a vector
-            match *base {
-                RObject::Real(ref vec) => {
+            match base.as_ref() {
+                RObject::Real(vec) => {
                     assert_eq!(vec.len(), 3);
                     assert_eq!(vec[0], 10.0);
                     assert_eq!(vec[1], 20.0);
@@ -108,7 +120,7 @@ fn test_s3_vector() {
             match attributes.get("description") {
                 Some(RObject::Character(desc)) => {
                     assert_eq!(desc.len(), 1);
-                    assert_eq!(desc[0], "A custom vector class");
+                    assert_eq!(desc[0].as_ref(), "A custom vector class");
                 }
                 _ => panic!("Expected description attribute"),
             }

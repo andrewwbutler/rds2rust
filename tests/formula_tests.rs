@@ -5,6 +5,7 @@
 use rds2rust::{read_rds, write_rds, RObject};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 fn test_data_exists() -> bool {
     Path::new("tests/data").exists()
@@ -31,13 +32,16 @@ fn test_formula_simple() {
 
     // Formulas are language objects with class="formula"
     match obj {
-        RObject::S3Object { base, class, .. } => {
+        RObject::S3Object(s3_data) => {
+            let base = &s3_data.base;
+            let class = &s3_data.class;
+
             // Check the class
             assert_eq!(class.len(), 1);
-            assert_eq!(class[0], "formula");
+            assert_eq!(class[0].as_ref(), "formula");
 
             // The base should be a language object representing y ~ x
-            match *base {
+            match base.as_ref() {
                 RObject::Language(_) => {
                     // Good, formula is a language object
                 }
@@ -59,9 +63,12 @@ fn test_formula_multiple() {
     let obj = read_rds(&data).expect("Failed to parse formula with multiple predictors");
 
     match obj {
-        RObject::S3Object { base, class, .. } => {
-            assert_eq!(class[0], "formula");
-            match *base {
+        RObject::S3Object(s3_data) => {
+            let base = &s3_data.base;
+            let class = &s3_data.class;
+
+            assert_eq!(class[0].as_ref(), "formula");
+            match base.as_ref() {
                 RObject::Language(_) => {
                     // Good, y ~ x + z is a language object
                 }
@@ -83,9 +90,12 @@ fn test_formula_interaction() {
     let obj = read_rds(&data).expect("Failed to parse formula with interaction");
 
     match obj {
-        RObject::S3Object { base, class, .. } => {
-            assert_eq!(class[0], "formula");
-            match *base {
+        RObject::S3Object(s3_data) => {
+            let base = &s3_data.base;
+            let class = &s3_data.class;
+
+            assert_eq!(class[0].as_ref(), "formula");
+            match base.as_ref() {
                 RObject::Language(_) => {
                     // Good, y ~ x * z is a language object
                 }
@@ -107,9 +117,12 @@ fn test_formula_functions() {
     let obj = read_rds(&data).expect("Failed to parse formula with functions");
 
     match obj {
-        RObject::S3Object { base, class, .. } => {
-            assert_eq!(class[0], "formula");
-            match *base {
+        RObject::S3Object(s3_data) => {
+            let base = &s3_data.base;
+            let class = &s3_data.class;
+
+            assert_eq!(class[0].as_ref(), "formula");
+            match base.as_ref() {
                 RObject::Language(_) => {
                     // Good, log(y) ~ sqrt(x) + I(z^2) is a language object
                 }
@@ -131,9 +144,12 @@ fn test_formula_no_intercept() {
     let obj = read_rds(&data).expect("Failed to parse formula without intercept");
 
     match obj {
-        RObject::S3Object { base, class, .. } => {
-            assert_eq!(class[0], "formula");
-            match *base {
+        RObject::S3Object(s3_data) => {
+            let base = &s3_data.base;
+            let class = &s3_data.class;
+
+            assert_eq!(class[0].as_ref(), "formula");
+            match base.as_ref() {
                 RObject::Language(_) => {
                     // Good, y ~ x - 1 is a language object
                 }
@@ -155,9 +171,12 @@ fn test_formula_one_sided() {
     let obj = read_rds(&data).expect("Failed to parse one-sided formula");
 
     match obj {
-        RObject::S3Object { base, class, .. } => {
-            assert_eq!(class[0], "formula");
-            match *base {
+        RObject::S3Object(s3_data) => {
+            let base = &s3_data.base;
+            let class = &s3_data.class;
+
+            assert_eq!(class[0].as_ref(), "formula");
+            match base.as_ref() {
                 RObject::Language(_) => {
                     // Good, ~ x + y is a language object
                 }

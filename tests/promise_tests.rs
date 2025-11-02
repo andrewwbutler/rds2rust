@@ -71,7 +71,7 @@ fn test_special_if() {
 
     match obj {
         rds2rust::RObject::Special { name } => {
-            assert_eq!(name, "if");
+            assert_eq!(name.as_ref(), "if");
         }
         _ => panic!("Expected Special function, got: {:?}", obj),
     }
@@ -105,7 +105,7 @@ fn test_special_for() {
 
     match obj {
         rds2rust::RObject::Special { name } => {
-            assert_eq!(name, "for");
+            assert_eq!(name.as_ref(), "for");
         }
         _ => panic!("Expected Special function, got: {:?}", obj),
     }
@@ -139,7 +139,7 @@ fn test_special_while() {
 
     match obj {
         rds2rust::RObject::Special { name } => {
-            assert_eq!(name, "while");
+            assert_eq!(name.as_ref(), "while");
         }
         _ => panic!("Expected Special function, got: {:?}", obj),
     }
@@ -173,7 +173,7 @@ fn test_special_function() {
 
     match obj {
         rds2rust::RObject::Special { name } => {
-            assert_eq!(name, "function");
+            assert_eq!(name.as_ref(), "function");
         }
         _ => panic!("Expected Special function, got: {:?}", obj),
     }
@@ -207,7 +207,7 @@ fn test_special_bracket() {
 
     match obj {
         rds2rust::RObject::Special { name } => {
-            assert_eq!(name, "[");
+            assert_eq!(name.as_ref(), "[");
         }
         _ => panic!("Expected Special function, got: {:?}", obj),
     }
@@ -241,7 +241,7 @@ fn test_builtin_plus() {
 
     match obj {
         rds2rust::RObject::Builtin { name } => {
-            assert_eq!(name, "+");
+            assert_eq!(name.as_ref(), "+");
         }
         _ => panic!("Expected Builtin function, got: {:?}", obj),
     }
@@ -279,7 +279,7 @@ fn test_builtin_sum() {
 
     match obj {
         rds2rust::RObject::Builtin { name } => {
-            assert_eq!(name, "sum");
+            assert_eq!(name.as_ref(), "sum");
         }
         _ => panic!("Expected Builtin function, got: {:?}", obj),
     }
@@ -313,7 +313,7 @@ fn test_builtin_c() {
 
     match obj {
         rds2rust::RObject::Builtin { name } => {
-            assert_eq!(name, "c");
+            assert_eq!(name.as_ref(), "c");
         }
         _ => panic!("Expected Builtin function, got: {:?}", obj),
     }
@@ -347,7 +347,7 @@ fn test_builtin_sqrt() {
 
     match obj {
         rds2rust::RObject::Builtin { name } => {
-            assert_eq!(name, "sqrt");
+            assert_eq!(name.as_ref(), "sqrt");
         }
         _ => panic!("Expected Builtin function, got: {:?}", obj),
     }
@@ -381,7 +381,7 @@ fn test_builtin_length() {
 
     match obj {
         rds2rust::RObject::Builtin { name } => {
-            assert_eq!(name, "length");
+            assert_eq!(name.as_ref(), "length");
         }
         _ => panic!("Expected Builtin function, got: {:?}", obj),
     }
@@ -415,7 +415,7 @@ fn test_builtin_min() {
 
     match obj {
         rds2rust::RObject::Builtin { name } => {
-            assert_eq!(name, "min");
+            assert_eq!(name.as_ref(), "min");
         }
         _ => panic!("Expected Builtin function, got: {:?}", obj),
     }

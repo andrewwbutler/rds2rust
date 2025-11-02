@@ -2,11 +2,12 @@
 
 use crate::constants::*;
 use crate::error::{Error, Result};
-use crate::types::{Attributes, Logical, PairlistElement, RObject};
+use crate::types::{Attributes, DataFrameData, FactorData, Logical, PairlistElement, RObject, S3ObjectData, S4ObjectData};
 use byteorder::{BigEndian, ReadBytesExt};
 use flate2::read::GzDecoder;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
+use std::sync::Arc;
 
 /// Reference table for tracking objects during deserialization.
 /// R's serialization uses reference tracking to handle shared and circular references.
@@ -220,7 +221,7 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable) -> Result<
             // Sometimes CHARSXP appears standalone (like for encoding markers)
             let string = parse_charsxp_content(cursor)?;
             // Return as a single-element character vector for now
-            RObject::Character(vec![string])
+            RObject::Character(vec![Arc::from(string.as_str())])
         }
         CLOSXP => parse_closure(cursor, has_tag, ref_table)?,
         ENVSXP => parse_environment(cursor, ref_table)?,
@@ -394,7 +395,8 @@ fn parse_character_vector(cursor: &mut Cursor<&[u8]>, _ref_table: &mut RefTable)
     for _ in 0..length {
         // Each element is a CHARSXP object
         let string = parse_charsxp(cursor)?;
-        vec.push(string);
+        // Convert to Arc<str> for string interning
+        vec.push(Arc::from(string.as_str()));
     }
 
     Ok(RObject::Character(vec))
@@ -658,7 +660,7 @@ fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut Ref
 }
 
 /// Extract a tag name from a tag object (usually a symbol or character).
-fn extract_tag_name(tag_obj: RObject) -> Option<String> {
+fn extract_tag_name(tag_obj: RObject) -> Option<Arc<str>> {
     match tag_obj {
         RObject::Character(vec) if !vec.is_empty() => Some(vec[0].clone()),
         RObject::Null => None,
@@ -696,8 +698,9 @@ fn parse_special(cursor: &mut Cursor<&[u8]>, _ref_table: &mut RefTable) -> Resul
     let mut bytes = vec![0u8; length as usize];
     cursor.read_exact(&mut bytes)?;
 
-    // Convert to UTF-8 string
+    // Convert to UTF-8 string and intern it
     let name = String::from_utf8(bytes)?;
+    let name = Arc::from(name.as_str());
 
     Ok(RObject::Special { name })
 }
@@ -717,8 +720,9 @@ fn parse_builtin(cursor: &mut Cursor<&[u8]>, _ref_table: &mut RefTable) -> Resul
     let mut bytes = vec![0u8; length as usize];
     cursor.read_exact(&mut bytes)?;
 
-    // Convert to UTF-8 string
+    // Convert to UTF-8 string and intern it
     let name = String::from_utf8(bytes)?;
+    let name = Arc::from(name.as_str());
 
     Ok(RObject::Builtin { name })
 }
@@ -820,28 +824,28 @@ fn parse_charsxp_content(cursor: &mut Cursor<&[u8]>) -> Result<String> {
 /// Parse attributes from a pairlist object.
 /// Attributes are stored as pairlists where TAG = attribute name, CAR = attribute value.
 fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
-    let mut attrs = HashMap::new();
+    let mut attrs = Attributes::new();
 
     // Attributes are typically stored as a pairlist (LISTSXP)
     // We need to extract the TAG (name) and CAR (value) from each pair
     match attr_obj {
         RObject::Null => {
             // No attributes
-            return Ok(Attributes { attrs });
+            return Ok(attrs);
         }
         RObject::Pairlist(elements) => {
             // Extract TAG (name) and CAR (value) from each pairlist element
             for elem in elements {
                 if let Some(name) = elem.tag {
-                    attrs.insert(name, elem.value);
+                    attrs.insert(name.clone(), elem.value);
                 }
             }
-            return Ok(Attributes { attrs });
+            return Ok(attrs);
         }
         RObject::List(_elements) => {
             // If we have a regular list without tags, we can't extract attribute names
             // This shouldn't happen for attributes, but handle it gracefully
-            return Ok(Attributes { attrs });
+            return Ok(attrs);
         }
         RObject::WithAttributes { object, attributes: _ } => {
             // The attributes object itself has attributes - use the inner object
@@ -851,12 +855,12 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
             // Single integer might be a reference index or special marker
             // In some cases, R uses compact formats for attributes
             // For now, treat as no attributes
-            return Ok(Attributes { attrs });
+            return Ok(attrs);
         }
         RObject::Real(vec) if vec.len() == 3 => {
             // This might be ALTREP state being passed as attributes
             // This shouldn't happen, but handle it gracefully
-            return Ok(Attributes { attrs });
+            return Ok(attrs);
         }
         _ => {
             // Unexpected attribute structure
@@ -875,7 +879,7 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
     // Check if this has class="data.frame"
     let class_attr = attributes.get("class")?;
     let is_dataframe = match class_attr {
-        RObject::Character(classes) => classes.iter().any(|c| c == "data.frame"),
+        RObject::Character(classes) => classes.iter().any(|c| c.as_ref() == "data.frame"),
         _ => false,
     };
 
@@ -918,10 +922,10 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
                 if indices.len() == 2 && indices[0] == RObject::NA_INTEGER && indices[1] < 0 {
                     // Compact format: expand to ["1", "2", ..., "n"]
                     let n = -indices[1] as usize;
-                    (1..=n).map(|i| i.to_string()).collect()
+                    (1..=n).map(|i| Arc::from(i.to_string().as_str())).collect()
                 } else {
                     // Explicit integer row names: convert to strings
-                    indices.iter().map(|i| i.to_string()).collect()
+                    indices.iter().map(|i| Arc::from(i.to_string().as_str())).collect()
                 }
             }
             _ => {
@@ -932,7 +936,7 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
                     RObject::Logical(v) => v.len(),
                     RObject::Character(v) => v.len(),
                     _ => 0,
-                }).unwrap_or(0)).map(|i| i.to_string()).collect()
+                }).unwrap_or(0)).map(|i| Arc::from(i.to_string().as_str())).collect()
             }
         }
     } else {
@@ -944,10 +948,10 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
             RObject::Character(v) => v.len(),
             _ => 0,
         }).unwrap_or(0);
-        (1..=n).map(|i| i.to_string()).collect()
+        (1..=n).map(|i| Arc::from(i.to_string().as_str())).collect()
     };
 
-    Some(RObject::DataFrame { columns, row_names })
+    Some(RObject::DataFrame(Box::new(DataFrameData { columns, row_names })))
 }
 
 /// Try to convert an object with attributes to a Factor.
@@ -961,13 +965,13 @@ fn try_convert_to_factor(obj: &RObject, attributes: &Attributes) -> Option<RObje
     };
 
     // Check if "factor" is in the class list
-    let is_factor = classes.contains(&"factor".to_string());
+    let is_factor = classes.iter().any(|c| c.as_ref() == "factor");
     if !is_factor {
         return None;
     }
 
     // Check if it's an ordered factor
-    let ordered = classes.contains(&"ordered".to_string());
+    let ordered = classes.iter().any(|c| c.as_ref() == "ordered");
 
     // The base object should be an integer vector (the indices)
     let values = match obj {
@@ -982,28 +986,39 @@ fn try_convert_to_factor(obj: &RObject, attributes: &Attributes) -> Option<RObje
         _ => return None,
     };
 
-    Some(RObject::Factor {
+    Some(RObject::Factor(Box::new(FactorData {
         values,
         levels,
         ordered,
-    })
+    })))
 }
 
 /// Convert an object with attributes to an S3 object.
 /// Assumes the class attribute has already been checked.
 fn convert_to_s3_object(obj: RObject, mut attributes: Attributes) -> RObject {
-    // Extract the class attribute
-    let classes = match attributes.attrs.remove("class") {
-        Some(RObject::Character(classes)) => classes,
-        _ => vec![], // Shouldn't happen since we checked before calling
-    };
+    // Extract the class attribute from SmallVec
+    let class = attributes
+        .attrs
+        .iter()
+        .position(|(k, _)| k.as_ref() == "class")
+        .and_then(|idx| {
+            if let RObject::Character(classes) = attributes.attrs[idx].1.as_ref() {
+                Some(classes.clone())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+
+    // Remove class from attributes
+    attributes.attrs.retain(|(k, _)| k.as_ref() != "class");
 
     // Create the S3 object
-    RObject::S3Object {
+    RObject::S3Object(Box::new(S3ObjectData {
         base: Box::new(obj),
-        class: classes,
+        class,
         attributes,
-    }
+    }))
 }
 
 /// Convert attributes to an S4 object.
@@ -1013,28 +1028,35 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
 
     // Extract the class attribute
     // The class may be wrapped in WithAttributes if it has a package attribute
-    let class = match attributes.attrs.remove("class") {
-        Some(RObject::Character(classes)) => classes,
-        Some(RObject::WithAttributes { object, .. }) => {
-            // Unwrap the WithAttributes to get the actual class vector
-            match *object {
-                RObject::Character(classes) => classes,
-                _ => vec![],
+    let class = attributes
+        .attrs
+        .iter()
+        .position(|(k, _)| k.as_ref() == "class")
+        .and_then(|idx| {
+            match attributes.attrs[idx].1.as_ref() {
+                RObject::Character(classes) => Some(classes.clone()),
+                RObject::WithAttributes { object, .. } => {
+                    // Unwrap the WithAttributes to get the actual class vector
+                    match object.as_ref() {
+                        RObject::Character(classes) => Some(classes.clone()),
+                        _ => None,
+                    }
+                }
+                _ => None,
             }
-        }
-        _ => vec![], // S4 objects should always have a class
-    };
+        })
+        .unwrap_or_default();
 
-    // Extract package attribute (S4 objects often have this, but we don't need it for slots)
-    attributes.attrs.remove("package");
+    // Remove class and package attributes
+    attributes.attrs.retain(|(k, _)| k.as_ref() != "class" && k.as_ref() != "package");
 
     // All remaining attributes are the slots
     let mut slots = HashMap::new();
-    for (key, value) in attributes.attrs {
-        slots.insert(key, value);
+    for (key, value) in attributes.attrs.into_iter() {
+        slots.insert(key, *value);  // Unbox the RObject
     }
 
-    RObject::S4Object { class, slots }
+    RObject::S4Object(Box::new(S4ObjectData { class, slots }))
 }
 
 #[cfg(test)]
