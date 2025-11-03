@@ -109,7 +109,7 @@ fn test_closure_with_environment() {
 
             // Check environment - should be an Environment (not global)
             match environment.as_ref() {
-                RObject::Environment { enclosing, frame, hashtab } => {
+                RObject::Environment { enclosing: _, frame, hashtab: _ } => {
                     // Verify structure exists
                     // enclosing should not be NULL (it's a closure environment)
                     // frame might contain bindings
@@ -143,7 +143,7 @@ fn test_simple_environment() {
 
     // Verify it's an Environment
     match &obj {
-        RObject::Environment { enclosing, frame, hashtab } => {
+        RObject::Environment { enclosing, frame: _, hashtab } => {
             // Enclosing should be global env (NULL)
             assert!(
                 matches!(enclosing.as_ref(), RObject::Null),

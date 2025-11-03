@@ -2,7 +2,7 @@
 //!
 //! This includes named vectors and matrices.
 
-use rds2rust::{read_rds, write_rds, RObject};
+use rds2rust::{read_rds, RObject};
 use std::fs;
 use std::path::Path;
 

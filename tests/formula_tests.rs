@@ -5,7 +5,6 @@
 use rds2rust::{read_rds, write_rds, RObject};
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
 
 fn test_data_exists() -> bool {
     Path::new("tests/data").exists()
