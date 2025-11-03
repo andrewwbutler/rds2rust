@@ -136,6 +136,7 @@ pub struct S4ObjectData {
 pub struct PairlistElement {
     pub tag: Option<Arc<str>>,  // Tag name (interned)
     pub value: RObject,
+    pub tag_object: Option<Box<RObject>>,  // Raw TAG object before name extraction (for special cases)
 }
 
 /// Represents a logical value in R (TRUE, FALSE, or NA)

@@ -266,6 +266,7 @@ fn write_language(writer: &mut Vec<u8>, elements: &[RObject], ref_table: &mut Re
             .map(|obj| PairlistElement {
                 tag: None,
                 value: obj.clone(),
+                tag_object: None,
             })
             .collect();
         write_pairlist(writer, &args, ref_table)?;
@@ -527,6 +528,7 @@ fn write_s3_object(
                     .map(|obj| PairlistElement {
                         tag: None,
                         value: obj.clone(),
+                        tag_object: None,
                     })
                     .collect();
                 write_pairlist(writer, &args, ref_table)?;
@@ -628,6 +630,7 @@ fn write_attributes(writer: &mut Vec<u8>, attributes: &Attributes, ref_table: &m
         elements.push(PairlistElement {
             tag: Some(key.clone()),
             value: (**value).clone(),  // Unbox the RObject
+            tag_object: None,
         });
     }
 

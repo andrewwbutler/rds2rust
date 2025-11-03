@@ -38,6 +38,12 @@ impl RefTable {
 
     /// Update an existing reference with a new object
     fn update(&mut self, index: u32, obj: RObject) {
+        if std::env::var("RDS_DEBUG").is_ok() {
+            eprintln!("[REF_TABLE] Updating ref {} with {:?}", index, std::mem::discriminant(&obj));
+            if let RObject::S4Object(s4) = &obj {
+                eprintln!("[REF_TABLE]   S4 class={:?}, slots={:?}", s4.class, s4.slots.keys().collect::<Vec<_>>());
+            }
+        }
         self.objects.insert(index, obj);
     }
 
@@ -140,9 +146,10 @@ fn should_track_reference(sexp_type: u32, has_attr: bool) -> bool {
     // Don't track references for:
     // - NILSXP/NILVALUE_SXP - singleton NULL
     // - CHARSXP - internal strings (handled differently)
+    // - REFSXP - references to other objects (returns immediately, no object created)
     // - Simple vectors without attributes
     match sexp_type {
-        NILSXP | NILVALUE_SXP | GLOBALENV_SXP | CHARSXP => false,
+        NILSXP | NILVALUE_SXP | GLOBALENV_SXP | CHARSXP | REFSXP => false,
         // Simple vectors without attributes are not tracked
         INTSXP | REALSXP | LGLSXP | RAWSXP | CPLXSXP if !has_attr => false,
         // Everything else is tracked
@@ -287,7 +294,11 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_tabl
     // before we parse its contents/attributes
     let ref_index = if should_track_reference(sexp_type, has_attr) {
         // Add a NULL placeholder for now
-        Some(ref_table.add(RObject::Null))
+        let idx = ref_table.add(RObject::Null);
+        if std::env::var("RDS_DEBUG").is_ok() {
+            eprintln!("[PARSE] Added placeholder for type {} at ref {}", sexp_type, idx);
+        }
+        Some(idx)
     } else {
         None
     };
@@ -326,11 +337,23 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_tabl
             // The reference index is encoded in bits 8-15 of the flags
             let ref_index_val = ((flags >> 8) & 0xFF) as u32;
 
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[REFSXP] Looking up ref {}", ref_index_val);
+            }
+
             // Look up the object in the reference table and return it immediately
             // REFSXP just references another object - it doesn't have its own attributes
             // The has_attr flag, if set, is inherited from the original object
             match ref_table.get(ref_index_val) {
-                Some(obj) => return Ok(obj.clone()),
+                Some(obj) => {
+                    if std::env::var("RDS_DEBUG").is_ok() {
+                        eprintln!("[REFSXP]   Found {:?}", std::mem::discriminant(obj));
+                        if let RObject::S4Object(s4) = obj {
+                            eprintln!("[REFSXP]   S4 class={:?}, slots={:?}", s4.class, s4.slots.keys().collect::<Vec<_>>());
+                        }
+                    }
+                    return Ok(obj.clone())
+                },
                 None => {
                     return Err(Error::InvalidFormat(format!(
                         "Invalid reference index: {}",
@@ -380,6 +403,11 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_tabl
     let attributes = if let Some(attrs) = early_attributes {
         attrs
     } else if has_attr {
+        if std::env::var("RDS_DEBUG").is_ok() {
+            if let Some(idx) = ref_index {
+                eprintln!("[PARSE] Parsing attributes for ref {} (type {})", idx, sexp_type);
+            }
+        }
         let attr_obj = parse_object(cursor, ref_table, dedup_table)?;
         parse_attributes(attr_obj)?
     } else {
@@ -391,6 +419,11 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_tabl
         if !attributes.is_empty() {
             // Check if this is an S4 object (S4SXP type)
             if sexp_type == S4SXP {
+                if std::env::var("RDS_DEBUG").is_ok() {
+                    if let Some(idx) = ref_index {
+                        eprintln!("[APPLY_ATTRS] Converting S4SXP at ref {} to S4Object", idx);
+                    }
+                }
                 // S4 object: all attributes become slots, except class
                 obj = convert_to_s4_object(attributes);
             } else {
@@ -718,13 +751,24 @@ fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut Ref
     // Pairlists are serialized as: [TAG if HAS_TAG_BIT], CAR, CDR
     let mut elements = Vec::new();
 
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[PAIRLIST] Parsing pairlist element, has_tag={}", has_tag);
+    }
+
     // Parse the TAG if present (comes before CAR)
-    let tag = if has_tag {
+    let (tag, tag_object) = if has_tag {
         let tag_obj = parse_object(cursor, ref_table, dedup_table)?;
         // Extract the tag name from the symbol or character object
-        extract_tag_name(tag_obj)
+        let tag_name = extract_tag_name(tag_obj.clone());
+        if std::env::var("RDS_DEBUG").is_ok() {
+            if let Some(ref name) = tag_name {
+                eprintln!("[PAIRLIST] Parsed TAG: '{}'", name);
+            }
+        }
+        // Store both the extracted name and the raw object
+        (tag_name, Some(Box::new(tag_obj)))
     } else {
-        None
+        (None, None)
     };
 
     // Parse the CAR (first element)
@@ -734,7 +778,7 @@ fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut Ref
     let cdr = parse_object(cursor, ref_table, dedup_table)?;
 
     // Add CAR to the pairlist with its tag
-    elements.push(PairlistElement { tag, value: car });
+    elements.push(PairlistElement { tag, value: car, tag_object });
 
     // If CDR is another pairlist, recursively add its elements
     // If CDR is NULL, we're done
@@ -751,6 +795,7 @@ fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut Ref
             elements.push(PairlistElement {
                 tag: None,
                 value: other,
+                tag_object: None,
             });
         }
     }
@@ -760,6 +805,17 @@ fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut Ref
 
 /// Extract a tag name from a tag object (usually a symbol or character).
 fn extract_tag_name(tag_obj: RObject) -> Option<Arc<str>> {
+    if std::env::var("RDS_DEBUG").is_ok() {
+        match &tag_obj {
+            RObject::Null => eprintln!("[EXTRACT_TAG] Tag is Null"),
+            RObject::Character(vec) if vec.is_empty() => eprintln!("[EXTRACT_TAG] Tag is empty Character"),
+            RObject::Character(_) => {}, // Will extract successfully
+            RObject::S4Object(s4) => eprintln!("[EXTRACT_TAG] Tag is S4Object with class={:?}", s4.class),
+            RObject::Pairlist(elems) => eprintln!("[EXTRACT_TAG] Tag is Pairlist with {} elements", elems.len()),
+            other => eprintln!("[EXTRACT_TAG] Tag is unexpected type: {:?}", std::mem::discriminant(other)),
+        }
+    }
+
     match tag_obj {
         RObject::Character(vec) if !vec.is_empty() => Some(vec[0].clone()),
         RObject::Null => None,
@@ -942,32 +998,88 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
         }
         RObject::Pairlist(elements) => {
             // Extract TAG (name) and CAR (value) from each pairlist element
+            if std::env::var("RDS_DEBUG").is_ok() && !elements.is_empty() {
+                eprintln!("[PARSE_ATTRS] Pairlist with {} elements", elements.len());
+            }
             for elem in elements {
+                // SPECIAL CASE: Check if tag_object contains an S4Object
+                // This happens when TAG is REFSXP→S4Object. If the tag_object is an S4Object
+                // and we haven't extracted a tag name, it might be the actual object we want.
+                if elem.tag.is_none() {
+                    if let Some(tag_obj) = &elem.tag_object {
+                        if let RObject::S4Object(s4) = tag_obj.as_ref() {
+                            // Found an S4Object in the TAG position without a tag name!
+                            // Store it with a special marker so convert_to_s4_object can find it
+                            if std::env::var("RDS_DEBUG").is_ok() {
+                                eprintln!("[PARSE_ATTRS]   Found S4Object in TAG position, class={:?}, storing as '__tag_s4_object__'", s4.class);
+                            }
+                            attrs.insert(Arc::from("__tag_s4_object__"), *tag_obj.clone());
+                            continue; // Skip the normal processing for this element
+                        }
+                    }
+                }
+
                 if let Some(name) = elem.tag {
+                    if std::env::var("RDS_DEBUG").is_ok() {
+                        eprintln!("[PARSE_ATTRS]   Tag: '{}' -> {:?}", name, std::mem::discriminant(&elem.value));
+                        if name.as_ref() == "data" {
+                            if let RObject::S4Object(s4) = &elem.value {
+                                eprintln!("[PARSE_ATTRS]     'data' is S4 with class={:?}, slots={:?}", s4.class, s4.slots.keys().collect::<Vec<_>>());
+                            }
+                        }
+                    }
                     attrs.insert(name.clone(), elem.value);
                 } else {
-                    // No explicit tag - check if this is a special case like "class"
+                    // No explicit tag - check if this is a special case like "class" or a reference to an actual object
                     // In R serialization, the class attribute for S4 objects can be stored without a tag
                     // as WithAttributes(Character) with package information
                     // We ONLY infer "class" for WithAttributes(Character), not plain Character,
                     // to avoid false positives with expression lists
+                    //
+                    // SPECIAL CASE: If the element's TAG was a REFSXP that resolved to an S4Object,
+                    // the elem.tag would be None (since extract_tag_name returned None), but the actual
+                    // TAG object (before extraction) contained the S4Object. Unfortunately, we've lost
+                    // that information by this point. However, we can detect this pattern:
+                    // If an element has no tag but its VALUE is an S4Object, it might be the real object!
                     let inferred_name = match &elem.value {
                         RObject::WithAttributes { object, attributes: inner_attrs } => {
                             // If it's WithAttributes wrapping a Character, it's likely "class"
                             // S4 classes often have package info stored in attributes
                             match object.as_ref() {
-                                RObject::Character(_chars) if !inner_attrs.is_empty() => {
+                                RObject::Character(chars) if !inner_attrs.is_empty() => {
+                                    if std::env::var("RDS_DEBUG").is_ok() {
+                                        eprintln!("[PARSE_ATTRS]   No tag, inferred 'class' from WithAttributes(Character({:?}))", chars);
+                                    }
                                     // This is likely a class with package information
                                     Some(Arc::from("class"))
                                 }
                                 _ => None
                             }
                         }
+                        RObject::S4Object(s4) => {
+                            // An S4Object without a tag might be a reference to the actual object
+                            // Store it with a special marker key so convert_to_s4_object can find it
+                            if std::env::var("RDS_DEBUG").is_ok() {
+                                eprintln!("[PARSE_ATTRS]   No tag, but found S4Object with class={:?}, storing as '__ref_object__'", s4.class);
+                            }
+                            Some(Arc::from("__ref_object__"))
+                        }
                         _ => None
                     };
 
                     if let Some(name) = inferred_name {
                         attrs.insert(name, elem.value);
+                    } else {
+                        if std::env::var("RDS_DEBUG").is_ok() {
+                            eprintln!("[PARSE_ATTRS]   No tag, skipping element {:?}", std::mem::discriminant(&elem.value));
+                            match &elem.value {
+                                RObject::Integer(v) => eprintln!("[PARSE_ATTRS]     Integer len={}", v.len()),
+                                RObject::Real(v) => eprintln!("[PARSE_ATTRS]     Real len={}", v.len()),
+                                RObject::Character(v) => eprintln!("[PARSE_ATTRS]     Character={:?}", v),
+                                RObject::List(v) => eprintln!("[PARSE_ATTRS]     List len={}", v.len()),
+                                _ => {}
+                            }
+                        }
                     }
                     // Otherwise, skip elements without tags that we can't identify
                 }
@@ -1203,13 +1315,45 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
         })
         .unwrap_or_default();
 
-    // Remove class and package attributes
-    attributes.attrs.retain(|(k, _)| k.as_ref() != "class" && k.as_ref() != "package");
+    // WORKAROUND: Check if we have an S4Object from a TAG position that matches this class
+    // This can happen when the attributes pairlist has REFSXP in TAG positions that resolve to S4Objects.
+    // If we find one with matching class, use it directly instead of building a malformed object.
+    if !class.is_empty() {
+        if let Some(tag_s4_obj) = attributes.get("__tag_s4_object__") {
+            // tag_s4_obj is a &RObject
+            if let RObject::S4Object(ref s4) = tag_s4_obj {
+                if s4.class == class {
+                    // Found an S4 object in TAG position with matching class!
+                    // This is the actual correct object. Return it directly.
+                    if std::env::var("RDS_DEBUG").is_ok() {
+                        eprintln!("[S4_CONVERT] Found S4Object in TAG position with matching class {:?}, using it directly", class);
+                    }
+                    return tag_s4_obj.clone();
+                }
+            }
+        }
+    }
+
+    // Remove class, package, and special marker attributes
+    attributes.attrs.retain(|(k, _)| {
+        k.as_ref() != "class"
+        && k.as_ref() != "package"
+        && k.as_ref() != "__tag_s4_object__"
+        && k.as_ref() != "__ref_object__"
+    });
 
     // All remaining attributes are the slots
     let mut slots = HashMap::new();
     for (key, value) in attributes.attrs.into_iter() {
+        if std::env::var("RDS_DEBUG").is_ok() {
+            eprintln!("[S4_CONVERT] Adding slot '{}' = {:?}", key, std::mem::discriminant(value.as_ref()));
+        }
         slots.insert(key, *value);  // Unbox the RObject
+    }
+
+    if std::env::var("RDS_DEBUG").is_ok() {
+        let slot_names: Vec<_> = slots.keys().map(|k| k.as_ref()).collect();
+        eprintln!("[S4_CONVERT] Creating S4 class={:?} with slots={:?}", class, slot_names);
     }
 
     RObject::S4Object(Box::new(S4ObjectData { class, slots }))
