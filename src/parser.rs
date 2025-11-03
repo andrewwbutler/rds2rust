@@ -240,15 +240,19 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_tabl
 
     // Extract the SEXP type from the flags.
     // The type can appear in different bit positions:
-    // - Bits 0-7: For types like CHARSXP (9), NILSXP (0), etc.
-    // - Bits 8-15: For types like INTSXP (13), LGLSXP (10), REALSXP (14), STRSXP (16), VECSXP (19)
+    // - Bits 0-7: For types like REFSXP (255), NILSXP (0), SYMSXP (1), etc.
+    // - Bits 8-15: For types like INTSXP (13), LGLSXP (10), REALSXP (14), STRSXP (16), VECSXP (19), CHARSXP (9)
     //
-    // The heuristic: if bits 8-15 contain a value >= 10, use that (it's likely the real type).
-    // Otherwise, use bits 0-7.
-    // This handles the XDR encoding quirk where different types are encoded differently.
+    // The heuristic:
+    // - REFSXP (255) is ALWAYS in bits 0-7 - check this first
+    // - For CHARSXP (9) and vector types (>= 10), they appear in bits 8-15
+    // - For other special types (NILSXP, SYMSXP, etc.), they appear in bits 0-7
     let type_from_8_15 = (flags >> 8) & 0xFF;
     let type_from_0_7 = flags & 0xFF;
-    let sexp_type = if type_from_8_15 >= 10 {
+    let sexp_type = if type_from_0_7 == REFSXP {
+        // REFSXP is always in bits 0-7, and bits 8-15 contain the reference index
+        type_from_0_7
+    } else if type_from_8_15 == CHARSXP || type_from_8_15 >= 10 {
         type_from_8_15
     } else {
         type_from_0_7
@@ -910,8 +914,16 @@ fn parse_charsxp_content(cursor: &mut Cursor<&[u8]>) -> Result<String> {
     let mut bytes = vec![0u8; length as usize];
     cursor.read_exact(&mut bytes)?;
 
-    // Convert to UTF-8 string
-    let string = String::from_utf8(bytes)?;
+    // Try to convert to UTF-8 string
+    // If it fails, it might be Latin-1 or another encoding
+    let string = match String::from_utf8(bytes.clone()) {
+        Ok(s) => s,
+        Err(_) => {
+            // Try to interpret as Latin-1 (ISO-8859-1) and convert to UTF-8
+            // Latin-1 bytes 0-255 map directly to Unicode codepoints 0-255
+            bytes.iter().map(|&b| b as char).collect()
+        }
+    };
 
     Ok(string)
 }
@@ -938,13 +950,30 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
             return Ok(attrs);
         }
         RObject::List(_elements) => {
-            // If we have a regular list without tags, we can't extract attribute names
-            // This shouldn't happen for attributes, but handle it gracefully
+            // Regular list (VECSXP) - names should be stored as a "names" attribute
+            // This case shouldn't happen for attributes themselves, but handle it gracefully
+            // Just return empty attributes
             return Ok(attrs);
         }
-        RObject::WithAttributes { object, attributes: _ } => {
-            // The attributes object itself has attributes - use the inner object
-            return parse_attributes(*object);
+        RObject::WithAttributes { object, attributes: inner_attrs } => {
+            // This is a VECSXP with attributes - the names are in the attributes
+            // and the values are in the list
+            match object.as_ref() {
+                RObject::List(elements) => {
+                    // Get the names from the attributes
+                    if let Some(RObject::Character(names)) = inner_attrs.get("names") {
+                        // Create attribute pairs from names and values
+                        for (name, value) in names.iter().zip(elements.iter()) {
+                            attrs.insert(name.clone(), value.clone());
+                        }
+                    }
+                    return Ok(attrs);
+                }
+                _ => {
+                    // If the inner object is not a list, recurse on it
+                    return parse_attributes(*object.clone());
+                }
+            }
         }
         RObject::Integer(vec) if vec.len() == 1 => {
             // Single integer might be a reference index or special marker
@@ -955,6 +984,13 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
         RObject::Real(vec) if vec.len() == 3 => {
             // This might be ALTREP state being passed as attributes
             // This shouldn't happen, but handle it gracefully
+            return Ok(attrs);
+        }
+        RObject::Character(_names) => {
+            // This might be a compact attribute format where we only have names
+            // This can happen with certain R objects where attributes are stored
+            // in a special compact format. For now, treat as no attributes.
+            // In the future, we may need to look up values elsewhere.
             return Ok(attrs);
         }
         _ => {
