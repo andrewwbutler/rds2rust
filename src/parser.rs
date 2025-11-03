@@ -945,6 +945,31 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
             for elem in elements {
                 if let Some(name) = elem.tag {
                     attrs.insert(name.clone(), elem.value);
+                } else {
+                    // No explicit tag - check if this is a special case like "class"
+                    // In R serialization, the class attribute for S4 objects can be stored without a tag
+                    // as WithAttributes(Character) with package information
+                    // We ONLY infer "class" for WithAttributes(Character), not plain Character,
+                    // to avoid false positives with expression lists
+                    let inferred_name = match &elem.value {
+                        RObject::WithAttributes { object, attributes: inner_attrs } => {
+                            // If it's WithAttributes wrapping a Character, it's likely "class"
+                            // S4 classes often have package info stored in attributes
+                            match object.as_ref() {
+                                RObject::Character(_chars) if !inner_attrs.is_empty() => {
+                                    // This is likely a class with package information
+                                    Some(Arc::from("class"))
+                                }
+                                _ => None
+                            }
+                        }
+                        _ => None
+                    };
+
+                    if let Some(name) = inferred_name {
+                        attrs.insert(name, elem.value);
+                    }
+                    // Otherwise, skip elements without tags that we can't identify
                 }
             }
             return Ok(attrs);
@@ -1173,7 +1198,7 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
                         _ => None,
                     }
                 }
-                _ => None,
+                _ => None
             }
         })
         .unwrap_or_default();
