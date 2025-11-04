@@ -427,4 +427,30 @@ saveRDS(altrep_in_list, file.path(output_dir, "altrep_in_list.rds"))
 regular_int <- c(1L, 2L, 3L, 4L, 5L)
 saveRDS(regular_int, file.path(output_dir, "regular_int.rds"))
 
+# Bytecode test: Compiled function
+# R compiles functions to bytecode for performance
+# Use compiler::cmpfun() to explicitly compile a function
+library(compiler)
+
+# Simple function
+simple_func <- function(x) {
+    x + 1
+}
+
+# Compile it to bytecode
+compiled_func <- cmpfun(simple_func)
+saveRDS(compiled_func, file.path(output_dir, "bytecode_func.rds"))
+
+# Function with bytecode in a list
+func_list <- list(
+    name = "my_function",
+    func = compiled_func,
+    data = c(1, 2, 3)
+)
+saveRDS(func_list, file.path(output_dir, "bytecode_in_list.rds"))
+
+# Regular (uncompiled) function for comparison
+uncompiled_func <- simple_func
+saveRDS(uncompiled_func, file.path(output_dir, "uncompiled_func.rds"))
+
 cat("Test RDS files generated successfully in", output_dir, "\n")

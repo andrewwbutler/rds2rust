@@ -343,6 +343,7 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol_tab
         NILSXP | NILVALUE_SXP => RObject::Null,
         UNBOUNDVALUE_SXP => RObject::Null, // Unbound/missing argument marker
         EMPTYENV_SXP => RObject::Null, // Empty environment marker
+        BASEENV_SXP => RObject::Null, // Base environment - treat as NULL
         GLOBALENV_SXP => RObject::Null, // Global environment - treat as NULL
         SYMSXP => parse_symbol(cursor, ref_table, symbol_table, dedup_table)?,
         INTSXP => parse_integer_vector(cursor)?,
@@ -354,6 +355,7 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol_tab
         S4SXP => parse_s4_object(cursor)?,
         VECSXP => parse_list(cursor, ref_table, symbol_table, dedup_table, has_attr)?,
         EXPRSXP => parse_expression(cursor, ref_table, symbol_table, dedup_table)?,
+        BCODESXP => parse_bytecode(cursor, ref_table, symbol_table, dedup_table)?,
         LISTSXP => parse_pairlist(cursor, has_tag, ref_table, symbol_table, dedup_table)?,
         LANGSXP => parse_language(cursor, has_tag, ref_table, symbol_table, dedup_table)?,
         CHARSXP => {
@@ -700,6 +702,22 @@ fn parse_expression(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol
     }
 
     Ok(RObject::Expression(elements))
+}
+
+/// Parse bytecode (BCODESXP).
+/// Bytecode represents compiled R functions.
+/// Structure: code vector, constants pool, expression (original source)
+fn parse_bytecode(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable) -> Result<RObject> {
+    // Parse the three components of bytecode
+    let code = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let constants = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let expr = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+
+    Ok(RObject::Bytecode {
+        code: Box::new(code),
+        constants: Box::new(constants),
+        expr: Box::new(expr),
+    })
 }
 
 /// Parse a closure (CLOSXP).

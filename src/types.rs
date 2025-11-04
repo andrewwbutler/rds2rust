@@ -78,6 +78,14 @@ pub enum RObject {
         name: Arc<str>,  // Function name (interned)
     },
 
+    /// Bytecode (compiled R function)
+    /// Contains code vector, constants pool, and original expression
+    Bytecode {
+        code: Box<RObject>,       // Bytecode instructions
+        constants: Box<RObject>,  // Constants pool
+        expr: Box<RObject>,       // Original source expression (optional)
+    },
+
     /// Data frame (list with class="data.frame")
     /// Boxed to reduce enum size
     DataFrame(Box<DataFrameData>),

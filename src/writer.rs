@@ -111,6 +111,9 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
         }
         RObject::Special { name } => write_special(writer, name.as_ref()),
         RObject::Builtin { name } => write_builtin(writer, name.as_ref()),
+        RObject::Bytecode { code, constants, expr } => {
+            write_bytecode(writer, code, constants, expr, ref_table)
+        }
         RObject::DataFrame(data) => {
             write_dataframe(writer, &data.columns, &data.row_names, ref_table)
         }
@@ -403,6 +406,22 @@ fn write_builtin(writer: &mut Vec<u8>, name: &str) -> Result<()> {
     writer.write_u32::<BigEndian>(bytes.len() as u32)?;
     // Write the string bytes
     writer.write_all(bytes)?;
+    Ok(())
+}
+
+/// Write bytecode (compiled R function).
+fn write_bytecode(
+    writer: &mut Vec<u8>,
+    code: &RObject,
+    constants: &RObject,
+    expr: &RObject,
+    ref_table: &mut RefTable,
+) -> Result<()> {
+    write_flags(writer, BCODESXP, false, false)?;
+    // Write the three components
+    write_object(writer, code, ref_table)?;
+    write_object(writer, constants, ref_table)?;
+    write_object(writer, expr, ref_table)?;
     Ok(())
 }
 

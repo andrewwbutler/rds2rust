@@ -57,6 +57,9 @@ pub const VECSXP: u32 = 19;
 /// Expression vector (vector of language objects)
 pub const EXPRSXP: u32 = 20;
 
+/// Bytecode (compiled R function)
+pub const BCODESXP: u32 = 21;
+
 /// Raw (byte) vector
 pub const RAWSXP: u32 = 24;
 
@@ -72,6 +75,9 @@ pub const S4SXP: u32 = 25;
 /// - 249 (0xF9) for other ALTREP types (newer format)
 pub const ALTREP_SXP: u32 = 238; // 0xEE
 pub const ALTREP_SXP_ALT: u32 = 249; // 0xF9
+
+/// Base environment marker
+pub const BASEENV_SXP: u32 = 244; // 0xF4
 
 /// Unbound value (missing argument marker)
 pub const UNBOUNDVALUE_SXP: u32 = 251; // 0xFB

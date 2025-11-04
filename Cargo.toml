@@ -1,6 +1,6 @@
 [package]
 name = "rds2rust"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 license = "MIT"
 description = "A pure Rust library for reading and writing R's RDS (R Data Serialization) files without requiring an R runtime."
