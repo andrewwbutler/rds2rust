@@ -393,4 +393,16 @@ saveRDS(builtin_length, file.path(output_dir, "builtin_length.rds"))
 builtin_min <- min
 saveRDS(builtin_min, file.path(output_dir, "builtin_min.rds"))
 
+# Symbol table test: List with attributes using REFSXP in TAG positions
+# This tests that REFSXP in pairlist TAG positions are correctly looked up
+# in the symbol table, not the ref table. The test creates a structure where
+# multiple objects share the same attribute name symbols via REFSXP.
+# Create multiple lists with the same attribute name to trigger REFSXP usage
+list1 <- list(a = 1, b = 2, c = 3)
+list2 <- list(x = 10, y = 20, z = 30)
+list3 <- list(p = 100, q = 200, r = 300)
+# Wrap them in a parent list - R will use REFSXP for repeated "names" symbols
+symbol_table_test <- list(first = list1, second = list2, third = list3)
+saveRDS(symbol_table_test, file.path(output_dir, "symbol_table_test.rds"))
+
 cat("Test RDS files generated successfully in", output_dir, "\n")

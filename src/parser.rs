@@ -53,6 +53,38 @@ impl RefTable {
     }
 }
 
+/// Symbol table for tracking symbols during deserialization.
+/// When REFSXP appears in TAG positions (e.g., pairlist tags for attributes),
+/// the reference index refers to the N-th symbol parsed, NOT the N-th object in RefTable.
+/// This matches R's serialization format which uses a separate symbol table.
+struct SymbolTable {
+    /// List of symbols in the order they were parsed
+    symbols: Vec<RObject>,
+}
+
+impl SymbolTable {
+    fn new() -> Self {
+        SymbolTable {
+            symbols: Vec::new(),
+        }
+    }
+
+    /// Add a symbol to the table and return its 1-based index
+    fn add(&mut self, symbol: RObject) -> u32 {
+        self.symbols.push(symbol);
+        self.symbols.len() as u32  // 1-based index
+    }
+
+    /// Get a symbol by its 1-based index
+    fn get(&self, index: u32) -> Option<&RObject> {
+        if index == 0 || index > self.symbols.len() as u32 {
+            None
+        } else {
+            Some(&self.symbols[(index - 1) as usize])  // Convert to 0-based
+        }
+    }
+}
+
 /// Deduplication table for memory-efficient object sharing.
 /// Tracks previously seen objects to avoid duplicating identical data.
 /// Uses Arc-based sharing for efficient cloning of deduplicated objects.
@@ -187,11 +219,14 @@ pub fn parse_rds(data: &[u8]) -> Result<RObject> {
     // Create reference table for tracking shared objects
     let mut ref_table = RefTable::new();
 
+    // Create symbol table for tracking symbols in parse order
+    let mut symbol_table = SymbolTable::new();
+
     // Create deduplication table for memory-efficient object sharing
     let mut dedup_table = DedupTable::new();
 
     // Parse the actual object
-    parse_object(&mut cursor, &mut ref_table, &mut dedup_table)
+    parse_object(&mut cursor, &mut ref_table, &mut symbol_table, &mut dedup_table)
 }
 
 /// Parse the RDS file header.
@@ -222,7 +257,7 @@ fn parse_header(cursor: &mut Cursor<&[u8]>) -> Result<u32> {
 }
 
 /// Parse an R object from the stream.
-fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_table: &mut DedupTable) -> Result<RObject> {
+fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable) -> Result<RObject> {
     // Peek at the first byte to check for packaged/pseudo types
     let pos = cursor.position();
     let first_byte = match cursor.read_u8() {
@@ -283,7 +318,7 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_tabl
     // For pairlists and language objects, attributes come BEFORE the data (CAR/CDR)
     // Parse them early if present
     let early_attributes = if has_attr && (sexp_type == LISTSXP || sexp_type == LANGSXP) {
-        let attr_obj = parse_object(cursor, ref_table, dedup_table)?;
+        let attr_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
         Some(parse_attributes(attr_obj)?)
     } else {
         None
@@ -309,7 +344,7 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_tabl
         UNBOUNDVALUE_SXP => RObject::Null, // Unbound/missing argument marker
         EMPTYENV_SXP => RObject::Null, // Empty environment marker
         GLOBALENV_SXP => RObject::Null, // Global environment - treat as NULL
-        SYMSXP => parse_symbol(cursor, ref_table, dedup_table)?,
+        SYMSXP => parse_symbol(cursor, ref_table, symbol_table, dedup_table)?,
         INTSXP => parse_integer_vector(cursor)?,
         REALSXP => parse_real_vector(cursor)?,
         CPLXSXP => parse_complex_vector(cursor)?,
@@ -317,28 +352,28 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_tabl
         STRSXP => parse_character_vector(cursor, ref_table, dedup_table)?,
         RAWSXP => parse_raw_vector(cursor)?,
         S4SXP => parse_s4_object(cursor)?,
-        VECSXP => parse_list(cursor, ref_table, dedup_table, has_attr)?,
-        EXPRSXP => parse_expression(cursor, ref_table, dedup_table)?,
-        LISTSXP => parse_pairlist(cursor, has_tag, ref_table, dedup_table)?,
-        LANGSXP => parse_language(cursor, has_tag, ref_table, dedup_table)?,
+        VECSXP => parse_list(cursor, ref_table, symbol_table, dedup_table, has_attr)?,
+        EXPRSXP => parse_expression(cursor, ref_table, symbol_table, dedup_table)?,
+        LISTSXP => parse_pairlist(cursor, has_tag, ref_table, symbol_table, dedup_table)?,
+        LANGSXP => parse_language(cursor, has_tag, ref_table, symbol_table, dedup_table)?,
         CHARSXP => {
             // Sometimes CHARSXP appears standalone (like for encoding markers)
             let string = parse_charsxp_content(cursor)?;
             // Return as a single-element character vector for now
             RObject::Character(vec![Arc::from(string.as_str())])
         }
-        CLOSXP => parse_closure(cursor, has_tag, ref_table, dedup_table)?,
-        ENVSXP => parse_environment(cursor, ref_table, dedup_table)?,
-        PROMSXP => parse_promise(cursor, ref_table, dedup_table)?,
-        SPECIALSXP => parse_special(cursor, ref_table, dedup_table)?,
-        BUILTINSXP => parse_builtin(cursor, ref_table, dedup_table)?,
+        CLOSXP => parse_closure(cursor, has_tag, ref_table, symbol_table, dedup_table)?,
+        ENVSXP => parse_environment(cursor, ref_table, symbol_table, dedup_table)?,
+        PROMSXP => parse_promise(cursor, ref_table, symbol_table, dedup_table)?,
+        SPECIALSXP => parse_special(cursor, ref_table, symbol_table, dedup_table)?,
+        BUILTINSXP => parse_builtin(cursor, ref_table, symbol_table, dedup_table)?,
         REFSXP => {
             // Reference to a previously seen object
             // The reference index is encoded in bits 8-15 of the flags
             let ref_index_val = ((flags >> 8) & 0xFF) as u32;
 
             if std::env::var("RDS_DEBUG").is_ok() {
-                eprintln!("[REFSXP] Looking up ref {}", ref_index_val);
+                eprintln!("[REFSXP] Looking up ref {} (raw from flags: 0x{:08x})", ref_index_val, flags);
             }
 
             // Look up the object in the reference table and return it immediately
@@ -350,6 +385,9 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_tabl
                         eprintln!("[REFSXP]   Found {:?}", std::mem::discriminant(obj));
                         if let RObject::S4Object(s4) = obj {
                             eprintln!("[REFSXP]   S4 class={:?}, slots={:?}", s4.class, s4.slots.keys().collect::<Vec<_>>());
+                        }
+                        if let RObject::Character(chars) = obj {
+                            eprintln!("[REFSXP]   Character = {:?}", chars);
                         }
                     }
                     return Ok(obj.clone())
@@ -366,9 +404,9 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_tabl
             // ALTREP object (version 3 feature)
             // Structure: class_info, state, attributes
             // ALTREP handles its own attributes internally, so parse them here
-            let class_info = parse_object(cursor, ref_table, dedup_table)?;
-            let state = parse_object(cursor, ref_table, dedup_table)?;
-            let attributes_obj = parse_object(cursor, ref_table, dedup_table)?;
+            let class_info = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+            let state = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+            let attributes_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
             // Convert ALTREP to native representation
             let native_obj = convert_altrep_to_native(class_info, state)?;
@@ -408,7 +446,7 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_tabl
                 eprintln!("[PARSE] Parsing attributes for ref {} (type {})", idx, sexp_type);
             }
         }
-        let attr_obj = parse_object(cursor, ref_table, dedup_table)?;
+        let attr_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
         parse_attributes(attr_obj)?
     } else {
         Attributes::new()
@@ -456,6 +494,19 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_tabl
     if let Some(idx) = ref_index {
         // Replace the NULL placeholder with the actual object
         ref_table.update(idx, obj.clone());
+    }
+
+    // If this is a symbol (SYMSXP), add it to the symbol table in parse order
+    // This is used for resolving REFSXP in TAG positions (e.g., pairlist attribute names)
+    if sexp_type == SYMSXP {
+        let sym_idx = symbol_table.add(obj.clone());
+        if std::env::var("RDS_DEBUG").is_ok() {
+            if let RObject::Character(chars) = &obj {
+                eprintln!("[SYMBOL_TABLE] Added symbol {} at index {}: {:?}",
+                    if let Some(idx) = ref_index { format!("ref {}", idx) } else { "".to_string() },
+                    sym_idx, chars);
+            }
+        }
     }
 
     // Try to deduplicate the object before returning
@@ -574,9 +625,9 @@ fn parse_s4_object(_cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
 }
 
 /// Parse a symbol (SYMSXP).
-fn parse_symbol(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_table: &mut DedupTable) -> Result<RObject> {
+fn parse_symbol(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable) -> Result<RObject> {
     // A symbol consists of a CHARSXP for the name
-    let name_obj = parse_object(cursor, ref_table, dedup_table)?;
+    let name_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
     // Extract the name and return as a character vector
     match name_obj {
@@ -589,12 +640,12 @@ fn parse_symbol(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_tabl
 }
 
 /// Parse a generic list (VECSXP).
-fn parse_list(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_table: &mut DedupTable, _list_has_attr: bool) -> Result<RObject> {
+fn parse_list(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable, _list_has_attr: bool) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
     let mut elements = Vec::with_capacity(length);
 
     for i in 0..length {
-        let element = parse_object(cursor, ref_table, dedup_table)?;
+        let element = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
         // Check if this is a Real vector that looks like an ALTREP compact_intseq state
         // R sometimes serializes repeated ALTREP sequences as bare state vectors
@@ -617,7 +668,7 @@ fn parse_list(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_table:
                     // We need to consume it ONLY if this is not the last element (to avoid
                     // consuming the marker before list attributes).
                     if i < length - 1 {
-                        let _next = parse_object(cursor, ref_table, dedup_table)?;
+                        let _next = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
                     }
 
                     RObject::Integer(int_vec)
@@ -638,12 +689,12 @@ fn parse_list(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_table:
 /// Expression vectors are identical in structure to VECSXP - they're vectors of R objects,
 /// typically language objects. The difference is semantic: EXPRSXP is used for collections
 /// of unevaluated expressions (e.g., the result of parse()).
-fn parse_expression(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_table: &mut DedupTable) -> Result<RObject> {
+fn parse_expression(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
     let mut elements = Vec::with_capacity(length);
 
     for _ in 0..length {
-        let element = parse_object(cursor, ref_table, dedup_table)?;
+        let element = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
         elements.push(element);
     }
 
@@ -653,17 +704,17 @@ fn parse_expression(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_
 /// Parse a closure (CLOSXP).
 /// When has_tag is true: TAG (environment), FORMALS, BODY
 /// When has_tag is false: FORMALS, BODY, ENVIRONMENT
-fn parse_closure(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut RefTable, dedup_table: &mut DedupTable) -> Result<RObject> {
+fn parse_closure(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable) -> Result<RObject> {
     let (formals, body, environment) = if has_tag {
         // TAG holds the environment
-        let env = parse_object(cursor, ref_table, dedup_table)?;
-        let form = parse_object(cursor, ref_table, dedup_table)?;
+        let env = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+        let form = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
         // When has_tag is true, there seems to be an extra NULL object between formals and body
         // This might be related to how R stores closure attributes or srcref
-        let maybe_body = parse_object(cursor, ref_table, dedup_table)?;
+        let maybe_body = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
         let bod = if matches!(maybe_body, RObject::Null) {
             // Skip this NULL and read the actual body
-            parse_object(cursor, ref_table, dedup_table)?
+            parse_object(cursor, ref_table, symbol_table, dedup_table)?
         } else {
             // This is the body
             maybe_body
@@ -671,9 +722,9 @@ fn parse_closure(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut RefT
         (form, bod, env)
     } else {
         // Standard order: formals, body, environment
-        let form = parse_object(cursor, ref_table, dedup_table)?;
-        let bod = parse_object(cursor, ref_table, dedup_table)?;
-        let env = parse_object(cursor, ref_table, dedup_table)?;
+        let form = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+        let bod = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+        let env = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
         (form, bod, env)
     };
 
@@ -686,16 +737,16 @@ fn parse_closure(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut RefT
 
 /// Parse an environment (ENVSXP).
 /// Environments consist of: locked flag, enclosing environment, frame (pairlist), hashtab
-fn parse_environment(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_table: &mut DedupTable) -> Result<RObject> {
+fn parse_environment(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable) -> Result<RObject> {
     // Parse locked flag (an integer: 0 or 1)
     // We read it but don't currently store it in the Environment struct
-    let _locked = parse_object(cursor, ref_table, dedup_table)?;
+    let _locked = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
     // Parse enclosing environment (can be another environment or NULL for global env)
-    let enclosing = parse_object(cursor, ref_table, dedup_table)?;
+    let enclosing = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
     // Parse frame (pairlist of bindings)
-    let frame = parse_object(cursor, ref_table, dedup_table)?;
+    let frame = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
     // Parse hashtab (can be NULL or a VECSXP)
-    let hashtab = parse_object(cursor, ref_table, dedup_table)?;
+    let hashtab = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
     // Note: attributes are NOT parsed here - they're handled by the HAS_ATTR flag
     // in parse_object
@@ -710,21 +761,21 @@ fn parse_environment(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup
 /// Parse a language object (LANGSXP).
 /// Language objects represent unevaluated expressions/calls.
 /// They're structured like pairlists: TAG (if present), CAR (function), CDR (arguments).
-fn parse_language(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut RefTable, dedup_table: &mut DedupTable) -> Result<RObject> {
+fn parse_language(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable) -> Result<RObject> {
     let mut elements = Vec::new();
 
     // Parse the TAG if present (usually not for language objects)
     if has_tag {
-        let _tag_obj = parse_object(cursor, ref_table, dedup_table)?;
+        let _tag_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
         // Tags in language objects are rare, we'll skip them for now
     }
 
     // Parse the CAR (the function being called)
-    let car = parse_object(cursor, ref_table, dedup_table)?;
+    let car = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
     elements.push(car);
 
     // Parse the CDR (the argument list)
-    let cdr = parse_object(cursor, ref_table, dedup_table)?;
+    let cdr = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
     // If CDR is a pairlist, extract all arguments
     match cdr {
@@ -747,7 +798,7 @@ fn parse_language(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut Ref
 }
 
 /// Parse a pairlist (LISTSXP).
-fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut RefTable, dedup_table: &mut DedupTable) -> Result<RObject> {
+fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable) -> Result<RObject> {
     // Pairlists are serialized as: [TAG if HAS_TAG_BIT], CAR, CDR
     let mut elements = Vec::new();
 
@@ -757,12 +808,57 @@ fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut Ref
 
     // Parse the TAG if present (comes before CAR)
     let (tag, tag_object) = if has_tag {
-        let tag_obj = parse_object(cursor, ref_table, dedup_table)?;
+        // SPECIAL CASE: When TAG is a REFSXP, it references the symbol table, not the ref table!
+        // R uses a separate symbol table for TAG positions in pairlists (for attribute names).
+        // Peek at the flags to check if this is a REFSXP.
+        let pos = cursor.position();
+        let flags = cursor.read_u32::<BigEndian>()?;
+        cursor.set_position(pos); // Reset position to re-read in parse_object
+
+        let type_from_0_7 = flags & 0xFF;
+        let is_refsxp = type_from_0_7 == REFSXP;
+
+        let tag_obj = if is_refsxp {
+            // TAG is a REFSXP - look it up in the symbol table
+            let ref_index = ((flags >> 8) & 0xFF) as u32;
+            cursor.set_position(pos + 4); // Skip the flags we just read
+
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[PAIRLIST] TAG is REFSXP({}), looking up in symbol table", ref_index);
+            }
+
+            match symbol_table.get(ref_index) {
+                Some(obj) => {
+                    if std::env::var("RDS_DEBUG").is_ok() {
+                        if let RObject::Character(chars) = obj {
+                            eprintln!("[PAIRLIST]   Symbol table[{}] = {:?}", ref_index, chars);
+                        }
+                    }
+                    obj.clone()
+                },
+                None => {
+                    return Err(Error::InvalidFormat(format!(
+                        "Invalid symbol table reference in TAG: {}",
+                        ref_index
+                    )));
+                }
+            }
+        } else {
+            // TAG is a regular object (SYMSXP, etc.) - parse normally
+            parse_object(cursor, ref_table, symbol_table, dedup_table)?
+        };
+
+        if std::env::var("RDS_DEBUG").is_ok() {
+            eprintln!("[PAIRLIST] Parsed TAG object: {:?}", std::mem::discriminant(&tag_obj));
+            if let RObject::Character(chars) = &tag_obj {
+                eprintln!("[PAIRLIST]   Character TAG = {:?}", chars);
+            }
+        }
         // Extract the tag name from the symbol or character object
         let tag_name = extract_tag_name(tag_obj.clone());
         if std::env::var("RDS_DEBUG").is_ok() {
             if let Some(ref name) = tag_name {
-                eprintln!("[PAIRLIST] Parsed TAG: '{}'", name);
+                eprintln!("[PAIRLIST] Extracted TAG name: '{}'", name);
             }
         }
         // Store both the extracted name and the raw object
@@ -772,10 +868,10 @@ fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut Ref
     };
 
     // Parse the CAR (first element)
-    let car = parse_object(cursor, ref_table, dedup_table)?;
+    let car = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
     // Parse the CDR (rest of list)
-    let cdr = parse_object(cursor, ref_table, dedup_table)?;
+    let cdr = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
     // Add CAR to the pairlist with its tag
     elements.push(PairlistElement { tag, value: car, tag_object });
@@ -825,11 +921,11 @@ fn extract_tag_name(tag_obj: RObject) -> Option<Arc<str>> {
 
 /// Parse a promise (PROMSXP).
 /// Promises are lazy evaluation constructs containing: value, expression, environment
-fn parse_promise(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_table: &mut DedupTable) -> Result<RObject> {
+fn parse_promise(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable) -> Result<RObject> {
     // Parse the three components of a promise
-    let value = parse_object(cursor, ref_table, dedup_table)?;
-    let expression = parse_object(cursor, ref_table, dedup_table)?;
-    let environment = parse_object(cursor, ref_table, dedup_table)?;
+    let value = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let expression = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let environment = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
     Ok(RObject::Promise {
         value: Box::new(value),
@@ -841,7 +937,7 @@ fn parse_promise(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, dedup_tab
 /// Parse a special primitive function (SPECIALSXP).
 /// Special functions like 'if', 'for', 'while' have special evaluation rules.
 /// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
-fn parse_special(cursor: &mut Cursor<&[u8]>, _ref_table: &mut RefTable, _dedup_table: &mut DedupTable) -> Result<RObject> {
+fn parse_special(cursor: &mut Cursor<&[u8]>, _ref_table: &mut RefTable, _symbol_table: &mut SymbolTable, _dedup_table: &mut DedupTable) -> Result<RObject> {
     // Read the string length
     let length = cursor.read_i32::<BigEndian>()?;
 
@@ -863,7 +959,7 @@ fn parse_special(cursor: &mut Cursor<&[u8]>, _ref_table: &mut RefTable, _dedup_t
 /// Parse a builtin primitive function (BUILTINSXP).
 /// Builtin functions like 'sum', 'c', '+' are internal R functions.
 /// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
-fn parse_builtin(cursor: &mut Cursor<&[u8]>, _ref_table: &mut RefTable, _dedup_table: &mut DedupTable) -> Result<RObject> {
+fn parse_builtin(cursor: &mut Cursor<&[u8]>, _ref_table: &mut RefTable, _symbol_table: &mut SymbolTable, _dedup_table: &mut DedupTable) -> Result<RObject> {
     // Read the string length
     let length = cursor.read_i32::<BigEndian>()?;
 
@@ -989,6 +1085,10 @@ fn parse_charsxp_content(cursor: &mut Cursor<&[u8]>) -> Result<String> {
 fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
     let mut attrs = Attributes::new();
 
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[PARSE_ATTRS] Received attr_obj type: {:?}", std::mem::discriminant(&attr_obj));
+    }
+
     // Attributes are typically stored as a pairlist (LISTSXP)
     // We need to extract the TAG (name) and CAR (value) from each pair
     match attr_obj {
@@ -1092,25 +1192,11 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
             // Just return empty attributes
             return Ok(attrs);
         }
-        RObject::WithAttributes { object, attributes: inner_attrs } => {
-            // This is a VECSXP with attributes - the names are in the attributes
-            // and the values are in the list
-            match object.as_ref() {
-                RObject::List(elements) => {
-                    // Get the names from the attributes
-                    if let Some(RObject::Character(names)) = inner_attrs.get("names") {
-                        // Create attribute pairs from names and values
-                        for (name, value) in names.iter().zip(elements.iter()) {
-                            attrs.insert(name.clone(), value.clone());
-                        }
-                    }
-                    return Ok(attrs);
-                }
-                _ => {
-                    // If the inner object is not a list, recurse on it
-                    return parse_attributes(*object.clone());
-                }
-            }
+        RObject::WithAttributes { object: _, attributes: inner_attrs } => {
+            // When we receive a WithAttributes as an attributes object,
+            // we should return its attributes field directly, not transform it.
+            // The inner_attrs already contains the parsed attributes (like "names", "row.names", etc.)
+            return Ok(inner_attrs.clone());
         }
         RObject::Integer(vec) if vec.len() == 1 => {
             // Single integer might be a reference index or special marker
