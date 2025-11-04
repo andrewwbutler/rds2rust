@@ -400,10 +400,11 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol_tab
                 }
             }
         }
-        ALTREP_SXP => {
+        ALTREP_SXP | ALTREP_SXP_ALT => {
             // ALTREP object (version 3 feature)
             // Structure: class_info, state, attributes
             // ALTREP handles its own attributes internally, so parse them here
+            // Note: R uses both 238 (0xEE) and 249 (0xF9) for ALTREP depending on version
             let class_info = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
             let state = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
             let attributes_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;

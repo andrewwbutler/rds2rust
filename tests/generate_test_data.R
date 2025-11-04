@@ -405,4 +405,26 @@ list3 <- list(p = 100, q = 200, r = 300)
 symbol_table_test <- list(first = list1, second = list2, third = list3)
 saveRDS(symbol_table_test, file.path(output_dir, "symbol_table_test.rds"))
 
+# ALTREP test: Compact integer sequence
+# R uses ALTREP to efficiently represent sequences like 1:n
+# This should be serialized as ALTREP type 249 (0xF9) or 238 (0xEE)
+altrep_intseq <- 1:1000
+saveRDS(altrep_intseq, file.path(output_dir, "altrep_intseq.rds"))
+
+# ALTREP test: Compact real sequence
+altrep_realseq <- seq(1.0, 1000.0, by = 1.0)
+saveRDS(altrep_realseq, file.path(output_dir, "altrep_realseq.rds"))
+
+# ALTREP test: List containing ALTREP sequence
+altrep_in_list <- list(
+    seq = 1:100,
+    data = c(1.5, 2.5, 3.5),
+    another_seq = 50:150
+)
+saveRDS(altrep_in_list, file.path(output_dir, "altrep_in_list.rds"))
+
+# Regular integer vector (no ALTREP) for comparison
+regular_int <- c(1L, 2L, 3L, 4L, 5L)
+saveRDS(regular_int, file.path(output_dir, "regular_int.rds"))
+
 cat("Test RDS files generated successfully in", output_dir, "\n")

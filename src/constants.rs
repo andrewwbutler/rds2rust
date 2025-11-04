@@ -67,7 +67,11 @@ pub const S4SXP: u32 = 25;
 /// These are marker types used in the serialization format.
 
 /// ALTREP object (version 3 feature)
+/// Note: R uses different ALTREP type codes depending on context:
+/// - 238 (0xEE) for some ALTREP types
+/// - 249 (0xF9) for other ALTREP types (newer format)
 pub const ALTREP_SXP: u32 = 238; // 0xEE
+pub const ALTREP_SXP_ALT: u32 = 249; // 0xF9
 
 /// Unbound value (missing argument marker)
 pub const UNBOUNDVALUE_SXP: u32 = 251; // 0xFB
