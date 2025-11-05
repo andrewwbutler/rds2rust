@@ -453,4 +453,242 @@ saveRDS(func_list, file.path(output_dir, "bytecode_in_list.rds"))
 uncompiled_func <- simple_func
 saveRDS(uncompiled_func, file.path(output_dir, "uncompiled_func.rds"))
 
+# ==============================================================================
+# Advanced serialization format tests
+# ==============================================================================
+
+# Test compact 3-byte CHARSXP length encoding
+# Note: This is an R-internal optimization that may or may not trigger
+# We create various string patterns to potentially trigger compact encoding
+compact_strings <- c(
+  "ExampleObject",  # 13 characters
+  "package",        # 7 characters
+  "namespace",      # 9 characters
+  "environment"     # 11 characters
+)
+saveRDS(compact_strings, file.path(output_dir, "compact_strings.rds"))
+
+# Test SYMSXP (symbols) in character vectors
+# Symbols can appear in character vectors in some R serialization contexts
+# Create a structure that might serialize symbols
+sym_vec <- c("x", "y", "z")
+# Add as symbols by using them in a formula context
+formula_with_syms <- y ~ x + z
+saveRDS(formula_with_syms, file.path(output_dir, "formula_with_symbols.rds"))
+
+# Test nested character vectors (unusual but can occur)
+# Create a list containing character vectors at multiple levels
+nested_chars <- list(
+  outer = c("level1_a", "level1_b"),
+  inner = list(
+    nested_vec = c("level2_a", "level2_b", "level2_c"),
+    deep = list(
+      deep_vec = c("level3_a", "level3_b")
+    )
+  )
+)
+saveRDS(nested_chars, file.path(output_dir, "nested_char_vectors.rds"))
+
+# Test character vector with various element types
+# This tests the generic object handling in STRSXP parsing
+mixed_attr_list <- list(
+  strings = c("a", "b", "c"),
+  numbers = 1:5,
+  reals = c(1.1, 2.2, 3.3)
+)
+saveRDS(mixed_attr_list, file.path(output_dir, "mixed_types_list.rds"))
+
+# Test S3 object used as attributes container
+# Create an S3 object with rich attributes
+s3_with_attrs <- structure(
+  list(value = 42),
+  class = "custom_class",
+  metadata = "test",
+  version = 1L,
+  timestamp = "2024-01-01"
+)
+saveRDS(s3_with_attrs, file.path(output_dir, "s3_rich_attributes.rds"))
+
+# Test namespace-related structures
+# Create a function from a package namespace to potentially trigger namespace serialization
+# Note: Actual namespace serialization requires package context
+pkg_function <- stats::median
+saveRDS(pkg_function, file.path(output_dir, "package_function.rds"))
+
+# Test multiple pseudo-types in one structure
+# Create a complex structure that exercises various pseudo-types
+complex_structure <- list(
+  func = compiled_func,           # May contain bytecode (BCODESXP, BCREPREF, BCREPDEF)
+  env = env_with_promise,        # Contains promises (PROMSXP)
+  special = special_if,          # Special function (SPECIALSXP)
+  builtin = builtin_sum,         # Builtin function (BUILTINSXP)
+  pkg_func = stats::median       # Package function (may have namespace refs)
+)
+saveRDS(complex_structure, file.path(output_dir, "complex_pseudo_types.rds"))
+
+# Test large integer vector (to test non-CHARSXP elements in STRSXP contexts)
+large_int_vec <- 1:1000
+list_with_large_int <- list(
+  name = "large_vector",
+  data = large_int_vec,
+  size = length(large_int_vec)
+)
+saveRDS(list_with_large_int, file.path(output_dir, "list_with_large_int.rds"))
+
+# Test REFSXP with various reference distances
+# Create multiple shared references to test reference table
+shared_obj <- list(data = 1:100, meta = "shared")
+multi_ref_structure <- list(
+  ref1 = shared_obj,
+  middle = list(
+    ref2 = shared_obj,
+    other = "data"
+  ),
+  ref3 = shared_obj,
+  deep = list(
+    nested = list(
+      ref4 = shared_obj
+    )
+  )
+)
+saveRDS(multi_ref_structure, file.path(output_dir, "multi_level_refs.rds"))
+
+# Test attribute edge cases
+# NULL attributes
+obj_null_attrs <- structure(c(1, 2, 3))
+saveRDS(obj_null_attrs, file.path(output_dir, "no_attributes.rds"))
+
+# Empty character vector as attribute
+obj_empty_char_attr <- structure(
+  c(1, 2, 3),
+  names = character(0)
+)
+saveRDS(obj_empty_char_attr, file.path(output_dir, "empty_char_attribute.rds"))
+
+# Test WithAttributes wrapping various types
+# Integer with attributes
+int_with_custom_attrs <- structure(
+  1:10,
+  custom_attr = "metadata",
+  dimension_info = c(2, 5)
+)
+saveRDS(int_with_custom_attrs, file.path(output_dir, "int_with_custom_attrs.rds"))
+
+# Real with attributes
+real_with_custom_attrs <- structure(
+  seq(1.0, 10.0, by=0.5),
+  units = "meters",
+  precision = 0.5
+)
+saveRDS(real_with_custom_attrs, file.path(output_dir, "real_with_custom_attrs.rds"))
+
+# Character with attributes
+char_with_custom_attrs <- structure(
+  c("x", "y", "z"),
+  encoding = "UTF-8",
+  origin = "user_input"
+)
+saveRDS(char_with_custom_attrs, file.path(output_dir, "char_with_custom_attrs.rds"))
+
+# Test compact encoding edge cases
+# Very short string (< 256 bytes)
+short_str <- "x"
+saveRDS(short_str, file.path(output_dir, "string_very_short.rds"))
+
+# Medium string (256-65535 bytes)
+medium_str <- paste(rep("a", 500), collapse="")
+saveRDS(medium_str, file.path(output_dir, "string_medium.rds"))
+
+# Long string (> 65535 bytes)
+long_str <- paste(rep("abcdefghij", 7000), collapse="")
+saveRDS(long_str, file.path(output_dir, "string_long.rds"))
+
+# Test CHARSXP with encoding attributes
+# UTF-8 string
+utf8_str <- "Hello 世界 🌍"
+Encoding(utf8_str) <- "UTF-8"
+saveRDS(utf8_str, file.path(output_dir, "string_utf8.rds"))
+
+# Latin1 string
+latin1_str <- "Caf\xe9"  # Café in Latin1
+Encoding(latin1_str) <- "latin1"
+saveRDS(latin1_str, file.path(output_dir, "string_latin1.rds"))
+
+# Test reference tracking with symbols
+# Create structure with many repeated symbol names
+ref_symbol_structure <- list(
+  a = list(x = 1, y = 2, z = 3),
+  b = list(x = 4, y = 5, z = 6),
+  c = list(x = 7, y = 8, z = 9),
+  d = list(x = 10, y = 11, z = 12)
+)
+saveRDS(ref_symbol_structure, file.path(output_dir, "repeated_symbol_names.rds"))
+
+# Test various NULL-like values
+# Plain NULL
+saveRDS(NULL, file.path(output_dir, "null_plain.rds"))
+
+# NULL in a list
+null_in_list <- list(a = 1, b = NULL, c = 3)
+saveRDS(null_in_list, file.path(output_dir, "null_in_list.rds"))
+
+# Multiple NULLs
+multi_null <- list(NULL, NULL, NULL)
+saveRDS(multi_null, file.path(output_dir, "multi_null.rds"))
+
+# Test environment edge cases
+# Empty environment
+empty_env <- new.env()
+saveRDS(empty_env, file.path(output_dir, "environment_empty.rds"))
+
+# Environment with multiple types
+rich_env <- new.env()
+rich_env$int_val <- 42L
+rich_env$real_val <- 3.14
+rich_env$char_val <- "hello"
+rich_env$list_val <- list(a = 1, b = 2)
+rich_env$func_val <- function(x) x + 1
+saveRDS(rich_env, file.path(output_dir, "environment_rich.rds"))
+
+# Test pairlist edge cases (used for attributes and function formals)
+# Pairlist with mixed types
+mixed_pairlist <- pairlist(a = 1L, b = 2.5, c = "text", d = TRUE)
+saveRDS(mixed_pairlist, file.path(output_dir, "pairlist_mixed.rds"))
+
+# Test language objects with various structures
+# Simple call
+simple_call <- quote(f(x))
+saveRDS(simple_call, file.path(output_dir, "lang_simple_call.rds"))
+
+# Call with named arguments
+named_call <- quote(f(x = 1, y = 2, z = 3))
+saveRDS(named_call, file.path(output_dir, "lang_named_args.rds"))
+
+# Deeply nested call
+deep_call <- quote(f(g(h(i(j(k(x)))))))
+saveRDS(deep_call, file.path(output_dir, "lang_deep_nested.rds"))
+
+# Test edge cases for unknown types (types 26-237)
+# These shouldn't normally occur, but we test robustness
+# We can't directly create unknown types, but we test our handling
+
+# Test malformed data resistance
+# Very small valid RDS file
+tiny_obj <- 1L
+saveRDS(tiny_obj, file.path(output_dir, "tiny_object.rds"))
+
+# Test attributes with all standard types
+all_types_attrs <- structure(
+  c(1, 2, 3),
+  int_attr = 42L,
+  real_attr = 3.14,
+  char_attr = "text",
+  logical_attr = TRUE,
+  null_attr = NULL,
+  list_attr = list(a = 1, b = 2),
+  vec_attr = c(1, 2, 3)
+)
+saveRDS(all_types_attrs, file.path(output_dir, "all_types_attributes.rds"))
+
 cat("Test RDS files generated successfully in", output_dir, "\n")
+cat("Total files:", length(list.files(output_dir, pattern = "\\.rds$")), "\n")

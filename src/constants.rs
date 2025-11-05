@@ -60,6 +60,12 @@ pub const EXPRSXP: u32 = 20;
 /// Bytecode (compiled R function)
 pub const BCODESXP: u32 = 21;
 
+/// External pointer
+pub const EXTPTRSXP: u32 = 22;
+
+/// Weak reference
+pub const WEAKREFSXP: u32 = 23;
+
 /// Raw (byte) vector
 pub const RAWSXP: u32 = 24;
 
@@ -70,20 +76,49 @@ pub const S4SXP: u32 = 25;
 /// These are marker types used in the serialization format.
 
 /// ALTREP object (version 3 feature)
-/// Note: R uses different ALTREP type codes depending on context:
-/// - 238 (0xEE) for some ALTREP types
-/// - 249 (0xF9) for other ALTREP types (newer format)
 pub const ALTREP_SXP: u32 = 238; // 0xEE
-pub const ALTREP_SXP_ALT: u32 = 249; // 0xF9
+
+/// Attribute list (alternate encoding)
+pub const ATTRLISTSXP: u32 = 239; // 0xEF
+
+/// Attribute language (alternate encoding)
+pub const ATTRLANGSXP: u32 = 240; // 0xF0
 
 /// Base environment marker
-pub const BASEENV_SXP: u32 = 244; // 0xF4
+pub const BASEENV_SXP: u32 = 241; // 0xF1
 
-/// Unbound value (missing argument marker)
-pub const UNBOUNDVALUE_SXP: u32 = 251; // 0xFB
+/// Empty environment marker
+pub const EMPTYENV_SXP: u32 = 242; // 0xF2
 
-/// Empty argument marker
-pub const EMPTYENV_SXP: u32 = 252; // 0xFC
+/// Bytecode representation reference
+pub const BCREPREF: u32 = 243; // 0xF3
+
+/// Bytecode representation definition
+pub const BCREPDEF: u32 = 244; // 0xF4
+
+/// Generic function reference
+pub const GENERICREFSXP: u32 = 245; // 0xF5
+
+/// Class reference
+pub const CLASSREFSXP: u32 = 246; // 0xF6
+
+/// Persistent object marker
+pub const PERSISTSXP: u32 = 247; // 0xF7
+
+/// Package environment
+pub const PACKAGESXP: u32 = 248; // 0xF8
+
+/// Namespace environment (serialization marker)
+pub const NAMESPACESXP_SERIAL: u32 = 249; // 0xF9
+
+/// Base namespace marker
+pub const BASENAMESPACE_SXP: u32 = 250; // 0xFA
+
+/// Missing argument (unbound value)
+pub const MISSINGARG_SXP: u32 = 251; // 0xFB
+
+/// Unbound value marker (same as MISSINGARG_SXP in some contexts)
+pub const UNBOUNDVALUE_SXP: u32 = 252; // 0xFC
 
 /// Global environment
 pub const GLOBALENV_SXP: u32 = 253; // 0xFD
@@ -93,6 +128,11 @@ pub const NILVALUE_SXP: u32 = 254; // 0xFE
 
 /// Reference to an already seen object
 pub const REFSXP: u32 = 255; // 0xFF
+
+/// Namespace environment (type 123, 0x7B)
+/// This appears in R packages/Seurat objects and represents namespace environments
+/// that cannot be meaningfully serialized across sessions
+pub const NAMESPACESXP: u32 = 123; // 0x7B
 
 /// Flag bit masks
 /// These are used in the flags field of serialized objects.
