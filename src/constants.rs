@@ -130,7 +130,7 @@ pub const NILVALUE_SXP: u32 = 254; // 0xFE
 pub const REFSXP: u32 = 255; // 0xFF
 
 /// Namespace environment (type 123, 0x7B)
-/// This appears in R packages/Seurat objects and represents namespace environments
+/// This appears in R packages objects and represents namespace environments
 /// that cannot be meaningfully serialized across sessions
 pub const NAMESPACESXP: u32 = 123; // 0x7B
 

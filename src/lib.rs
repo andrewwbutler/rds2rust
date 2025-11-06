@@ -10,7 +10,7 @@ mod types;
 mod writer;
 
 pub use error::{Error, Result};
-pub use types::{Logical, PairlistElement, RObject};
+pub use types::{Logical, PairlistElement, RObject, S4ObjectData};
 
 /// Read an RDS file from a byte slice.
 pub fn read_rds(data: &[u8]) -> Result<RObject> {

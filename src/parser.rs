@@ -1634,6 +1634,21 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
             }
             return Ok(s3.attributes.clone());
         }
+        RObject::S4Object(s4) => {
+            // S4 object used as attributes container
+            // Extract the class field and slots and convert them to attributes
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[PARSE_ATTRS] S4Object as attributes, extracting class and slots");
+            }
+            // Add the class as a "class" attribute (RObject::Character)
+            if !s4.class.is_empty() {
+                attrs.insert(Arc::from("class"), RObject::Character(s4.class.clone()));
+            }
+            for (slot_name, slot_value) in &s4.slots {
+                attrs.insert(slot_name.clone(), slot_value.clone());
+            }
+            return Ok(attrs);
+        }
         _ => {
             // Unexpected attribute structure - this can happen with certain R serialization patterns
             // For example, when attributes are encoded using alternate representations

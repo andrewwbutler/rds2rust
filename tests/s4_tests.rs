@@ -227,3 +227,122 @@ fn test_s4_complex_roundtrip() {
 
     assert_eq!(obj, deserialized);
 }
+
+// =============================================================================
+// S4 Object as Attribute Container Tests
+// =============================================================================
+
+#[test]
+fn test_s4_as_attribute_container() {
+    // This test verifies the fix for S4 objects used as attribute containers
+    // The bug was that parse_attributes() would return empty attributes when
+    // encountering an S4Object, causing the class field to be lost.
+
+    use std::collections::HashMap;
+    use rds2rust::S4ObjectData;
+
+    // Create an S4 object with a class and slots
+    let mut slots = HashMap::new();
+    slots.insert(Arc::from("data"), RObject::Integer(vec![1, 2, 3]));
+    slots.insert(Arc::from("metadata"), RObject::Character(vec![Arc::from("test")]));
+
+    let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
+        class: vec![Arc::from("ComplexObject"), Arc::from("BaseClass")],
+        slots,
+    }));
+
+    // Serialize and deserialize
+    let serialized = write_rds(&s4_obj).expect("Failed to serialize S4 object");
+    let deserialized = read_rds(&serialized).expect("Failed to deserialize S4 object");
+
+    // Verify the object structure is preserved
+    match deserialized {
+        RObject::S4Object(s4_data) => {
+            // Most importantly, verify the class field is not empty!
+            assert!(!s4_data.class.is_empty(), "S4 object class should not be empty");
+            assert_eq!(s4_data.class.len(), 2, "Should have 2 classes");
+            assert_eq!(s4_data.class[0].as_ref(), "ComplexObject");
+            assert_eq!(s4_data.class[1].as_ref(), "BaseClass");
+
+            // Verify slots are preserved
+            assert_eq!(s4_data.slots.len(), 2, "Should have 2 slots");
+
+            match s4_data.slots.get(&Arc::from("data")) {
+                Some(RObject::Integer(vals)) => {
+                    assert_eq!(vals, &vec![1, 2, 3]);
+                }
+                _ => panic!("Expected 'data' slot with integer values"),
+            }
+
+            match s4_data.slots.get(&Arc::from("metadata")) {
+                Some(RObject::Character(vals)) => {
+                    assert_eq!(vals.len(), 1);
+                    assert_eq!(vals[0].as_ref(), "test");
+                }
+                _ => panic!("Expected 'metadata' slot with character value"),
+            }
+        }
+        _ => panic!("Expected S4Object after deserialization"),
+    }
+}
+
+#[test]
+fn test_s4_nested_as_attribute() {
+    // Test S4 objects that contain other S4 objects in their slots
+    use std::collections::HashMap;
+    use rds2rust::S4ObjectData;
+
+    // Create inner S4 object
+    let mut inner_slots = HashMap::new();
+    inner_slots.insert(Arc::from("value"), RObject::Real(vec![3.14]));
+
+    let inner_s4 = RObject::S4Object(Box::new(S4ObjectData {
+        class: vec![Arc::from("InnerClass")],
+        slots: inner_slots,
+    }));
+
+    // Create outer S4 object containing the inner one
+    let mut outer_slots = HashMap::new();
+    outer_slots.insert(Arc::from("inner"), inner_s4);
+    outer_slots.insert(Arc::from("name"), RObject::Character(vec![Arc::from("outer")]));
+
+    let outer_s4 = RObject::S4Object(Box::new(S4ObjectData {
+        class: vec![Arc::from("OuterClass")],
+        slots: outer_slots,
+    }));
+
+    // Serialize and deserialize
+    let serialized = write_rds(&outer_s4).expect("Failed to serialize nested S4 object");
+    let deserialized = read_rds(&serialized).expect("Failed to deserialize nested S4 object");
+
+    // Verify the structure
+    match deserialized {
+        RObject::S4Object(outer_data) => {
+            // Verify outer class
+            assert_eq!(outer_data.class.len(), 1);
+            assert_eq!(outer_data.class[0].as_ref(), "OuterClass");
+            assert_eq!(outer_data.slots.len(), 2);
+
+            // Verify the nested S4 object
+            match outer_data.slots.get(&Arc::from("inner")) {
+                Some(RObject::S4Object(inner_data)) => {
+                    // Critical: verify the inner S4 object's class is preserved
+                    assert!(!inner_data.class.is_empty(), "Inner S4 object class should not be empty");
+                    assert_eq!(inner_data.class.len(), 1);
+                    assert_eq!(inner_data.class[0].as_ref(), "InnerClass");
+
+                    // Verify inner slots
+                    match inner_data.slots.get(&Arc::from("value")) {
+                        Some(RObject::Real(vals)) => {
+                            assert_eq!(vals.len(), 1);
+                            assert_eq!(vals[0], 3.14);
+                        }
+                        _ => panic!("Expected 'value' slot in inner S4 object"),
+                    }
+                }
+                _ => panic!("Expected nested S4Object in 'inner' slot"),
+            }
+        }
+        _ => panic!("Expected outer S4Object after deserialization"),
+    }
+}
