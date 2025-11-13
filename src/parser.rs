@@ -326,12 +326,31 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol_tab
     };
 
 
-    // For pairlists and language objects, attributes come BEFORE the data (CAR/CDR)
+    // For pairlists, language objects, and closures, attributes come BEFORE the data
+    // (From R's serialize.c: LISTSXP/LANGSXP have ATTRIB before CAR/CDR,
+    //  CLOSXP has ATTRIB before CLOENV/FORMALS/BODY)
     // Parse them early if present
-    let early_attributes = if has_attr && (sexp_type == LISTSXP || sexp_type == LANGSXP) {
+    // Note: For CLOSXP, R uses HAS_TAG_BIT to indicate attributes (not HAS_ATTR_BIT)
+    if std::env::var("RDS_DEBUG").is_ok() && sexp_type == CLOSXP {
+        eprintln!("[CLOSXP_CHECK] type={}, has_attr={}, has_tag={}, CLOSXP={}",
+                 sexp_type, has_attr, has_tag, CLOSXP);
+        let cond1 = has_attr && (sexp_type == LISTSXP || sexp_type == LANGSXP);
+        let cond2 = has_tag && sexp_type == CLOSXP;
+        eprintln!("[CLOSXP_CHECK] cond1={}, cond2={}, combined={}",
+                 cond1, cond2, cond1 || cond2);
+    }
+    let early_attributes = if has_attr && (sexp_type == LISTSXP || sexp_type == LANGSXP || sexp_type == CLOSXP) {
+        eprintln!("[EARLY_ATTR_BLOCK] Entered early_attributes block for type {}", sexp_type);
+        if std::env::var("RDS_DEBUG").is_ok() {
+            eprintln!("[EARLY_ATTR] Parsing early attributes for type {} (has_attr={}, has_tag={})",
+                     sexp_type, has_attr, has_tag);
+        }
         let attr_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
         Some(parse_attributes(attr_obj)?)
     } else {
+        if std::env::var("RDS_DEBUG").is_ok() && sexp_type == CLOSXP {
+            eprintln!("[CLOSXP_CHECK] CLOSXP without HAS_ATTR, not parsing early attributes");
+        }
         None
     };
 
@@ -363,7 +382,16 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol_tab
         LGLSXP => parse_logical_vector(cursor)?,
         STRSXP => parse_character_vector(cursor, ref_table, symbol_table, dedup_table)?,
         RAWSXP => parse_raw_vector(cursor)?,
-        S4SXP => parse_s4_object(cursor)?,
+        S4SXP => {
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!(
+                    "[S4] Parsing S4 object, has_attr={}, position={}",
+                    has_attr,
+                    cursor.position()
+                );
+            }
+            parse_s4_object(cursor, ref_table, symbol_table, dedup_table)?
+        },
         VECSXP => parse_list(cursor, ref_table, symbol_table, dedup_table, has_attr)?,
         EXPRSXP => parse_expression(cursor, ref_table, symbol_table, dedup_table)?,
         BCODESXP => parse_bytecode(cursor, ref_table, symbol_table, dedup_table)?,
@@ -590,13 +618,29 @@ fn parse_object(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol_tab
     let attributes = if let Some(attrs) = early_attributes {
         attrs
     } else if has_attr {
+        let mut attr_obj = None;
         if std::env::var("RDS_DEBUG").is_ok() {
             if let Some(idx) = ref_index {
-                eprintln!("[PARSE] Parsing attributes for ref {} (type {})", idx, sexp_type);
+                eprintln!(
+                    "[PARSE] Parsing attributes for ref {} (type {}) at byte {}",
+                    idx,
+                    sexp_type,
+                    cursor.position()
+                );
             }
         }
-        let attr_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-        parse_attributes(attr_obj)?
+        let stream_len = cursor.get_ref().len() as u64;
+        if cursor.position() >= stream_len && sexp_type == S4SXP {
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[PARSE] No attribute data remaining for S4 object, treating as empty");
+            }
+            attr_obj = Some(RObject::Null);
+        }
+        let attr_value = match attr_obj {
+            Some(obj) => obj,
+            None => parse_object(cursor, ref_table, symbol_table, dedup_table)?,
+        };
+        parse_attributes(attr_value)?
     } else {
         Attributes::new()
     };
@@ -896,10 +940,14 @@ fn parse_complex_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
 /// Parse an S4 object (S4SXP).
 /// S4 objects in RDS are just markers - the actual data is in attributes.
 /// We return a placeholder NULL and let the attribute parsing handle it.
-fn parse_s4_object(_cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
-    // S4SXP is just a marker type - it doesn't contain any data itself.
-    // All the S4 data (class and slots) is stored in attributes.
-    // Return a NULL as a placeholder - the attribute parsing will convert this to S4Object.
+fn parse_s4_object(
+    _cursor: &mut Cursor<&[u8]>,
+    _ref_table: &mut RefTable,
+    _symbol_table: &mut SymbolTable,
+    _dedup_table: &mut DedupTable,
+) -> Result<RObject> {
+    // Slot data is stored in the attributes - the data component is typically unused.
+    // Leave parsing to the attribute handler.
     Ok(RObject::Null)
 }
 
@@ -980,53 +1028,250 @@ fn parse_expression(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol
     Ok(RObject::Expression(elements))
 }
 
-/// Parse bytecode (BCODESXP).
-/// Bytecode represents compiled R functions.
-/// Structure: code vector, constants pool, expression (original source)
-fn parse_bytecode(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable) -> Result<RObject> {
-    // Parse the three components of bytecode
+/// Parse bytecode (BCODESXP) using R's ReadBC/ReadBC1 structure.
+fn parse_bytecode(
+    cursor: &mut Cursor<&[u8]>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+) -> Result<RObject> {
+    let reps_len = cursor.read_u32::<BigEndian>()? as usize;
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[BYTECODE] reps_len={} (pos={})", reps_len, cursor.position());
+    }
+    let mut reps = vec![None; reps_len];
+    parse_bytecode_body(cursor, ref_table, symbol_table, dedup_table, &mut reps)
+}
+
+fn parse_bytecode_body(
+    cursor: &mut Cursor<&[u8]>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    reps: &mut [Option<RObject>],
+) -> Result<RObject> {
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[BYTECODE] Body start at byte {}", cursor.position());
+    }
     let code = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-    let constants = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-    let expr = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let constants = parse_bc_constants(cursor, ref_table, symbol_table, dedup_table, reps)?;
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[BYTECODE] Body end at byte {}", cursor.position());
+    }
 
     Ok(RObject::Bytecode {
         code: Box::new(code),
-        constants: Box::new(constants),
-        expr: Box::new(expr),
+        constants: Box::new(RObject::List(constants)),
+        expr: Box::new(RObject::Null),
     })
 }
 
-/// Parse a closure (CLOSXP).
-/// When has_tag is true: TAG (environment), FORMALS, BODY
-/// When has_tag is false: FORMALS, BODY, ENVIRONMENT
-fn parse_closure(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable) -> Result<RObject> {
-    let (formals, body, environment) = if has_tag {
-        // TAG holds the environment
-        let env = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-        let form = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-        // When has_tag is true, there seems to be an extra NULL object between formals and body
-        // This might be related to how R stores closure attributes or srcref
-        let maybe_body = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-        let bod = if matches!(maybe_body, RObject::Null) {
-            // Skip this NULL and read the actual body
-            parse_object(cursor, ref_table, symbol_table, dedup_table)?
-        } else {
-            // This is the body
-            maybe_body
+fn parse_bc_constants(
+    cursor: &mut Cursor<&[u8]>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    reps: &mut [Option<RObject>],
+) -> Result<Vec<RObject>> {
+    let count = cursor.read_u32::<BigEndian>()? as usize;
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[BYTECODE] Constant count={} (pos={})", count, cursor.position());
+    }
+    let mut constants = Vec::with_capacity(count);
+
+    for _ in 0..count {
+        let type_code = cursor.read_i32::<BigEndian>()?;
+        if std::env::var("RDS_DEBUG").is_ok() {
+            eprintln!("[BYTECODE] Constant type={} (pos={})", type_code, cursor.position());
+        }
+        let value = match type_code as u32 {
+            BCODESXP => parse_bytecode_body(cursor, ref_table, symbol_table, dedup_table, reps)?,
+            BCREPREF | BCREPDEF | LANGSXP | LISTSXP | ATTRLANGSXP | ATTRLISTSXP => {
+                parse_bc_lang(cursor, ref_table, symbol_table, dedup_table, reps, type_code)?
+            }
+            _ => parse_object(cursor, ref_table, symbol_table, dedup_table)?,
         };
-        (form, bod, env)
+        constants.push(value);
+    }
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[BYTECODE] Finished constants at pos {}", cursor.position());
+    }
+
+    Ok(constants)
+}
+
+fn parse_bc_lang(
+    cursor: &mut Cursor<&[u8]>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    reps: &mut [Option<RObject>],
+    type_code: i32,
+) -> Result<RObject> {
+    match type_code as u32 {
+        BCREPREF => {
+            let index = cursor.read_u32::<BigEndian>()? as usize;
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[BYTECODE] BCREPREF index={} (pos={})", index, cursor.position());
+            }
+            reps
+                .get(index)
+                .and_then(|entry| entry.clone())
+                .ok_or_else(|| Error::InvalidFormat(format!("Invalid BCREPREF index {}", index)))
+        }
+        BCREPDEF => {
+            let index = cursor.read_u32::<BigEndian>()? as usize;
+            let inner_type = cursor.read_i32::<BigEndian>()?;
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[BYTECODE] BCREPDEF index={}, inner_type={} (pos={})", index, inner_type, cursor.position());
+            }
+            let value = parse_bc_lang(cursor, ref_table, symbol_table, dedup_table, reps, inner_type)?;
+            if let Some(slot) = reps.get_mut(index) {
+                *slot = Some(value.clone());
+            }
+            Ok(value)
+        }
+        ATTRLANGSXP => parse_bc_lang_struct(cursor, ref_table, symbol_table, dedup_table, reps, LANGSXP, true),
+        ATTRLISTSXP => parse_bc_lang_struct(cursor, ref_table, symbol_table, dedup_table, reps, LISTSXP, true),
+        LANGSXP => parse_bc_lang_struct(cursor, ref_table, symbol_table, dedup_table, reps, LANGSXP, false),
+        LISTSXP => parse_bc_lang_struct(cursor, ref_table, symbol_table, dedup_table, reps, LISTSXP, false),
+        _ => parse_object(cursor, ref_table, symbol_table, dedup_table),
+    }
+}
+
+fn parse_bc_lang_struct(
+    cursor: &mut Cursor<&[u8]>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    reps: &mut [Option<RObject>],
+    actual_type: u32,
+    has_attr: bool,
+) -> Result<RObject> {
+    let attr_obj = if has_attr {
+        Some(parse_object(cursor, ref_table, symbol_table, dedup_table)?)
     } else {
-        // Standard order: formals, body, environment
-        let form = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-        let bod = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-        let env = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-        (form, bod, env)
+        None
     };
 
+    let tag_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let car_type = cursor.read_i32::<BigEndian>()?;
+    let car = parse_bc_lang(cursor, ref_table, symbol_table, dedup_table, reps, car_type)?;
+    let cdr_type = cursor.read_i32::<BigEndian>()?;
+    let cdr = parse_bc_lang(cursor, ref_table, symbol_table, dedup_table, reps, cdr_type)?;
+
+    let mut base = match actual_type {
+        LANGSXP => build_language_from_bc(car, cdr),
+        LISTSXP => build_pairlist_from_bc(tag_obj, car, cdr),
+        _ => return Err(Error::InvalidFormat(format!("Unknown BC lang type {}", actual_type))),
+    };
+
+    if let Some(attr) = attr_obj {
+        let attrs = parse_attributes(attr)?;
+        if !attrs.is_empty() {
+            base = RObject::WithAttributes {
+                object: Box::new(base),
+                attributes: attrs,
+            };
+        }
+    }
+
+    Ok(base)
+}
+
+fn build_language_from_bc(car: RObject, cdr: RObject) -> RObject {
+    let mut elements = Vec::new();
+    elements.push(car);
+    match cdr {
+        RObject::Null => {}
+        RObject::Pairlist(rest) => {
+            for elem in rest {
+                elements.push(elem.value);
+            }
+        }
+        other => elements.push(other),
+    }
+    RObject::Language(elements)
+}
+
+fn build_pairlist_from_bc(tag_obj: RObject, car: RObject, cdr: RObject) -> RObject {
+    let tag_name = extract_tag_name(tag_obj.clone());
+    let tag_storage = match tag_obj {
+        RObject::Null => None,
+        other => Some(Box::new(other)),
+    };
+
+    let mut elements = Vec::new();
+    elements.push(PairlistElement {
+        tag: tag_name,
+        value: car,
+        tag_object: tag_storage,
+    });
+
+    match cdr {
+        RObject::Null => {}
+        RObject::Pairlist(mut rest) => elements.append(&mut rest),
+        other => elements.push(PairlistElement {
+            tag: None,
+            value: other,
+            tag_object: None,
+        }),
+    }
+
+    RObject::Pairlist(elements)
+}
+
+/// Parse a closure (CLOSXP).
+/// R's serialization format (from serialize.c WriteItem for CLOSXP):
+/// 1. ATTRIB (attributes) - only if hasattr flag is set
+/// 2. CLOENV (closure environment)
+/// 3. FORMALS (formal parameters)
+/// 4. BODY (function body)
+///
+/// Note: The has_tag parameter indicates whether attributes were written first.
+/// When has_tag is true, it means the closure has attributes that need to be parsed
+/// and returned separately for the caller to handle.
+fn parse_closure(cursor: &mut Cursor<&[u8]>, _has_tag: bool, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable) -> Result<RObject> {
+    // If has_tag is true, attributes were serialized first and should be parsed by parse_object,
+    // not by parse_closure. The has_tag flag tells us that attributes exist, but they're handled
+    // at a higher level (in parse_object's attribute handling at line ~598).
+    //
+    // However, we still need to parse the closure components in the correct order.
+    // When has_tag is set, it changes the serialization order subtly in some R versions,
+    // but the core components are always: CLOENV, FORMALS, BODY
+
+    if std::env::var("RDS_DEBUG").is_ok() {
+        let pos = cursor.position();
+        eprintln!("[CLOSURE] Starting parse at byte {}", pos);
+    }
+
+    // Standard order (from R's serialize.c): environment, formals, body
+    let env_start = cursor.position();
+    let env = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[CLOSURE] Environment parsed (bytes {}-{}): {:?}", env_start, cursor.position(),
+                  std::any::type_name_of_val(&env));
+    }
+
+    let form_start = cursor.position();
+    let form = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[CLOSURE] Formals parsed (bytes {}-{}): {:?}", form_start, cursor.position(),
+                  std::any::type_name_of_val(&form));
+    }
+
+    let body_start = cursor.position();
+    let bod = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[CLOSURE] Body parsed (bytes {}-{}): {:?}", body_start, cursor.position(),
+                  std::any::type_name_of_val(&bod));
+        eprintln!("[CLOSURE] Completed at byte {}", cursor.position());
+    }
+
     Ok(RObject::Closure {
-        formals: Box::new(formals),
-        body: Box::new(body),
-        environment: Box::new(environment),
+        formals: Box::new(form),
+        body: Box::new(bod),
+        environment: Box::new(env),
     })
 }
 
@@ -1042,6 +1287,8 @@ fn parse_environment(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbo
     let frame = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
     // Parse hashtab (can be NULL or a VECSXP)
     let hashtab = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    // Parse attributes (serialized even when NULL)
+    let _attrs = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
     // Note: attributes are NOT parsed here - they're handled by the HAS_ATTR flag
     // in parse_object
@@ -1057,21 +1304,24 @@ fn parse_environment(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbo
 /// Namespaces are special environments used by R packages.
 /// They have the same structure as regular environments but represent package namespaces.
 /// We treat them as NULL since they can't be meaningfully deserialized across sessions.
-fn parse_namespace(cursor: &mut Cursor<&[u8]>, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable) -> Result<RObject> {
-    // Namespaces have the same structure as environments:
-    // - locked flag
-    // - enclosing environment
-    // - frame (bindings)
-    // - hashtab
-    // Note: attributes are handled separately by the caller
+fn parse_namespace(
+    cursor: &mut Cursor<&[u8]>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+) -> Result<RObject> {
+    // Namespaces are serialized using OutStringVec: an unused marker,
+    // a length, then that many CHARSXP entries.
+    let _names_flag = cursor.read_u32::<BigEndian>()?;
+    let length = cursor.read_u32::<BigEndian>()? as usize;
 
-    // Parse and discard environment structure
-    let _locked = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-    let _enclosing = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-    let _frame = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-    let _hashtab = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    for _ in 0..length {
+        // Each entry is written via WriteItem on a CHARSXP
+        let _ = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    }
 
-    // Return NULL as namespaces can't be meaningfully deserialized
+    // We don't attempt to reconstruct actual namespace environments;
+    // treat them as NULL placeholders.
     Ok(RObject::Null)
 }
 
@@ -1114,13 +1364,18 @@ fn parse_language(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut Ref
     Ok(RObject::Language(elements))
 }
 
-/// Parse a pairlist (LISTSXP).
-fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable) -> Result<RObject> {
-    // Pairlists are serialized as: [TAG if HAS_TAG_BIT], CAR, CDR
-    let mut elements = Vec::new();
-
+/// Helper function to parse a single pairlist element (TAG if has_tag, then CAR).
+/// Does NOT parse the CDR - that's handled by the iterative loop in parse_pairlist.
+/// Returns (tag_name, tag_object, car_value).
+fn parse_pairlist_element(
+    cursor: &mut Cursor<&[u8]>,
+    has_tag: bool,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+) -> Result<(Option<Arc<str>>, Option<Box<RObject>>, RObject)> {
     if std::env::var("RDS_DEBUG").is_ok() {
-        eprintln!("[PAIRLIST] Parsing pairlist element, has_tag={}", has_tag);
+        eprintln!("[PAIRLIST_ELEM] Parsing element, has_tag={}", has_tag);
     }
 
     // Parse the TAG if present (comes before CAR)
@@ -1141,14 +1396,14 @@ fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut Ref
             cursor.set_position(pos + 4); // Skip the flags we just read
 
             if std::env::var("RDS_DEBUG").is_ok() {
-                eprintln!("[PAIRLIST] TAG is REFSXP({}), looking up in symbol table", ref_index);
+                eprintln!("[PAIRLIST_ELEM] TAG is REFSXP({}), looking up in symbol table", ref_index);
             }
 
             match symbol_table.get(ref_index) {
                 Some(obj) => {
                     if std::env::var("RDS_DEBUG").is_ok() {
                         if let RObject::Character(chars) = obj {
-                            eprintln!("[PAIRLIST]   Symbol table[{}] = {:?}", ref_index, chars);
+                            eprintln!("[PAIRLIST_ELEM]   Symbol table[{}] = {:?}", ref_index, chars);
                         }
                     }
                     obj.clone()
@@ -1166,16 +1421,16 @@ fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut Ref
         };
 
         if std::env::var("RDS_DEBUG").is_ok() {
-            eprintln!("[PAIRLIST] Parsed TAG object: {:?}", std::mem::discriminant(&tag_obj));
+            eprintln!("[PAIRLIST_ELEM] Parsed TAG object: {:?}", std::mem::discriminant(&tag_obj));
             if let RObject::Character(chars) = &tag_obj {
-                eprintln!("[PAIRLIST]   Character TAG = {:?}", chars);
+                eprintln!("[PAIRLIST_ELEM]   Character TAG = {:?}", chars);
             }
         }
         // Extract the tag name from the symbol or character object
         let tag_name = extract_tag_name(tag_obj.clone());
         if std::env::var("RDS_DEBUG").is_ok() {
             if let Some(ref name) = tag_name {
-                eprintln!("[PAIRLIST] Extracted TAG name: '{}'", name);
+                eprintln!("[PAIRLIST_ELEM] Extracted TAG name: '{}'", name);
             }
         }
         // Store both the extracted name and the raw object
@@ -1184,33 +1439,107 @@ fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut Ref
         (None, None)
     };
 
-    // Parse the CAR (first element)
+    // Parse the CAR (the value for this element)
     let car = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
-    // Parse the CDR (rest of list)
-    let cdr = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    Ok((tag, tag_object, car))
+}
 
-    // Add CAR to the pairlist with its tag
-    elements.push(PairlistElement { tag, value: car, tag_object });
+/// Parse a pairlist (LISTSXP).
+/// Uses an iterative approach matching R's ReadItem_Iterative to handle circular references.
+/// R's serialization format: FLAGS (with type), TAG (if HAS_TAG_BIT), CAR, then FLAGS for next element.
+/// If next FLAGS indicate LISTSXP/LANGSXP/etc., it's a continuation; otherwise it's the CDR terminator.
+fn parse_pairlist(cursor: &mut Cursor<&[u8]>, has_tag: bool, ref_table: &mut RefTable, symbol_table: &mut SymbolTable, dedup_table: &mut DedupTable) -> Result<RObject> {
+    let mut elements = Vec::new();
 
-    // If CDR is another pairlist, recursively add its elements
-    // If CDR is NULL, we're done
-    match cdr {
-        RObject::Null => {
-            // End of list
+    // Parse the first element (TAG if has_tag, then CAR)
+    let (first_tag, first_tag_object, first_car) = parse_pairlist_element(
+        cursor, has_tag, ref_table, symbol_table, dedup_table
+    )?;
+    elements.push(PairlistElement {
+        tag: first_tag,
+        value: first_car,
+        tag_object: first_tag_object,
+    });
+
+    // Now iteratively parse remaining elements
+    // This mirrors R's ReadItem_Iterative which reads flags, checks type, and continues or exits
+    loop {
+        // Peek at next flags to determine if we continue or terminate
+        let pos = cursor.position();
+        let flags = cursor.read_u32::<BigEndian>()?;
+        let next_type = flags & 0xFF;
+
+        if std::env::var("RDS_DEBUG").is_ok() {
+            eprintln!("[PAIRLIST_LOOP] At byte {}: flags=0x{:08x}, type={}", pos, flags, next_type);
         }
-        RObject::Pairlist(mut rest) => {
-            // Append the rest
-            elements.append(&mut rest);
-        }
-        other => {
-            // CDR is some other object, add it without a tag
+
+        // Check if the next element continues the pairlist
+        // R continues for: LISTSXP, LANGSXP, CLOSXP, PROMSXP, DOTSXP
+        // We don't have DOTSXP constant, but we cover the main ones
+        let continues_pairlist = matches!(next_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP);
+
+        if continues_pairlist {
+            // Continue building the pairlist - this is another element
+            // The flags are already consumed, so parse_pairlist_element will read the TAG and CAR
+            let has_tag_next = (flags & HAS_TAG_BIT) != 0;
+
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[PAIRLIST_LOOP] Continuing pairlist, has_tag={}", has_tag_next);
+            }
+
+            let (tag, tag_object, car) = parse_pairlist_element(
+                cursor, has_tag_next, ref_table, symbol_table, dedup_table
+            )?;
             elements.push(PairlistElement {
-                tag: None,
-                value: other,
-                tag_object: None,
+                tag,
+                value: car,
+                tag_object,
             });
+        } else {
+            // Not a pairlist continuation - reset position and parse as CDR terminator
+            cursor.set_position(pos);
+            let cdr = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[PAIRLIST_LOOP] CDR type: {:?}", std::mem::discriminant(&cdr));
+            }
+
+            // Handle the CDR based on its type
+            match cdr {
+                RObject::Null => {
+                    // Normal list termination
+                    if std::env::var("RDS_DEBUG").is_ok() {
+                        eprintln!("[PAIRLIST_LOOP] Terminating pairlist (NULL CDR)");
+                    }
+                    break;
+                }
+                RObject::Pairlist(mut rest) => {
+                    // CDR is another pairlist (rare but possible) - append elements
+                    if std::env::var("RDS_DEBUG").is_ok() {
+                        eprintln!("[PAIRLIST_LOOP] Appending {} elements from CDR pairlist", rest.len());
+                    }
+                    elements.append(&mut rest);
+                    break;
+                }
+                other => {
+                    // CDR is some other object - add it as untagged element
+                    if std::env::var("RDS_DEBUG").is_ok() {
+                        eprintln!("[PAIRLIST_LOOP] Adding CDR as untagged element");
+                    }
+                    elements.push(PairlistElement {
+                        tag: None,
+                        value: other,
+                        tag_object: None,
+                    });
+                    break;
+                }
+            }
         }
+    }
+
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[PAIRLIST_LOOP] Completed with {} elements", elements.len());
     }
 
     Ok(RObject::Pairlist(elements))

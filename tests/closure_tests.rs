@@ -53,12 +53,15 @@ fn test_simple_function() {
                 other => panic!("Expected Pairlist for formals, got {:?}", other),
             }
 
-            // Check body - should be a Language object (x + y)
+            // Check body - allow Language or Bytecode (R may compile functions automatically)
             match body.as_ref() {
                 RObject::Language(_) => {
                     // Body structure is complex, just verify it's a language object
                 }
-                other => panic!("Expected Language for body, got {:?}", other),
+                RObject::Bytecode { .. } => {
+                    // Compiled version - acceptable
+                }
+                other => panic!("Expected Language or Bytecode for body, got {:?}", other),
             }
 
             // Check environment - should be global env (NULL)
@@ -98,14 +101,11 @@ fn test_closure_with_environment() {
                 other => panic!("Expected Null or empty Pairlist for formals, got {:?}", other),
             }
 
-            // Check body - should be a Language object
-            if !matches!(body.as_ref(), RObject::Language(_)) {
+            // Check body - accept Language or Bytecode
+            if !matches!(body.as_ref(), RObject::Language(_) | RObject::Bytecode { .. }) {
                 eprintln!("Body is: {:#?}", body);
+                panic!("Body should be a Language or Bytecode object");
             }
-            assert!(
-                matches!(body.as_ref(), RObject::Language(_)),
-                "Body should be a Language object"
-            );
 
             // Check environment - should be an Environment (not global)
             match environment.as_ref() {

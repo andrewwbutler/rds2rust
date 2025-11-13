@@ -330,14 +330,14 @@ fn write_closure(
 ) -> Result<()> {
     write_flags(writer, CLOSXP, false, false)?;
 
+    // Write environment (closure environment)
+    write_object(writer, environment, ref_table)?;
+
     // Write formals (parameter list)
     write_object(writer, formals, ref_table)?;
 
     // Write body (function body)
     write_object(writer, body, ref_table)?;
-
-    // Write environment (closure environment)
-    write_object(writer, environment, ref_table)?;
 
     Ok(())
 }
@@ -363,6 +363,9 @@ fn write_environment(
 
     // Write hashtab
     write_object(writer, hashtab, ref_table)?;
+
+    // Write attributes (environments always serialize an attribute field)
+    write_object(writer, &RObject::Null, ref_table)?;
 
     Ok(())
 }
@@ -414,14 +417,46 @@ fn write_bytecode(
     writer: &mut Vec<u8>,
     code: &RObject,
     constants: &RObject,
-    expr: &RObject,
+    _expr: &RObject,
     ref_table: &mut RefTable,
 ) -> Result<()> {
     write_flags(writer, BCODESXP, false, false)?;
-    // Write the three components
+    // For now, we don't emit any bytecode-specific reference table entries.
+    writer.write_u32::<BigEndian>(0)?;
+    write_bytecode_body(writer, code, constants, ref_table)
+}
+
+fn write_bytecode_body(
+    writer: &mut Vec<u8>,
+    code: &RObject,
+    constants: &RObject,
+    ref_table: &mut RefTable,
+) -> Result<()> {
     write_object(writer, code, ref_table)?;
-    write_object(writer, constants, ref_table)?;
-    write_object(writer, expr, ref_table)?;
+
+    let const_list = match constants {
+        RObject::List(elements) => elements,
+        _ => {
+            return Err(Error::InvalidFormat(
+                "Bytecode constants must be stored as a list".to_string(),
+            ));
+        }
+    };
+
+    writer.write_u32::<BigEndian>(const_list.len() as u32)?;
+    for value in const_list {
+        match value {
+            RObject::Bytecode { code, constants, .. } => {
+                writer.write_i32::<BigEndian>(BCODESXP as i32)?;
+                write_bytecode_body(writer, code, constants, ref_table)?;
+            }
+            _ => {
+                writer.write_i32::<BigEndian>(0)?;
+                write_object(writer, value, ref_table)?;
+            }
+        }
+    }
+
     Ok(())
 }
 
