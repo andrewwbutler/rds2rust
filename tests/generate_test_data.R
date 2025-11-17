@@ -427,6 +427,42 @@ saveRDS(altrep_in_list, file.path(output_dir, "altrep_in_list.rds"))
 regular_int <- c(1L, 2L, 3L, 4L, 5L)
 saveRDS(regular_int, file.path(output_dir, "regular_int.rds"))
 
+# ALTREP wrapper tests: These test wrap_real and wrap_int wrappers
+# Create a matrix - R may use ALTREP wrappers for efficient storage
+altrep_matrix_real <- matrix(rnorm(200 * 30), nrow = 200, ncol = 30)
+saveRDS(altrep_matrix_real, file.path(output_dir, "altrep_matrix_real.rds"))
+
+# Matrix with attributes (dimnames) - common in data analysis packages
+altrep_matrix_with_dimnames <- matrix(rnorm(100 * 10), nrow = 100, ncol = 10)
+rownames(altrep_matrix_with_dimnames) <- paste0("row_", 1:100)
+colnames(altrep_matrix_with_dimnames) <- paste0("col_", 1:10)
+saveRDS(altrep_matrix_with_dimnames, file.path(output_dir, "altrep_matrix_dimnames.rds"))
+
+# Force ALTREP wrapper using .Internal(wrap_meta(...))
+# This creates actual wrap_real/wrap_int ALTREP objects as used by some packages
+if (getRversion() >= "3.5.0") {
+  tryCatch({
+    # Create real vector and wrap it
+    real_data <- rnorm(1000)
+    wrapped_real <- .Internal(wrap_meta(real_data, NULL, NULL))
+    saveRDS(wrapped_real, file.path(output_dir, "altrep_wrap_real.rds"))
+
+    # Create integer vector and wrap it
+    int_data <- sample(1L:1000L, 500, replace = TRUE)
+    wrapped_int <- .Internal(wrap_meta(int_data, NULL, NULL))
+    saveRDS(wrapped_int, file.path(output_dir, "altrep_wrap_int.rds"))
+
+    # Wrapped matrix (common in analysis packages)
+    matrix_data <- matrix(rnorm(100 * 10), nrow = 100, ncol = 10)
+    rownames(matrix_data) <- paste0("row_", 1:100)
+    colnames(matrix_data) <- paste0("col_", 1:10)
+    wrapped_matrix <- .Internal(wrap_meta(matrix_data, NULL, NULL))
+    saveRDS(wrapped_matrix, file.path(output_dir, "altrep_wrap_matrix.rds"))
+  }, error = function(e) {
+    message("Note: wrap_meta not available in this R version (OK)")
+  })
+}
+
 # Bytecode test: Compiled function
 # R compiles functions to bytecode for performance
 # Use compiler::cmpfun() to explicitly compile a function

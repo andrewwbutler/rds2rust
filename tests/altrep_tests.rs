@@ -157,3 +157,207 @@ fn test_regular_int_no_altrep() {
         _ => panic!("Expected Integer vector, got {:?}", std::mem::discriminant(&obj)),
     }
 }
+
+#[test]
+fn test_altrep_matrix_real() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("altrep_matrix_real.rds");
+    let obj = read_rds(&data).expect("Failed to parse ALTREP matrix");
+
+    // Should be a Real vector with dim attribute (matrix)
+    match obj {
+        RObject::WithAttributes { object, attributes } => {
+            // Check the inner object is Real (not Null!)
+            match object.as_ref() {
+                RObject::Real(vec) => {
+                    assert_eq!(vec.len(), 6000, "Expected 200*30 = 6000 elements");
+                }
+                RObject::Null => {
+                    panic!("BUG: Matrix data is Null - ALTREP wrapper not handled correctly!");
+                }
+                _ => panic!("Expected Real vector inside attributes"),
+            }
+
+            // Check for dim attribute
+            assert!(attributes.get("dim").is_some(), "Matrix should have dim attribute");
+        }
+        RObject::Real(vec) => {
+            // Might not have attributes if R didn't use ALTREP
+            assert_eq!(vec.len(), 6000, "Expected 200*30 = 6000 elements");
+        }
+        RObject::Null => {
+            panic!("BUG: Matrix is Null - ALTREP wrapper not handled correctly!");
+        }
+        _ => panic!("Expected Real or WithAttributes containing Real, got {:?}", std::mem::discriminant(&obj)),
+    }
+}
+
+#[test]
+fn test_altrep_matrix_dimnames() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("altrep_matrix_dimnames.rds");
+    let obj = read_rds(&data).expect("Failed to parse ALTREP matrix with dimnames");
+
+    // Should be a Real vector with dim and dimnames attributes
+    match obj {
+        RObject::WithAttributes { object, attributes } => {
+            // Check the inner object is Real (not Null!)
+            match object.as_ref() {
+                RObject::Real(vec) => {
+                    assert_eq!(vec.len(), 1000, "Expected 100*10 = 1000 elements");
+                }
+                RObject::Null => {
+                    panic!("BUG: Matrix data is Null - ALTREP wrapper not handled correctly!");
+                }
+                _ => panic!("Expected Real vector inside attributes"),
+            }
+
+            // Check for dim and dimnames attributes
+            assert!(attributes.get("dim").is_some(), "Matrix should have dim attribute");
+            assert!(attributes.get("dimnames").is_some(), "Matrix should have dimnames attribute");
+        }
+        RObject::Real(vec) => {
+            // Might not have attributes if R didn't use ALTREP
+            assert_eq!(vec.len(), 1000, "Expected 100*10 = 1000 elements");
+        }
+        RObject::Null => {
+            panic!("BUG: Matrix is Null - ALTREP wrapper not handled correctly!");
+        }
+        _ => panic!("Expected Real or WithAttributes containing Real, got {:?}", std::mem::discriminant(&obj)),
+    }
+}
+
+#[test]
+fn test_altrep_wrap_real() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    // This file might not exist if R version doesn't support wrap_meta
+    if !Path::new("tests/data/altrep_wrap_real.rds").exists() {
+        eprintln!("Skipping test: altrep_wrap_real.rds not available");
+        return;
+    }
+
+    let data = read_test_file("altrep_wrap_real.rds");
+    let obj = read_rds(&data).expect("Failed to parse wrap_real ALTREP");
+
+    // wrap_real should be materialized to a regular Real vector
+    match obj {
+        RObject::Real(vec) => {
+            assert_eq!(vec.len(), 1000, "Expected 1000 elements");
+            // Verify it contains actual data (not all zeros/NaN)
+            assert!(vec.iter().any(|&x| x != 0.0 && !x.is_nan()), "Vector should contain non-zero values");
+        }
+        RObject::WithAttributes { object, .. } => {
+            match object.as_ref() {
+                RObject::Real(vec) => {
+                    assert_eq!(vec.len(), 1000, "Expected 1000 elements");
+                }
+                RObject::Null => {
+                    panic!("BUG: wrap_real resulted in Null - wrapper not handled!");
+                }
+                _ => panic!("Expected Real vector"),
+            }
+        }
+        RObject::Null => {
+            panic!("BUG: wrap_real resulted in Null - wrapper not handled correctly!");
+        }
+        _ => panic!("Expected Real vector, got {:?}", std::mem::discriminant(&obj)),
+    }
+}
+
+#[test]
+fn test_altrep_wrap_int() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    // This file might not exist if R version doesn't support wrap_meta
+    if !Path::new("tests/data/altrep_wrap_int.rds").exists() {
+        eprintln!("Skipping test: altrep_wrap_int.rds not available");
+        return;
+    }
+
+    let data = read_test_file("altrep_wrap_int.rds");
+    let obj = read_rds(&data).expect("Failed to parse wrap_int ALTREP");
+
+    // wrap_int should be materialized to a regular Integer vector
+    match obj {
+        RObject::Integer(vec) => {
+            assert_eq!(vec.len(), 500, "Expected 500 elements");
+            // Verify it contains actual data
+            assert!(vec.iter().any(|&x| x != 0), "Vector should contain non-zero values");
+        }
+        RObject::WithAttributes { object, .. } => {
+            match object.as_ref() {
+                RObject::Integer(vec) => {
+                    assert_eq!(vec.len(), 500, "Expected 500 elements");
+                }
+                RObject::Null => {
+                    panic!("BUG: wrap_int resulted in Null - wrapper not handled!");
+                }
+                _ => panic!("Expected Integer vector"),
+            }
+        }
+        RObject::Null => {
+            panic!("BUG: wrap_int resulted in Null - wrapper not handled correctly!");
+        }
+        _ => panic!("Expected Integer vector, got {:?}", std::mem::discriminant(&obj)),
+    }
+}
+
+#[test]
+fn test_altrep_wrap_matrix() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    // This file might not exist if R version doesn't support wrap_meta
+    if !Path::new("tests/data/altrep_wrap_matrix.rds").exists() {
+        eprintln!("Skipping test: altrep_wrap_matrix.rds not available");
+        return;
+    }
+
+    let data = read_test_file("altrep_wrap_matrix.rds");
+    let obj = read_rds(&data).expect("Failed to parse wrapped matrix ALTREP");
+
+    // Wrapped matrix should have Real data with attributes
+    match obj {
+        RObject::WithAttributes { object, attributes } => {
+            // Check the inner object is Real (not Null!)
+            match object.as_ref() {
+                RObject::Real(vec) => {
+                    assert_eq!(vec.len(), 1000, "Expected 100*10 = 1000 elements");
+                }
+                RObject::Null => {
+                    panic!("BUG: Wrapped matrix data is Null - ALTREP wrapper not handled!");
+                }
+                _ => panic!("Expected Real vector inside attributes"),
+            }
+
+            // Check for expected attributes
+            assert!(attributes.get("dim").is_some(), "Matrix should have dim attribute");
+            assert!(attributes.get("dimnames").is_some(), "Matrix should have dimnames attribute");
+        }
+        RObject::Real(vec) => {
+            // Might not have attributes
+            assert_eq!(vec.len(), 1000, "Expected 100*10 = 1000 elements");
+        }
+        RObject::Null => {
+            panic!("BUG: Wrapped matrix is Null - ALTREP wrapper not handled correctly!");
+        }
+        _ => panic!("Expected Real or WithAttributes containing Real, got {:?}", std::mem::discriminant(&obj)),
+    }
+}

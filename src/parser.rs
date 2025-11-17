@@ -1626,15 +1626,70 @@ fn parse_builtin(cursor: &mut Cursor<&[u8]>, _ref_table: &mut RefTable, _symbol_
 
 /// Convert an ALTREP object to its native representation.
 fn convert_altrep_to_native(class_info: RObject, state: RObject) -> Result<RObject> {
-    // Infer the ALTREP type from the state structure
+    // Debug logging to understand ALTREP structure
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[ALTREP] Converting ALTREP object");
+        eprintln!("[ALTREP] class_info: {:?}", std::mem::discriminant(&class_info));
+        eprintln!("[ALTREP] state: {:?}", std::mem::discriminant(&state));
+    }
+
+    // Try to extract ALTREP class name from class_info
+    let altrep_class_name = extract_altrep_class_name(&class_info);
+    
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[ALTREP] Detected class: {:?}", altrep_class_name);
+    }
+
+    // Handle different ALTREP types based on class name or state structure
+    if let Some(class_name) = altrep_class_name {
+        match class_name.as_str() {
+            "wrap_real" => {
+                if std::env::var("RDS_DEBUG").is_ok() {
+                    eprintln!("[ALTREP] Handling wrap_real");
+                }
+                return convert_wrap_real(state);
+            }
+            "wrap_int" => {
+                if std::env::var("RDS_DEBUG").is_ok() {
+                    eprintln!("[ALTREP] Handling wrap_int");
+                }
+                return convert_wrap_int(state);
+            }
+            "compact_intseq" => {
+                if std::env::var("RDS_DEBUG").is_ok() {
+                    eprintln!("[ALTREP] Handling compact_intseq");
+                }
+                return convert_compact_intseq(state);
+            }
+            "compact_realseq" => {
+                if std::env::var("RDS_DEBUG").is_ok() {
+                    eprintln!("[ALTREP] Handling compact_realseq");
+                }
+                return convert_compact_intseq(state);
+            }
+            _ => {
+                if std::env::var("RDS_DEBUG").is_ok() {
+                    eprintln!("[ALTREP] Unknown ALTREP class: {}", class_name);
+                }
+            }
+        }
+    }
+
+    // Fallback: Infer the ALTREP type from the state structure
     // compact_intseq has state: [length (real), first (real), stride (real)]
     match &state {
         RObject::Real(params) if params.len() == 3 => {
             // Standard compact_intseq with state vector
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] Fallback: Detected compact_intseq by structure");
+            }
             convert_compact_intseq(state)
         }
         RObject::Integer(params) if params.len() == 3 => {
             // Sometimes the state is stored as integers instead of reals
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] Fallback: Detected compact_intseq (int params) by structure");
+            }
             let real_params = vec![params[0] as f64, params[1] as f64, params[2] as f64];
             convert_compact_intseq(RObject::Real(real_params))
         }
@@ -1642,6 +1697,9 @@ fn convert_altrep_to_native(class_info: RObject, state: RObject) -> Result<RObje
             // Special case: when state is Integer([13]), R has stored the actual data
             // in the class_info field (likely as a REFSXP or pairlist containing the data)
             // Extract the actual data from class_info
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] Fallback: Detected special case Integer([13])");
+            }
             match class_info {
                 RObject::Pairlist(elements) if !elements.is_empty() => {
                     // The first element should contain the actual data
@@ -1650,13 +1708,211 @@ fn convert_altrep_to_native(class_info: RObject, state: RObject) -> Result<RObje
                 other => Ok(other)
             }
         }
+        RObject::Pairlist(_) => {
+            // ALTREP wrappers often have pairlist state containing the actual data
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] Fallback: State is Pairlist, extracting data");
+            }
+            convert_altrep_pairlist_state(state)
+        }
         _ => {
             // For unsupported ALTREP types or compressed ALTREP references,
             // just return NULL for now. This is a known limitation for some
             // R-specific ALTREP optimizations when serializing repeated instances.
-            // TODO: Fully decode R's ALTREP reference sharing format
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] Unsupported ALTREP type, returning Null");
+                eprintln!("[ALTREP] State type: {:?}", std::mem::discriminant(&state));
+            }
             Ok(RObject::Null)
         }
+    }
+}
+
+/// Extract the ALTREP class name from class_info.
+/// Returns the simple class name (e.g., "wrap_real", "compact_intseq").
+fn extract_altrep_class_name(class_info: &RObject) -> Option<String> {
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[ALTREP] extract_altrep_class_name: class_info type = {:?}", std::mem::discriminant(class_info));
+    }
+
+    // class_info can be:
+    // 1. Character vector with [package, class]
+    // 2. Pairlist with class information
+    // 3. List with class information
+    match class_info {
+        RObject::Character(vec) if vec.len() >= 2 => {
+            // Return the class name (second element)
+            let class_name = vec[1].to_string();
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] Extracted from Character[2]: {}", class_name);
+            }
+            Some(class_name)
+        }
+        RObject::Character(vec) if vec.len() == 1 => {
+            // Sometimes just the class name
+            let class_name = vec[0].to_string();
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] Extracted from Character[1]: {}", class_name);
+            }
+            Some(class_name)
+        }
+        RObject::Pairlist(elements) => {
+            // Pairlist might contain [package_symbol, class_symbol, ...]
+            // Symbols are stored as Character vectors
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] Pairlist with {} elements", elements.len());
+            }
+            
+            // Look through pairlist elements for character data
+            for (i, elem) in elements.iter().enumerate() {
+                if std::env::var("RDS_DEBUG").is_ok() {
+                    eprintln!("[ALTREP] Pairlist[{}] value type: {:?}", 
+                             i, std::mem::discriminant(&elem.value));
+                }
+                
+                // Check if this is a character vector (symbol converted to character)
+                if let RObject::Character(vec) = &elem.value {
+                    if !vec.is_empty() {
+                        let class_name = vec[0].to_string();
+                        if std::env::var("RDS_DEBUG").is_ok() {
+                            eprintln!("[ALTREP] Found character in pairlist[{}]: {}", i, class_name);
+                        }
+                        // Common ALTREP class names
+                        if class_name.contains("wrap_") || class_name.contains("compact_") 
+                            || class_name.contains("deferred_") {
+                            return Some(class_name);
+                        }
+                    }
+                }
+            }
+            
+            // If we have at least 2 elements, try the second one (often the class)
+            if elements.len() >= 2 {
+                if let RObject::Character(vec) = &elements[1].value {
+                    if !vec.is_empty() {
+                        let class_name = vec[0].to_string();
+                        if std::env::var("RDS_DEBUG").is_ok() {
+                            eprintln!("[ALTREP] Using second pairlist element: {}", class_name);
+                        }
+                        return Some(class_name);
+                    }
+                }
+            }
+            None
+        }
+        RObject::List(elements) if elements.len() >= 2 => {
+            // List might contain [package, class]
+            if let RObject::Character(vec) = &elements[1] {
+                if !vec.is_empty() {
+                    return Some(vec[0].to_string());
+                }
+            }
+            None
+        }
+        RObject::WithAttributes { object, .. } => {
+            // Class info might be wrapped with attributes
+            extract_altrep_class_name(object)
+        }
+        _ => {
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] Could not extract class name from type: {:?}", std::mem::discriminant(class_info));
+            }
+            None
+        }
+    }
+}
+
+/// Convert a wrap_real ALTREP object to a native real vector.
+fn convert_wrap_real(state: RObject) -> Result<RObject> {
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[ALTREP] convert_wrap_real: state type = {:?}", std::mem::discriminant(&state));
+    }
+
+    // For wrap_real, the state contains the actual real vector
+    match state {
+        RObject::Real(_) => {
+            // Already a real vector, return as-is
+            Ok(state)
+        }
+        RObject::Pairlist(elements) if !elements.is_empty() => {
+            // State is a pairlist, extract the first element which should be the data
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] wrap_real: Extracting from pairlist with {} elements", elements.len());
+            }
+            Ok(elements[0].value.clone())
+        }
+        RObject::List(elements) if !elements.is_empty() => {
+            // State is a list, extract the first element
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] wrap_real: Extracting from list with {} elements", elements.len());
+            }
+            Ok(elements[0].clone())
+        }
+        RObject::WithAttributes { object, .. } => {
+            // Unwrap attributes and try again
+            convert_wrap_real(*object)
+        }
+        _ => {
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] wrap_real: Unhandled state type, returning Null");
+            }
+            Ok(RObject::Null)
+        }
+    }
+}
+
+/// Convert a wrap_int ALTREP object to a native integer vector.
+fn convert_wrap_int(state: RObject) -> Result<RObject> {
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[ALTREP] convert_wrap_int: state type = {:?}", std::mem::discriminant(&state));
+    }
+
+    // For wrap_int, the state contains the actual integer vector
+    match state {
+        RObject::Integer(_) => {
+            // Already an integer vector, return as-is
+            Ok(state)
+        }
+        RObject::Pairlist(elements) if !elements.is_empty() => {
+            // State is a pairlist, extract the first element which should be the data
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] wrap_int: Extracting from pairlist with {} elements", elements.len());
+            }
+            Ok(elements[0].value.clone())
+        }
+        RObject::List(elements) if !elements.is_empty() => {
+            // State is a list, extract the first element
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] wrap_int: Extracting from list with {} elements", elements.len());
+            }
+            Ok(elements[0].clone())
+        }
+        RObject::WithAttributes { object, .. } => {
+            // Unwrap attributes and try again
+            convert_wrap_int(*object)
+        }
+        _ => {
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] wrap_int: Unhandled state type, returning Null");
+            }
+            Ok(RObject::Null)
+        }
+    }
+}
+
+/// Convert an ALTREP object with pairlist state to a native object.
+/// This handles generic ALTREP wrappers where the data is in a pairlist.
+fn convert_altrep_pairlist_state(state: RObject) -> Result<RObject> {
+    match state {
+        RObject::Pairlist(elements) if !elements.is_empty() => {
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!("[ALTREP] Pairlist state with {} elements", elements.len());
+                eprintln!("[ALTREP] First element type: {:?}", std::mem::discriminant(&elements[0].value));
+            }
+            // The actual data is typically in the first element
+            Ok(elements[0].value.clone())
+        }
+        _ => Ok(RObject::Null),
     }
 }
 
