@@ -157,7 +157,9 @@ fn test_nested_char_vectors() {
 
                     // Second element: "inner" - nested list
                     match &elements[1] {
-                        RObject::WithAttributes { object: inner_obj, .. } => {
+                        RObject::WithAttributes {
+                            object: inner_obj, ..
+                        } => {
                             match inner_obj.as_ref() {
                                 RObject::List(_inner_elements) => {
                                     // Successfully parsed nested structure
@@ -307,7 +309,10 @@ fn test_complex_pseudo_types() {
                 RObject::Closure { .. } => {
                     // Successfully parsed closure
                 }
-                _ => panic!("Expected Closure for func element, got {:?}", std::mem::discriminant(&elements[0])),
+                _ => panic!(
+                    "Expected Closure for func element, got {:?}",
+                    std::mem::discriminant(&elements[0])
+                ),
             }
 
             // NOTE: The remaining elements have complex serialization patterns that may vary
@@ -362,8 +367,13 @@ fn test_multi_level_refs() {
                                 // Elements 0, 1, 2 (ref1, middle, ref3) have length 2
                                 // Element 3 (deep) has length 1
                                 let expected_len = if i == 3 { 1 } else { 2 };
-                                assert_eq!(inner_list.len(), expected_len,
-                                          "Element {} should have {} items", i, expected_len);
+                                assert_eq!(
+                                    inner_list.len(),
+                                    expected_len,
+                                    "Element {} should have {} items",
+                                    i,
+                                    expected_len
+                                );
                             }
                             _ => panic!("Expected List in element {}", i),
                         }
@@ -372,8 +382,13 @@ fn test_multi_level_refs() {
                         // Elements 0, 1, 2 (ref1, middle, ref3) have length 2
                         // Element 3 (deep) has length 1
                         let expected_len = if i == 3 { 1 } else { 2 };
-                        assert_eq!(inner_list.len(), expected_len,
-                                  "Element {} should have {} items", i, expected_len);
+                        assert_eq!(
+                            inner_list.len(),
+                            expected_len,
+                            "Element {} should have {} items",
+                            i,
+                            expected_len
+                        );
                     }
                     _ => {
                         eprintln!("Element {} type: {:?}", i, std::mem::discriminant(elem));

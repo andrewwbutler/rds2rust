@@ -291,7 +291,12 @@ fn test_logical_vector() {
 
 #[test]
 fn test_logical_roundtrip() {
-    let obj = RObject::Logical(vec![Logical::True, Logical::False, Logical::Na, Logical::True]);
+    let obj = RObject::Logical(vec![
+        Logical::True,
+        Logical::False,
+        Logical::Na,
+        Logical::True,
+    ]);
     let serialized = write_rds(&obj).expect("Failed to write logical vector");
     let deserialized = read_rds(&serialized).expect("Failed to read logical vector");
     assert_eq!(obj, deserialized);

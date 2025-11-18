@@ -105,20 +105,28 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
         RObject::Expression(elements) => write_expression(writer, elements, ref_table),
         RObject::Pairlist(elements) => write_pairlist(writer, elements, ref_table),
         RObject::Language(elements) => write_language(writer, elements, ref_table),
-        RObject::Closure { formals, body, environment } => {
-            write_closure(writer, formals, body, environment, ref_table)
-        }
-        RObject::Environment { enclosing, frame, hashtab } => {
-            write_environment(writer, enclosing, frame, hashtab, ref_table)
-        }
-        RObject::Promise { value, expression, environment } => {
-            write_promise(writer, value, expression, environment, ref_table)
-        }
+        RObject::Closure {
+            formals,
+            body,
+            environment,
+        } => write_closure(writer, formals, body, environment, ref_table),
+        RObject::Environment {
+            enclosing,
+            frame,
+            hashtab,
+        } => write_environment(writer, enclosing, frame, hashtab, ref_table),
+        RObject::Promise {
+            value,
+            expression,
+            environment,
+        } => write_promise(writer, value, expression, environment, ref_table),
         RObject::Special { name } => write_special(writer, name.as_ref()),
         RObject::Builtin { name } => write_builtin(writer, name.as_ref()),
-        RObject::Bytecode { code, constants, expr } => {
-            write_bytecode(writer, code, constants, expr, ref_table)
-        }
+        RObject::Bytecode {
+            code,
+            constants,
+            expr,
+        } => write_bytecode(writer, code, constants, expr, ref_table),
         RObject::DataFrame(data) => {
             write_dataframe(writer, &data.columns, &data.row_names, ref_table)
         }
@@ -128,7 +136,13 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
         RObject::S3Object(data) => {
             write_s3_object(writer, &data.base, &data.class, &data.attributes, ref_table)
         }
-        RObject::S4Object(data) => write_s4_object(writer, &data.class, &data.slots, ref_table),
+        RObject::S4Object(data) => write_s4_object(
+            writer,
+            &data.class,
+            data.package.as_ref(),
+            &data.slots,
+            ref_table,
+        ),
         RObject::WithAttributes { object, attributes } => {
             write_object_with_attributes(writer, object, attributes, ref_table)
         }
@@ -143,7 +157,13 @@ fn write_null(writer: &mut Vec<u8>) -> Result<()> {
 }
 
 /// Write flags (type + attribute/tag bits).
-fn write_flags(writer: &mut Vec<u8>, sexp_type: u32, has_attr: bool, has_tag: bool, is_s4: bool) -> Result<()> {
+fn write_flags(
+    writer: &mut Vec<u8>,
+    sexp_type: u32,
+    has_attr: bool,
+    has_tag: bool,
+    is_s4: bool,
+) -> Result<()> {
     let mut flags = sexp_type;
     if has_attr {
         flags |= HAS_ATTR_BIT;
@@ -244,7 +264,11 @@ fn write_list(writer: &mut Vec<u8>, elements: &[RObject], ref_table: &mut RefTab
 /// Write an expression vector (EXPRSXP).
 /// Expression vectors are structurally identical to VECSXP, but semantically represent
 /// collections of unevaluated expressions (typically language objects).
-fn write_expression(writer: &mut Vec<u8>, elements: &[RObject], ref_table: &mut RefTable) -> Result<()> {
+fn write_expression(
+    writer: &mut Vec<u8>,
+    elements: &[RObject],
+    ref_table: &mut RefTable,
+) -> Result<()> {
     write_flags(writer, EXPRSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(elements.len() as u32)?;
     for element in elements {
@@ -255,7 +279,11 @@ fn write_expression(writer: &mut Vec<u8>, elements: &[RObject], ref_table: &mut 
 
 /// Write a language object (LANGSXP).
 /// Language objects represent unevaluated calls: function + arguments.
-fn write_language(writer: &mut Vec<u8>, elements: &[RObject], ref_table: &mut RefTable) -> Result<()> {
+fn write_language(
+    writer: &mut Vec<u8>,
+    elements: &[RObject],
+    ref_table: &mut RefTable,
+) -> Result<()> {
     if elements.is_empty() {
         // Empty language object? Just write NULL
         return write_null(writer);
@@ -290,7 +318,11 @@ fn write_language(writer: &mut Vec<u8>, elements: &[RObject], ref_table: &mut Re
 }
 
 /// Write a pairlist (LISTSXP).
-fn write_pairlist(writer: &mut Vec<u8>, elements: &[PairlistElement], ref_table: &mut RefTable) -> Result<()> {
+fn write_pairlist(
+    writer: &mut Vec<u8>,
+    elements: &[PairlistElement],
+    ref_table: &mut RefTable,
+) -> Result<()> {
     for (i, element) in elements.iter().enumerate() {
         let has_tag = element.tag.is_some();
         let is_last = i == elements.len() - 1;
@@ -454,7 +486,9 @@ fn write_bytecode_body(
     writer.write_u32::<BigEndian>(const_list.len() as u32)?;
     for value in const_list {
         match value {
-            RObject::Bytecode { code, constants, .. } => {
+            RObject::Bytecode {
+                code, constants, ..
+            } => {
                 writer.write_i32::<BigEndian>(BCODESXP as i32)?;
                 write_bytecode_body(writer, code, constants, ref_table)?;
             }
@@ -494,8 +528,14 @@ fn write_dataframe(
     // Write attributes (names, row.names, class)
     let mut attrs = Attributes::new();
     attrs.insert(Arc::from("names"), RObject::Character(column_names));
-    attrs.insert(Arc::from("row.names"), RObject::Character(row_names.to_vec()));
-    attrs.insert(Arc::from("class"), RObject::Character(vec![Arc::from("data.frame")]));
+    attrs.insert(
+        Arc::from("row.names"),
+        RObject::Character(row_names.to_vec()),
+    );
+    attrs.insert(
+        Arc::from("class"),
+        RObject::Character(vec![Arc::from("data.frame")]),
+    );
 
     write_attributes(writer, &attrs, ref_table)?;
 
@@ -615,24 +655,33 @@ fn write_s3_object(
 }
 
 /// Write an S4 object.
-fn write_s4_object(writer: &mut Vec<u8>, class: &[Arc<str>], slots: &HashMap<Arc<str>, RObject>, ref_table: &mut RefTable) -> Result<()> {
+fn write_s4_object(
+    writer: &mut Vec<u8>,
+    class: &[Arc<str>],
+    package: Option<&Arc<str>>,
+    slots: &HashMap<Arc<str>, RObject>,
+    ref_table: &mut RefTable,
+) -> Result<()> {
     // S4 objects are written as S4SXP with attributes and IS_S4_BIT set
     write_flags(writer, S4SXP, true, false, true)?;
 
     // Write attributes (class + slots)
     let mut attrs = Attributes::new();
-    
+
     // For S4 objects, the class attribute must have a package attribute
-    // R uses ".GlobalEnv" as the default package for user-defined S4 classes
+    // Use the stored package if available, otherwise fall back to ".GlobalEnv" for user-defined classes
     let class_obj = RObject::Character(class.to_vec());
     let mut class_attrs = Attributes::new();
-    class_attrs.insert(Arc::from("package"), RObject::Character(vec![Arc::from(".GlobalEnv")]));
-    
+    let pkg_value = package
+        .cloned()
+        .unwrap_or_else(|| Arc::from(".GlobalEnv"));
+    class_attrs.insert(Arc::from("package"), RObject::Character(vec![pkg_value]));
+
     let class_with_package = RObject::WithAttributes {
         object: Box::new(class_obj),
         attributes: class_attrs,
     };
-    
+
     attrs.insert(Arc::from("class"), class_with_package);
 
     // Add all slots as attributes
@@ -695,7 +744,11 @@ fn write_object_with_attributes(
 }
 
 /// Write attributes as a pairlist.
-fn write_attributes(writer: &mut Vec<u8>, attributes: &Attributes, ref_table: &mut RefTable) -> Result<()> {
+fn write_attributes(
+    writer: &mut Vec<u8>,
+    attributes: &Attributes,
+    ref_table: &mut RefTable,
+) -> Result<()> {
     if attributes.is_empty() {
         return Ok(());
     }
@@ -710,7 +763,7 @@ fn write_attributes(writer: &mut Vec<u8>, attributes: &Attributes, ref_table: &m
     for (key, value) in sorted_attrs {
         elements.push(PairlistElement {
             tag: Some(key.clone()),
-            value: (**value).clone(),  // Unbox the RObject
+            value: (**value).clone(), // Unbox the RObject
             tag_object: None,
         });
     }

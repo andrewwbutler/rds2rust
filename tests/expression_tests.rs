@@ -216,7 +216,8 @@ fn test_expr_multiple_roundtrip() {
     let obj = read_rds(&data).expect("Failed to read existing multiple expressions");
 
     let serialized = write_rds(&obj).expect("Failed to write multiple expressions");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized multiple expressions");
+    let deserialized =
+        read_rds(&serialized).expect("Failed to read serialized multiple expressions");
 
     assert_eq!(obj, deserialized);
 }
@@ -248,7 +249,8 @@ fn test_expr_calls_roundtrip() {
     let obj = read_rds(&data).expect("Failed to read existing expression with calls");
 
     let serialized = write_rds(&obj).expect("Failed to write expression with calls");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized expression with calls");
+    let deserialized =
+        read_rds(&serialized).expect("Failed to read serialized expression with calls");
 
     assert_eq!(obj, deserialized);
 }
@@ -280,7 +282,8 @@ fn test_expr_manual_roundtrip() {
     let obj = read_rds(&data).expect("Failed to read existing manually created expression");
 
     let serialized = write_rds(&obj).expect("Failed to write manually created expression");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized manually created expression");
+    let deserialized =
+        read_rds(&serialized).expect("Failed to read serialized manually created expression");
 
     assert_eq!(obj, deserialized);
 }

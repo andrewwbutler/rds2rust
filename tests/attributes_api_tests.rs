@@ -175,7 +175,10 @@ fn test_object_with_multiple_attributes() {
     attrs.insert(Arc::from("dim"), RObject::Integer(vec![2, 3]));
 
     // Add a custom attribute
-    attrs.insert(Arc::from("description"), RObject::Character(vec![Arc::from("test matrix")]));
+    attrs.insert(
+        Arc::from("description"),
+        RObject::Character(vec![Arc::from("test matrix")]),
+    );
 
     let obj = RObject::WithAttributes {
         object: Box::new(vec),
@@ -184,7 +187,10 @@ fn test_object_with_multiple_attributes() {
 
     // Verify all attributes are present
     match obj {
-        RObject::WithAttributes { object: _, attributes } => {
+        RObject::WithAttributes {
+            object: _,
+            attributes,
+        } => {
             assert_eq!(attributes.iter().count(), 3);
             assert!(attributes.get("names").is_some());
             assert!(attributes.get("dim").is_some());
@@ -209,7 +215,10 @@ fn test_multiple_attributes_roundtrip() {
         ]),
     );
     attrs.insert(Arc::from("version"), RObject::Integer(vec![1]));
-    attrs.insert(Arc::from("author"), RObject::Character(vec![Arc::from("test")]));
+    attrs.insert(
+        Arc::from("author"),
+        RObject::Character(vec![Arc::from("test")]),
+    );
 
     let obj = RObject::WithAttributes {
         object: Box::new(vec.clone()),
@@ -231,7 +240,15 @@ fn test_multiple_attributes_roundtrip() {
             // Verify each attribute exists with correct value
             match attributes.get("names").unwrap() {
                 RObject::Character(ref v) => {
-                    assert_eq!(v, &vec![Arc::from("w"), Arc::from("x"), Arc::from("y"), Arc::from("z")]);
+                    assert_eq!(
+                        v,
+                        &vec![
+                            Arc::from("w"),
+                            Arc::from("x"),
+                            Arc::from("y"),
+                            Arc::from("z")
+                        ]
+                    );
                 }
                 _ => panic!("Expected Character for names"),
             }
@@ -264,7 +281,10 @@ fn test_attributes_insert_and_get() {
     let mut attrs = Attributes::new();
 
     attrs.insert(Arc::from("key1"), RObject::Integer(vec![1]));
-    attrs.insert(Arc::from("key2"), RObject::Character(vec![Arc::from("value")]));
+    attrs.insert(
+        Arc::from("key2"),
+        RObject::Character(vec![Arc::from("value")]),
+    );
 
     assert!(!attrs.is_empty());
     assert_eq!(attrs.iter().count(), 2);

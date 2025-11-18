@@ -172,7 +172,10 @@ fn test_symbol_table_attribute_names() {
     // The object should be a list with attributes (the "names" attribute)
     let (outer_list, outer_attrs) = match obj {
         RObject::WithAttributes { object, attributes } => (object, attributes),
-        _ => panic!("Expected outer list with attributes, got {:?}", std::mem::discriminant(&obj)),
+        _ => panic!(
+            "Expected outer list with attributes, got {:?}",
+            std::mem::discriminant(&obj)
+        ),
     };
 
     // CRITICAL: The outer list should have a "names" attribute
@@ -180,7 +183,11 @@ fn test_symbol_table_attribute_names() {
     assert!(
         outer_attrs.get("names").is_some(),
         "Outer list should have 'names' attribute. Available attributes: {:?}",
-        outer_attrs.attrs.iter().map(|(k, _)| k.as_ref()).collect::<Vec<_>>()
+        outer_attrs
+            .attrs
+            .iter()
+            .map(|(k, _)| k.as_ref())
+            .collect::<Vec<_>>()
     );
 
     // The "names" attribute should be ["first", "second", "third"]
@@ -198,11 +205,21 @@ fn test_symbol_table_attribute_names() {
         assert_eq!(elements.len(), 3, "Expected 3 elements in outer list");
 
         // Check first inner list: should have names ["a", "b", "c"]
-        if let RObject::WithAttributes { attributes: inner_attrs, .. } = &elements[0] {
-            let inner_names = inner_attrs.get("names").expect("First inner list should have 'names' attribute");
+        if let RObject::WithAttributes {
+            attributes: inner_attrs,
+            ..
+        } = &elements[0]
+        {
+            let inner_names = inner_attrs
+                .get("names")
+                .expect("First inner list should have 'names' attribute");
             if let RObject::Character(names) = inner_names {
                 assert_eq!(names.len(), 3);
-                assert_eq!(names[0].as_ref(), "a", "First inner list names[0] should be 'a', not data from elsewhere");
+                assert_eq!(
+                    names[0].as_ref(),
+                    "a",
+                    "First inner list names[0] should be 'a', not data from elsewhere"
+                );
                 assert_eq!(names[1].as_ref(), "b");
                 assert_eq!(names[2].as_ref(), "c");
             } else {
@@ -213,11 +230,21 @@ fn test_symbol_table_attribute_names() {
         }
 
         // Check second inner list: should have names ["x", "y", "z"]
-        if let RObject::WithAttributes { attributes: inner_attrs, .. } = &elements[1] {
-            let inner_names = inner_attrs.get("names").expect("Second inner list should have 'names' attribute");
+        if let RObject::WithAttributes {
+            attributes: inner_attrs,
+            ..
+        } = &elements[1]
+        {
+            let inner_names = inner_attrs
+                .get("names")
+                .expect("Second inner list should have 'names' attribute");
             if let RObject::Character(names) = inner_names {
                 assert_eq!(names.len(), 3);
-                assert_eq!(names[0].as_ref(), "x", "Second inner list names[0] should be 'x', not data from elsewhere");
+                assert_eq!(
+                    names[0].as_ref(),
+                    "x",
+                    "Second inner list names[0] should be 'x', not data from elsewhere"
+                );
                 assert_eq!(names[1].as_ref(), "y");
                 assert_eq!(names[2].as_ref(), "z");
             } else {
@@ -228,11 +255,21 @@ fn test_symbol_table_attribute_names() {
         }
 
         // Check third inner list: should have names ["p", "q", "r"]
-        if let RObject::WithAttributes { attributes: inner_attrs, .. } = &elements[2] {
-            let inner_names = inner_attrs.get("names").expect("Third inner list should have 'names' attribute");
+        if let RObject::WithAttributes {
+            attributes: inner_attrs,
+            ..
+        } = &elements[2]
+        {
+            let inner_names = inner_attrs
+                .get("names")
+                .expect("Third inner list should have 'names' attribute");
             if let RObject::Character(names) = inner_names {
                 assert_eq!(names.len(), 3);
-                assert_eq!(names[0].as_ref(), "p", "Third inner list names[0] should be 'p', not data from elsewhere");
+                assert_eq!(
+                    names[0].as_ref(),
+                    "p",
+                    "Third inner list names[0] should be 'p', not data from elsewhere"
+                );
                 assert_eq!(names[1].as_ref(), "q");
                 assert_eq!(names[2].as_ref(), "r");
             } else {

@@ -38,7 +38,10 @@ fn test_altrep_intseq() {
                 assert_eq!(val, (i + 1) as i32, "Element {} should be {}", i, i + 1);
             }
         }
-        _ => panic!("Expected Integer vector, got {:?}", std::mem::discriminant(&obj)),
+        _ => panic!(
+            "Expected Integer vector, got {:?}",
+            std::mem::discriminant(&obj)
+        ),
     }
 }
 
@@ -65,7 +68,10 @@ fn test_altrep_realseq() {
             assert_eq!(vec[0], 1, "First element should be 1");
             assert_eq!(vec[999], 1000, "Last element should be 1000");
         }
-        _ => panic!("Expected Real or Integer vector, got {:?}", std::mem::discriminant(&obj)),
+        _ => panic!(
+            "Expected Real or Integer vector, got {:?}",
+            std::mem::discriminant(&obj)
+        ),
     }
 }
 
@@ -82,7 +88,10 @@ fn test_altrep_in_list() {
     // The object should be a list with attributes
     let (list, attrs) = match obj {
         RObject::WithAttributes { object, attributes } => (object, attributes),
-        _ => panic!("Expected WithAttributes, got {:?}", std::mem::discriminant(&obj)),
+        _ => panic!(
+            "Expected WithAttributes, got {:?}",
+            std::mem::discriminant(&obj)
+        ),
     };
 
     // Check the list has correct names
@@ -154,7 +163,10 @@ fn test_regular_int_no_altrep() {
             assert_eq!(vec[3], 4);
             assert_eq!(vec[4], 5);
         }
-        _ => panic!("Expected Integer vector, got {:?}", std::mem::discriminant(&obj)),
+        _ => panic!(
+            "Expected Integer vector, got {:?}",
+            std::mem::discriminant(&obj)
+        ),
     }
 }
 
@@ -183,7 +195,10 @@ fn test_altrep_matrix_real() {
             }
 
             // Check for dim attribute
-            assert!(attributes.get("dim").is_some(), "Matrix should have dim attribute");
+            assert!(
+                attributes.get("dim").is_some(),
+                "Matrix should have dim attribute"
+            );
         }
         RObject::Real(vec) => {
             // Might not have attributes if R didn't use ALTREP
@@ -192,7 +207,10 @@ fn test_altrep_matrix_real() {
         RObject::Null => {
             panic!("BUG: Matrix is Null - ALTREP wrapper not handled correctly!");
         }
-        _ => panic!("Expected Real or WithAttributes containing Real, got {:?}", std::mem::discriminant(&obj)),
+        _ => panic!(
+            "Expected Real or WithAttributes containing Real, got {:?}",
+            std::mem::discriminant(&obj)
+        ),
     }
 }
 
@@ -221,8 +239,14 @@ fn test_altrep_matrix_dimnames() {
             }
 
             // Check for dim and dimnames attributes
-            assert!(attributes.get("dim").is_some(), "Matrix should have dim attribute");
-            assert!(attributes.get("dimnames").is_some(), "Matrix should have dimnames attribute");
+            assert!(
+                attributes.get("dim").is_some(),
+                "Matrix should have dim attribute"
+            );
+            assert!(
+                attributes.get("dimnames").is_some(),
+                "Matrix should have dimnames attribute"
+            );
         }
         RObject::Real(vec) => {
             // Might not have attributes if R didn't use ALTREP
@@ -231,7 +255,10 @@ fn test_altrep_matrix_dimnames() {
         RObject::Null => {
             panic!("BUG: Matrix is Null - ALTREP wrapper not handled correctly!");
         }
-        _ => panic!("Expected Real or WithAttributes containing Real, got {:?}", std::mem::discriminant(&obj)),
+        _ => panic!(
+            "Expected Real or WithAttributes containing Real, got {:?}",
+            std::mem::discriminant(&obj)
+        ),
     }
 }
 
@@ -256,23 +283,27 @@ fn test_altrep_wrap_real() {
         RObject::Real(vec) => {
             assert_eq!(vec.len(), 1000, "Expected 1000 elements");
             // Verify it contains actual data (not all zeros/NaN)
-            assert!(vec.iter().any(|&x| x != 0.0 && !x.is_nan()), "Vector should contain non-zero values");
+            assert!(
+                vec.iter().any(|&x| x != 0.0 && !x.is_nan()),
+                "Vector should contain non-zero values"
+            );
         }
-        RObject::WithAttributes { object, .. } => {
-            match object.as_ref() {
-                RObject::Real(vec) => {
-                    assert_eq!(vec.len(), 1000, "Expected 1000 elements");
-                }
-                RObject::Null => {
-                    panic!("BUG: wrap_real resulted in Null - wrapper not handled!");
-                }
-                _ => panic!("Expected Real vector"),
+        RObject::WithAttributes { object, .. } => match object.as_ref() {
+            RObject::Real(vec) => {
+                assert_eq!(vec.len(), 1000, "Expected 1000 elements");
             }
-        }
+            RObject::Null => {
+                panic!("BUG: wrap_real resulted in Null - wrapper not handled!");
+            }
+            _ => panic!("Expected Real vector"),
+        },
         RObject::Null => {
             panic!("BUG: wrap_real resulted in Null - wrapper not handled correctly!");
         }
-        _ => panic!("Expected Real vector, got {:?}", std::mem::discriminant(&obj)),
+        _ => panic!(
+            "Expected Real vector, got {:?}",
+            std::mem::discriminant(&obj)
+        ),
     }
 }
 
@@ -297,23 +328,27 @@ fn test_altrep_wrap_int() {
         RObject::Integer(vec) => {
             assert_eq!(vec.len(), 500, "Expected 500 elements");
             // Verify it contains actual data
-            assert!(vec.iter().any(|&x| x != 0), "Vector should contain non-zero values");
+            assert!(
+                vec.iter().any(|&x| x != 0),
+                "Vector should contain non-zero values"
+            );
         }
-        RObject::WithAttributes { object, .. } => {
-            match object.as_ref() {
-                RObject::Integer(vec) => {
-                    assert_eq!(vec.len(), 500, "Expected 500 elements");
-                }
-                RObject::Null => {
-                    panic!("BUG: wrap_int resulted in Null - wrapper not handled!");
-                }
-                _ => panic!("Expected Integer vector"),
+        RObject::WithAttributes { object, .. } => match object.as_ref() {
+            RObject::Integer(vec) => {
+                assert_eq!(vec.len(), 500, "Expected 500 elements");
             }
-        }
+            RObject::Null => {
+                panic!("BUG: wrap_int resulted in Null - wrapper not handled!");
+            }
+            _ => panic!("Expected Integer vector"),
+        },
         RObject::Null => {
             panic!("BUG: wrap_int resulted in Null - wrapper not handled correctly!");
         }
-        _ => panic!("Expected Integer vector, got {:?}", std::mem::discriminant(&obj)),
+        _ => panic!(
+            "Expected Integer vector, got {:?}",
+            std::mem::discriminant(&obj)
+        ),
     }
 }
 
@@ -348,8 +383,14 @@ fn test_altrep_wrap_matrix() {
             }
 
             // Check for expected attributes
-            assert!(attributes.get("dim").is_some(), "Matrix should have dim attribute");
-            assert!(attributes.get("dimnames").is_some(), "Matrix should have dimnames attribute");
+            assert!(
+                attributes.get("dim").is_some(),
+                "Matrix should have dim attribute"
+            );
+            assert!(
+                attributes.get("dimnames").is_some(),
+                "Matrix should have dimnames attribute"
+            );
         }
         RObject::Real(vec) => {
             // Might not have attributes
@@ -358,6 +399,9 @@ fn test_altrep_wrap_matrix() {
         RObject::Null => {
             panic!("BUG: Wrapped matrix is Null - ALTREP wrapper not handled correctly!");
         }
-        _ => panic!("Expected Real or WithAttributes containing Real, got {:?}", std::mem::discriminant(&obj)),
+        _ => panic!(
+            "Expected Real or WithAttributes containing Real, got {:?}",
+            std::mem::discriminant(&obj)
+        ),
     }
 }

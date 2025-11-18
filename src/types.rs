@@ -45,17 +45,17 @@ pub enum RObject {
     /// Closure (function)
     /// Contains formal parameters, body, and enclosing environment
     Closure {
-        formals: Box<RObject>,    // Parameter list (pairlist)
-        body: Box<RObject>,       // Function body (language object)
+        formals: Box<RObject>,     // Parameter list (pairlist)
+        body: Box<RObject>,        // Function body (language object)
         environment: Box<RObject>, // Closure environment
     },
 
     /// Environment
     /// Contains parent environment, bindings frame, and hash table
     Environment {
-        enclosing: Box<RObject>,  // Parent environment
-        frame: Box<RObject>,      // Bindings (pairlist)
-        hashtab: Box<RObject>,    // Hash table (VECSXP)
+        enclosing: Box<RObject>, // Parent environment
+        frame: Box<RObject>,     // Bindings (pairlist)
+        hashtab: Box<RObject>,   // Hash table (VECSXP)
     },
 
     /// Promise (lazy evaluation)
@@ -69,21 +69,21 @@ pub enum RObject {
     /// Special primitive function (like 'if', 'for', 'while')
     /// These are internal R functions with special evaluation rules
     Special {
-        name: Arc<str>,  // Function name (interned)
+        name: Arc<str>, // Function name (interned)
     },
 
     /// Builtin primitive function (like 'sum', 'c', '+')
     /// These are internal R functions evaluated normally
     Builtin {
-        name: Arc<str>,  // Function name (interned)
+        name: Arc<str>, // Function name (interned)
     },
 
     /// Bytecode (compiled R function)
     /// Contains code vector, constants pool, and original expression
     Bytecode {
-        code: Box<RObject>,       // Bytecode instructions
-        constants: Box<RObject>,  // Constants pool
-        expr: Box<RObject>,       // Original source expression (optional)
+        code: Box<RObject>,      // Bytecode instructions
+        constants: Box<RObject>, // Constants pool
+        expr: Box<RObject>,      // Original source expression (optional)
     },
 
     /// Data frame (list with class="data.frame")
@@ -119,32 +119,33 @@ pub struct DataFrameData {
 /// Factor structure (boxed to reduce RObject enum size)
 #[derive(Debug, Clone, PartialEq)]
 pub struct FactorData {
-    pub values: Vec<i32>,       // Integer indices (1-based, 0 = NA)
-    pub levels: Vec<Arc<str>>,  // Level labels (interned)
-    pub ordered: bool,          // Whether it's an ordered factor
+    pub values: Vec<i32>,      // Integer indices (1-based, 0 = NA)
+    pub levels: Vec<Arc<str>>, // Level labels (interned)
+    pub ordered: bool,         // Whether it's an ordered factor
 }
 
 /// S3 object structure (boxed to reduce RObject enum size)
 #[derive(Debug, Clone, PartialEq)]
 pub struct S3ObjectData {
     pub base: Box<RObject>,
-    pub class: Vec<Arc<str>>,  // Class names (interned)
+    pub class: Vec<Arc<str>>, // Class names (interned)
     pub attributes: Attributes,
 }
 
 /// S4 object structure (boxed to reduce RObject enum size)
 #[derive(Debug, Clone, PartialEq)]
 pub struct S4ObjectData {
-    pub class: Vec<Arc<str>>,           // Class names (interned)
-    pub slots: HashMap<Arc<str>, RObject>,  // Slot names (interned)
+    pub class: Vec<Arc<str>>,              // Class names (interned)
+    pub package: Option<Arc<str>>,         // Package attribute (e.g., "SeuratObject", "Matrix")
+    pub slots: HashMap<Arc<str>, RObject>, // Slot names (interned)
 }
 
 /// An element in a pairlist, optionally tagged
 #[derive(Debug, Clone, PartialEq)]
 pub struct PairlistElement {
-    pub tag: Option<Arc<str>>,  // Tag name (interned)
+    pub tag: Option<Arc<str>>, // Tag name (interned)
     pub value: RObject,
-    pub tag_object: Option<Box<RObject>>,  // Raw TAG object before name extraction (for special cases)
+    pub tag_object: Option<Box<RObject>>, // Raw TAG object before name extraction (for special cases)
 }
 
 /// Represents a logical value in R (TRUE, FALSE, or NA)

@@ -25,23 +25,39 @@ fn test_simple_function() {
 
     let data = read_test_file("closure_simple.rds");
     let result = read_rds(&data);
-    assert!(result.is_ok(), "Failed to parse simple function: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to parse simple function: {:?}",
+        result.err()
+    );
 
     let obj = result.unwrap();
 
     // Verify it's a Closure
     match &obj {
-        RObject::Closure { formals, body, environment } => {
+        RObject::Closure {
+            formals,
+            body,
+            environment,
+        } => {
             // Check formals - should be a pairlist with x and y (y=10)
             match formals.as_ref() {
                 RObject::Pairlist(elements) => {
                     assert_eq!(elements.len(), 2, "Should have 2 parameters");
 
                     // First parameter: x (no default)
-                    assert_eq!(elements[0].tag.as_deref(), Some("x"), "First param should be 'x'");
+                    assert_eq!(
+                        elements[0].tag.as_deref(),
+                        Some("x"),
+                        "First param should be 'x'"
+                    );
 
                     // Second parameter: y = 10
-                    assert_eq!(elements[1].tag.as_deref(), Some("y"), "Second param should be 'y'");
+                    assert_eq!(
+                        elements[1].tag.as_deref(),
+                        Some("y"),
+                        "Second param should be 'y'"
+                    );
                     match &elements[1].value {
                         RObject::Real(vec) => {
                             assert_eq!(vec.len(), 1, "Default value should be a scalar");
@@ -83,13 +99,21 @@ fn test_closure_with_environment() {
 
     let data = read_test_file("closure_with_env.rds");
     let result = read_rds(&data);
-    assert!(result.is_ok(), "Failed to parse closure with environment: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to parse closure with environment: {:?}",
+        result.err()
+    );
 
     let obj = result.unwrap();
 
     // Verify it's a Closure
     match &obj {
-        RObject::Closure { formals, body, environment } => {
+        RObject::Closure {
+            formals,
+            body,
+            environment,
+        } => {
             // Check formals - should be NULL (no parameters)
             match formals.as_ref() {
                 RObject::Null => {
@@ -98,18 +122,28 @@ fn test_closure_with_environment() {
                 RObject::Pairlist(elements) if elements.is_empty() => {
                     // Also acceptable
                 }
-                other => panic!("Expected Null or empty Pairlist for formals, got {:?}", other),
+                other => panic!(
+                    "Expected Null or empty Pairlist for formals, got {:?}",
+                    other
+                ),
             }
 
             // Check body - accept Language or Bytecode
-            if !matches!(body.as_ref(), RObject::Language(_) | RObject::Bytecode { .. }) {
+            if !matches!(
+                body.as_ref(),
+                RObject::Language(_) | RObject::Bytecode { .. }
+            ) {
                 eprintln!("Body is: {:#?}", body);
                 panic!("Body should be a Language or Bytecode object");
             }
 
             // Check environment - should be an Environment (not global)
             match environment.as_ref() {
-                RObject::Environment { enclosing: _, frame, hashtab: _ } => {
+                RObject::Environment {
+                    enclosing: _,
+                    frame,
+                    hashtab: _,
+                } => {
                     // Verify structure exists
                     // enclosing should not be NULL (it's a closure environment)
                     // frame might contain bindings
@@ -137,13 +171,21 @@ fn test_simple_environment() {
 
     let data = read_test_file("environment_simple.rds");
     let result = read_rds(&data);
-    assert!(result.is_ok(), "Failed to parse simple environment: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to parse simple environment: {:?}",
+        result.err()
+    );
 
     let obj = result.unwrap();
 
     // Verify it's an Environment
     match &obj {
-        RObject::Environment { enclosing, frame: _, hashtab } => {
+        RObject::Environment {
+            enclosing,
+            frame: _,
+            hashtab,
+        } => {
             // Enclosing should be global env (NULL)
             assert!(
                 matches!(enclosing.as_ref(), RObject::Null),
@@ -187,8 +229,16 @@ fn test_simple_function_roundtrip() {
     // Compare (basic structure comparison)
     match (&original, &roundtrip) {
         (
-            RObject::Closure { formals: f1, body: b1, environment: e1 },
-            RObject::Closure { formals: f2, body: b2, environment: e2 },
+            RObject::Closure {
+                formals: f1,
+                body: b1,
+                environment: e1,
+            },
+            RObject::Closure {
+                formals: f2,
+                body: b2,
+                environment: e2,
+            },
         ) => {
             assert_eq!(f1, f2, "Formals should match after roundtrip");
             assert_eq!(b1, b2, "Body should match after roundtrip");
@@ -217,8 +267,16 @@ fn test_environment_roundtrip() {
     // Compare (basic structure comparison)
     match (&original, &roundtrip) {
         (
-            RObject::Environment { enclosing: e1, frame: f1, hashtab: h1 },
-            RObject::Environment { enclosing: e2, frame: f2, hashtab: h2 },
+            RObject::Environment {
+                enclosing: e1,
+                frame: f1,
+                hashtab: h1,
+            },
+            RObject::Environment {
+                enclosing: e2,
+                frame: f2,
+                hashtab: h2,
+            },
         ) => {
             assert_eq!(e1, e2, "Enclosing should match after roundtrip");
             assert_eq!(f1, f2, "Frame should match after roundtrip");

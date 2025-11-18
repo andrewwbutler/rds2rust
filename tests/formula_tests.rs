@@ -217,7 +217,8 @@ fn test_formula_multiple_roundtrip() {
     let obj = read_rds(&data).expect("Failed to read existing formula with multiple predictors");
 
     let serialized = write_rds(&obj).expect("Failed to write formula with multiple predictors");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized formula with multiple predictors");
+    let deserialized =
+        read_rds(&serialized).expect("Failed to read serialized formula with multiple predictors");
 
     assert_eq!(obj, deserialized);
 }
@@ -233,7 +234,8 @@ fn test_formula_interaction_roundtrip() {
     let obj = read_rds(&data).expect("Failed to read existing formula with interaction");
 
     let serialized = write_rds(&obj).expect("Failed to write formula with interaction");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized formula with interaction");
+    let deserialized =
+        read_rds(&serialized).expect("Failed to read serialized formula with interaction");
 
     assert_eq!(obj, deserialized);
 }
@@ -249,7 +251,8 @@ fn test_formula_functions_roundtrip() {
     let obj = read_rds(&data).expect("Failed to read existing formula with functions");
 
     let serialized = write_rds(&obj).expect("Failed to write formula with functions");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized formula with functions");
+    let deserialized =
+        read_rds(&serialized).expect("Failed to read serialized formula with functions");
 
     assert_eq!(obj, deserialized);
 }
@@ -265,7 +268,8 @@ fn test_formula_no_intercept_roundtrip() {
     let obj = read_rds(&data).expect("Failed to read existing formula without intercept");
 
     let serialized = write_rds(&obj).expect("Failed to write formula without intercept");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized formula without intercept");
+    let deserialized =
+        read_rds(&serialized).expect("Failed to read serialized formula without intercept");
 
     assert_eq!(obj, deserialized);
 }

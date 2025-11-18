@@ -77,7 +77,10 @@ fn test_ref_shared_list() {
             _ => panic!("Expected List inside WithAttributes"),
         },
         RObject::List(elements) => elements,
-        _ => panic!("Expected List or WithAttributes containing List, got {:?}", obj),
+        _ => panic!(
+            "Expected List or WithAttributes containing List, got {:?}",
+            obj
+        ),
     };
 
     // Should have 3 elements (first, second, third)
@@ -102,7 +105,10 @@ fn test_ref_complex_shared() {
             _ => panic!("Expected List inside WithAttributes"),
         },
         RObject::List(elements) => elements,
-        _ => panic!("Expected List or WithAttributes containing List, got {:?}", obj),
+        _ => panic!(
+            "Expected List or WithAttributes containing List, got {:?}",
+            obj
+        ),
     };
 
     // Should have 3 elements (a, b, c)
@@ -127,7 +133,10 @@ fn test_ref_shared_expression() {
             _ => panic!("Expected List inside WithAttributes"),
         },
         RObject::List(elements) => elements,
-        _ => panic!("Expected List or WithAttributes containing List, got {:?}", obj),
+        _ => panic!(
+            "Expected List or WithAttributes containing List, got {:?}",
+            obj
+        ),
     };
 
     // Should have 3 elements (expr1, expr2, wrapped)
@@ -161,7 +170,10 @@ fn test_ref_large_shared() {
             _ => panic!("Expected List inside WithAttributes"),
         },
         RObject::List(elements) => elements,
-        _ => panic!("Expected List or WithAttributes containing List, got {:?}", obj),
+        _ => panic!(
+            "Expected List or WithAttributes containing List, got {:?}",
+            obj
+        ),
     };
 
     // Should have 5 elements (copy1-5)
@@ -171,18 +183,16 @@ fn test_ref_large_shared() {
     for (i, element) in elements.iter().enumerate() {
         match element {
             RObject::Integer(vec) => {
-                assert_eq!(
-                    vec.len(),
-                    1000,
-                    "Element {} should have 1000 integers",
-                    i
-                );
+                assert_eq!(vec.len(), 1000, "Element {} should have 1000 integers", i);
                 // Verify it's 1:1000
                 for (j, &val) in vec.iter().enumerate() {
                     assert_eq!(val, (j + 1) as i32, "Element {} index {}", i, j);
                 }
             }
-            _ => panic!("Expected Integer vector at element {}, got {:?}", i, element),
+            _ => panic!(
+                "Expected Integer vector at element {}, got {:?}",
+                i, element
+            ),
         }
     }
 }

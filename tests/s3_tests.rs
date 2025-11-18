@@ -159,7 +159,8 @@ fn test_s3_multi_class_roundtrip() {
     let obj = read_rds(&data).expect("Failed to read existing S3 multi-class object");
 
     let serialized = write_rds(&obj).expect("Failed to write S3 multi-class object");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized S3 multi-class object");
+    let deserialized =
+        read_rds(&serialized).expect("Failed to read serialized S3 multi-class object");
 
     assert_eq!(obj, deserialized);
 }

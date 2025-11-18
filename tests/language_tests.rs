@@ -103,7 +103,8 @@ fn test_lang_simple_roundtrip() {
     let obj = read_rds(&data).expect("Failed to read existing simple language object");
 
     let serialized = write_rds(&obj).expect("Failed to write simple language object");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized simple language object");
+    let deserialized =
+        read_rds(&serialized).expect("Failed to read serialized simple language object");
 
     assert_eq!(obj, deserialized);
 }
@@ -119,7 +120,8 @@ fn test_lang_with_args_roundtrip() {
     let obj = read_rds(&data).expect("Failed to read existing language object with args");
 
     let serialized = write_rds(&obj).expect("Failed to write language object with args");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized language object with args");
+    let deserialized =
+        read_rds(&serialized).expect("Failed to read serialized language object with args");
 
     assert_eq!(obj, deserialized);
 }
@@ -135,7 +137,8 @@ fn test_lang_nested_roundtrip() {
     let obj = read_rds(&data).expect("Failed to read existing nested language object");
 
     let serialized = write_rds(&obj).expect("Failed to write nested language object");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized nested language object");
+    let deserialized =
+        read_rds(&serialized).expect("Failed to read serialized nested language object");
 
     assert_eq!(obj, deserialized);
 }

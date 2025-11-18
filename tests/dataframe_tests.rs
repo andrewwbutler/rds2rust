@@ -225,7 +225,8 @@ fn test_dataframe_rownames_roundtrip() {
     let obj = read_rds(&data).expect("Failed to read existing dataframe with rownames");
 
     let serialized = write_rds(&obj).expect("Failed to write dataframe with rownames");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized dataframe with rownames");
+    let deserialized =
+        read_rds(&serialized).expect("Failed to read serialized dataframe with rownames");
 
     assert_eq!(obj, deserialized);
 }

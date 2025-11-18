@@ -207,7 +207,8 @@ fn test_s4_inheritance_roundtrip() {
     let obj = read_rds(&data).expect("Failed to read existing S4 inheritance object");
 
     let serialized = write_rds(&obj).expect("Failed to write S4 inheritance object");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized S4 inheritance object");
+    let deserialized =
+        read_rds(&serialized).expect("Failed to read serialized S4 inheritance object");
 
     assert_eq!(obj, deserialized);
 }
@@ -238,16 +239,20 @@ fn test_s4_as_attribute_container() {
     // The bug was that parse_attributes() would return empty attributes when
     // encountering an S4Object, causing the class field to be lost.
 
-    use std::collections::HashMap;
     use rds2rust::S4ObjectData;
+    use std::collections::HashMap;
 
     // Create an S4 object with a class and slots
     let mut slots = HashMap::new();
     slots.insert(Arc::from("data"), RObject::Integer(vec![1, 2, 3]));
-    slots.insert(Arc::from("metadata"), RObject::Character(vec![Arc::from("test")]));
+    slots.insert(
+        Arc::from("metadata"),
+        RObject::Character(vec![Arc::from("test")]),
+    );
 
     let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
         class: vec![Arc::from("ComplexObject"), Arc::from("BaseClass")],
+        package: None,
         slots,
     }));
 
@@ -259,7 +264,10 @@ fn test_s4_as_attribute_container() {
     match deserialized {
         RObject::S4Object(s4_data) => {
             // Most importantly, verify the class field is not empty!
-            assert!(!s4_data.class.is_empty(), "S4 object class should not be empty");
+            assert!(
+                !s4_data.class.is_empty(),
+                "S4 object class should not be empty"
+            );
             assert_eq!(s4_data.class.len(), 2, "Should have 2 classes");
             assert_eq!(s4_data.class[0].as_ref(), "ComplexObject");
             assert_eq!(s4_data.class[1].as_ref(), "BaseClass");
@@ -289,8 +297,8 @@ fn test_s4_as_attribute_container() {
 #[test]
 fn test_s4_nested_as_attribute() {
     // Test S4 objects that contain other S4 objects in their slots
-    use std::collections::HashMap;
     use rds2rust::S4ObjectData;
+    use std::collections::HashMap;
 
     // Create inner S4 object
     let mut inner_slots = HashMap::new();
@@ -298,16 +306,21 @@ fn test_s4_nested_as_attribute() {
 
     let inner_s4 = RObject::S4Object(Box::new(S4ObjectData {
         class: vec![Arc::from("InnerClass")],
+        package: None,
         slots: inner_slots,
     }));
 
     // Create outer S4 object containing the inner one
     let mut outer_slots = HashMap::new();
     outer_slots.insert(Arc::from("inner"), inner_s4);
-    outer_slots.insert(Arc::from("name"), RObject::Character(vec![Arc::from("outer")]));
+    outer_slots.insert(
+        Arc::from("name"),
+        RObject::Character(vec![Arc::from("outer")]),
+    );
 
     let outer_s4 = RObject::S4Object(Box::new(S4ObjectData {
         class: vec![Arc::from("OuterClass")],
+        package: None,
         slots: outer_slots,
     }));
 
@@ -327,7 +340,10 @@ fn test_s4_nested_as_attribute() {
             match outer_data.slots.get(&Arc::from("inner")) {
                 Some(RObject::S4Object(inner_data)) => {
                     // Critical: verify the inner S4 object's class is preserved
-                    assert!(!inner_data.class.is_empty(), "Inner S4 object class should not be empty");
+                    assert!(
+                        !inner_data.class.is_empty(),
+                        "Inner S4 object class should not be empty"
+                    );
                     assert_eq!(inner_data.class.len(), 1);
                     assert_eq!(inner_data.class[0].as_ref(), "InnerClass");
 

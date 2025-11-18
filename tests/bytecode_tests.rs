@@ -28,18 +28,29 @@ fn test_bytecode_func() {
 
     // Compiled functions should be Closure objects that may contain Bytecode in the body
     match obj {
-        RObject::Closure { formals, body, environment: _ } => {
+        RObject::Closure {
+            formals,
+            body,
+            environment: _,
+        } => {
             // The body might be bytecode or a language object
             // For compiled functions, the body is typically bytecode
             match body.as_ref() {
-                RObject::Bytecode { code, constants: _, expr: _ } => {
+                RObject::Bytecode {
+                    code,
+                    constants: _,
+                    expr: _,
+                } => {
                     // Verify the bytecode structure is preserved
                     // Code should be an integer vector (bytecode instructions)
                     // Constants should be a list (constant pool)
                     // Expr should be the original source expression
 
                     // Just verify they're not null - the exact structure depends on R's compiler
-                    assert!(!matches!(code.as_ref(), RObject::Null), "Bytecode code should not be null");
+                    assert!(
+                        !matches!(code.as_ref(), RObject::Null),
+                        "Bytecode code should not be null"
+                    );
                     // Constants and expr might be null for simple functions
                 }
                 RObject::Language(_) => {
@@ -53,7 +64,10 @@ fn test_bytecode_func() {
             }
 
             // Formals should be a pairlist (parameters)
-            assert!(matches!(formals.as_ref(), RObject::Pairlist(_) | RObject::Null));
+            assert!(matches!(
+                formals.as_ref(),
+                RObject::Pairlist(_) | RObject::Null
+            ));
 
             // Environment might be Null (representing base/global environment)
             // This is correct - we treat special environment markers as Null
@@ -76,7 +90,10 @@ fn test_bytecode_in_list() {
     let (list, attrs_opt) = match obj {
         RObject::WithAttributes { object, attributes } => (object, Some(attributes)),
         RObject::List(_) => (Box::new(obj), None),
-        _ => panic!("Expected List or WithAttributes, got {:?}", std::mem::discriminant(&obj)),
+        _ => panic!(
+            "Expected List or WithAttributes, got {:?}",
+            std::mem::discriminant(&obj)
+        ),
     };
 
     // Check the list has correct names (if attributes are present)
@@ -117,8 +134,11 @@ fn test_bytecode_in_list() {
         match &elements[2] {
             RObject::Real(vec) => assert_eq!(vec.len(), 3),
             RObject::Integer(vec) => assert_eq!(vec.len(), 3),
-            RObject::Character(_) => {}, // Also okay
-            _ => panic!("Unexpected third element type: {:?}", std::mem::discriminant(&elements[2])),
+            RObject::Character(_) => {} // Also okay
+            _ => panic!(
+                "Unexpected third element type: {:?}",
+                std::mem::discriminant(&elements[2])
+            ),
         }
     } else {
         panic!("Expected List");
@@ -137,7 +157,11 @@ fn test_uncompiled_func() {
 
     // Uncompiled functions should be Closure objects with Language body (not bytecode)
     match obj {
-        RObject::Closure { formals, body, environment: _ } => {
+        RObject::Closure {
+            formals,
+            body,
+            environment: _,
+        } => {
             // The body should be a Language object (not bytecode)
             // But R might still compile it automatically, so we accept both
             match body.as_ref() {
@@ -153,7 +177,10 @@ fn test_uncompiled_func() {
             }
 
             // Formals should be a pairlist
-            assert!(matches!(formals.as_ref(), RObject::Pairlist(_) | RObject::Null));
+            assert!(matches!(
+                formals.as_ref(),
+                RObject::Pairlist(_) | RObject::Null
+            ));
 
             // Environment might be Null (representing base/global environment)
             // This is correct - we treat special environment markers as Null
