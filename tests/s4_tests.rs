@@ -362,3 +362,181 @@ fn test_s4_nested_as_attribute() {
         _ => panic!("Expected outer S4Object after deserialization"),
     }
 }
+
+
+#[test]
+fn test_s4_flags_correctly_set() {
+    // Test that S4 objects have correct serialization flags for R method dispatch
+    // This ensures isS4() returns TRUE and slot accessors work in R
+    use rds2rust::S4ObjectData;
+    use std::collections::HashMap;
+
+    // Create an S4 object similar to a Matrix dgCMatrix
+    let mut slots = HashMap::new();
+    slots.insert(Arc::from("Dim"), RObject::Integer(vec![3, 3]));
+    slots.insert(
+        Arc::from("Dimnames"),
+        RObject::List(vec![RObject::Null, RObject::Null]),
+    );
+    slots.insert(Arc::from("x"), RObject::Real(vec![1.0, 2.0, 3.0]));
+    slots.insert(Arc::from("i"), RObject::Integer(vec![0, 1, 2]));
+    slots.insert(Arc::from("p"), RObject::Integer(vec![0, 1, 2, 3]));
+
+    let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
+        class: vec![Arc::from("dgCMatrix")],
+        package: Some(Arc::from("Matrix")),
+        slots,
+    }));
+
+    // Serialize the object
+    let serialized = write_rds(&s4_obj).expect("Failed to serialize S4 object");
+
+    // Decompress and check the flags
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+    let mut decoder = GzDecoder::new(&serialized[..]);
+    let mut decompressed = Vec::new();
+    decoder
+        .read_to_end(&mut decompressed)
+        .expect("Failed to decompress");
+
+    // Skip header (14 bytes for "X\n" format + version info + encoding)
+    // The S4 object flags should be at byte 28 (0x1c)
+    // Expected flags: 0x00010319
+    //   - Type: 0x19 (25 = S4SXP)
+    //   - Bit 8: IS_OBJECT_BIT (0x100)
+    //   - Bit 9: HAS_ATTR_BIT (0x200)
+    //   - Bits 12+: S4_LEVELS (0x10000) - bit 4 in gp field indicates S4
+
+    // Find the S4SXP flags (type 25 = 0x19)
+    let mut found_s4_flags = false;
+    for i in 0..decompressed.len().saturating_sub(4) {
+        let flags = u32::from_be_bytes([
+            decompressed[i],
+            decompressed[i + 1],
+            decompressed[i + 2],
+            decompressed[i + 3],
+        ]);
+
+        // Check if this looks like S4SXP flags
+        if (flags & 0xFF) == 25 {
+            // S4SXP type
+            // Verify IS_OBJECT_BIT is set (bit 8)
+            let is_object = (flags & 0x100) != 0;
+            // Verify HAS_ATTR_BIT is set (bit 9)
+            let has_attr = (flags & 0x200) != 0;
+            // Verify S4_LEVELS is set (0x10000)
+            let has_s4_levels = (flags & 0x10000) != 0;
+
+            if has_attr {
+                assert!(
+                    is_object,
+                    "S4 object must have IS_OBJECT_BIT set (bit 8). Flags: 0x{:08x}",
+                    flags
+                );
+                assert!(
+                    has_s4_levels,
+                    "S4 object must have S4_LEVELS set (0x10000). Flags: 0x{:08x}",
+                    flags
+                );
+                found_s4_flags = true;
+                break;
+            }
+        }
+    }
+
+    assert!(
+        found_s4_flags,
+        "Could not find S4SXP flags in serialized output"
+    );
+
+    // Also verify roundtrip works
+    let deserialized = read_rds(&serialized).expect("Failed to deserialize S4 object");
+    match deserialized {
+        RObject::S4Object(s4_data) => {
+            assert_eq!(s4_data.class[0].as_ref(), "dgCMatrix");
+            assert_eq!(s4_data.package.as_ref().map(|p| p.as_ref()), Some("Matrix"));
+            assert!(s4_data.slots.contains_key(&Arc::from("Dim")));
+        }
+        _ => panic!("Expected S4Object after deserialization"),
+    }
+}
+
+#[test]
+fn test_s4_package_attribute_preserved() {
+    // Test that the package attribute is correctly preserved during roundtrip
+    // This is essential for R's method dispatch to find the correct methods
+    use rds2rust::S4ObjectData;
+    use std::collections::HashMap;
+
+    let test_cases = vec![
+        ("Matrix", "dgCMatrix"),
+        ("SeuratObject", "Assay"),
+        ("methods", "signature"),
+        (".GlobalEnv", "UserClass"),
+    ];
+
+    for (package, class_name) in test_cases {
+        let mut slots = HashMap::new();
+        slots.insert(Arc::from("data"), RObject::Integer(vec![1, 2, 3]));
+
+        let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
+            class: vec![Arc::from(class_name)],
+            package: Some(Arc::from(package)),
+            slots,
+        }));
+
+        let serialized = write_rds(&s4_obj).expect("Failed to serialize");
+        let deserialized = read_rds(&serialized).expect("Failed to deserialize");
+
+        match deserialized {
+            RObject::S4Object(s4_data) => {
+                assert_eq!(
+                    s4_data.class[0].as_ref(),
+                    class_name,
+                    "Class name mismatch for package {}",
+                    package
+                );
+                assert_eq!(
+                    s4_data.package.as_ref().map(|p| p.as_ref()),
+                    Some(package),
+                    "Package attribute not preserved for class {}",
+                    class_name
+                );
+            }
+            _ => panic!("Expected S4Object for class {}", class_name),
+        }
+    }
+}
+
+#[test]
+fn test_s4_default_package_fallback() {
+    // Test that S4 objects without a package get .GlobalEnv as default
+    use rds2rust::S4ObjectData;
+    use std::collections::HashMap;
+
+    let mut slots = HashMap::new();
+    slots.insert(Arc::from("value"), RObject::Real(vec![42.0]));
+
+    let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
+        class: vec![Arc::from("MyCustomClass")],
+        package: None, // No package specified
+        slots,
+    }));
+
+    let serialized = write_rds(&s4_obj).expect("Failed to serialize");
+    let deserialized = read_rds(&serialized).expect("Failed to deserialize");
+
+    match deserialized {
+        RObject::S4Object(s4_data) => {
+            assert_eq!(s4_data.class[0].as_ref(), "MyCustomClass");
+            // When no package is specified, it should default to .GlobalEnv
+            assert_eq!(
+                s4_data.package.as_ref().map(|p| p.as_ref()),
+                Some(".GlobalEnv"),
+                "Default package should be .GlobalEnv"
+            );
+        }
+        _ => panic!("Expected S4Object"),
+    }
+}

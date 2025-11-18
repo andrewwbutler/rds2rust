@@ -172,7 +172,9 @@ fn write_flags(
         flags |= HAS_TAG_BIT;
     }
     if is_s4 {
-        flags |= IS_S4_BIT;
+        // S4 objects need both IS_OBJECT_BIT (bit 8) and S4_LEVELS (bit 4 in gp field)
+        flags |= IS_OBJECT_BIT;
+        flags |= S4_LEVELS;
     }
     writer.write_u32::<BigEndian>(flags)?;
     Ok(())
@@ -672,9 +674,7 @@ fn write_s4_object(
     // Use the stored package if available, otherwise fall back to ".GlobalEnv" for user-defined classes
     let class_obj = RObject::Character(class.to_vec());
     let mut class_attrs = Attributes::new();
-    let pkg_value = package
-        .cloned()
-        .unwrap_or_else(|| Arc::from(".GlobalEnv"));
+    let pkg_value = package.cloned().unwrap_or_else(|| Arc::from(".GlobalEnv"));
     class_attrs.insert(Arc::from("package"), RObject::Character(vec![pkg_value]));
 
     let class_with_package = RObject::WithAttributes {
