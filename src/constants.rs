@@ -142,3 +142,6 @@ pub const HAS_ATTR_BIT: u32 = 1 << 9; // 0x00000200
 
 /// Pairlist node has a tag
 pub const HAS_TAG_BIT: u32 = 1 << 10; // 0x00000400
+
+/// Object is an S4 object (used in serialization flags)
+pub const IS_S4_BIT: u32 = 1 << 16; // 0x00010000

@@ -74,14 +74,19 @@ fn write_header(writer: &mut Vec<u8>) -> Result<()> {
     // Magic bytes: 'X\n' for XDR format (big-endian)
     writer.write_all(b"X\n")?;
 
-    // Format version: 2 (most common)
-    writer.write_u32::<BigEndian>(2)?;
+    // Format version: 3 (current version used by R 4.x)
+    writer.write_u32::<BigEndian>(3)?;
 
-    // R version that wrote the file: 4.3.0 (0x00040300)
-    writer.write_u32::<BigEndian>(0x00040300)?;
+    // R version that wrote the file: 4.3.3 (0x00040303)
+    writer.write_u32::<BigEndian>(0x00040303)?;
 
     // Minimum R version needed: 3.5.0 (0x00030500)
     writer.write_u32::<BigEndian>(0x00030500)?;
+
+    // Version 3 requires native encoding information
+    let encoding = b"UTF-8";
+    writer.write_u32::<BigEndian>(encoding.len() as u32)?;
+    writer.write_all(encoding)?;
 
     Ok(())
 }
@@ -133,12 +138,12 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
 /// Write NULL.
 fn write_null(writer: &mut Vec<u8>) -> Result<()> {
     // Use NILVALUE_SXP (254) for singleton NULL
-    write_flags(writer, NILVALUE_SXP, false, false)?;
+    write_flags(writer, NILVALUE_SXP, false, false, false)?;
     Ok(())
 }
 
 /// Write flags (type + attribute/tag bits).
-fn write_flags(writer: &mut Vec<u8>, sexp_type: u32, has_attr: bool, has_tag: bool) -> Result<()> {
+fn write_flags(writer: &mut Vec<u8>, sexp_type: u32, has_attr: bool, has_tag: bool, is_s4: bool) -> Result<()> {
     let mut flags = sexp_type;
     if has_attr {
         flags |= HAS_ATTR_BIT;
@@ -146,13 +151,16 @@ fn write_flags(writer: &mut Vec<u8>, sexp_type: u32, has_attr: bool, has_tag: bo
     if has_tag {
         flags |= HAS_TAG_BIT;
     }
+    if is_s4 {
+        flags |= IS_S4_BIT;
+    }
     writer.write_u32::<BigEndian>(flags)?;
     Ok(())
 }
 
 /// Write an integer vector.
 fn write_integer_vector(writer: &mut Vec<u8>, vec: &[i32]) -> Result<()> {
-    write_flags(writer, INTSXP, false, false)?;
+    write_flags(writer, INTSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(vec.len() as u32)?;
     for &val in vec {
         writer.write_i32::<BigEndian>(val)?;
@@ -162,7 +170,7 @@ fn write_integer_vector(writer: &mut Vec<u8>, vec: &[i32]) -> Result<()> {
 
 /// Write a real (double) vector.
 fn write_real_vector(writer: &mut Vec<u8>, vec: &[f64]) -> Result<()> {
-    write_flags(writer, REALSXP, false, false)?;
+    write_flags(writer, REALSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(vec.len() as u32)?;
     for &val in vec {
         writer.write_f64::<BigEndian>(val)?;
@@ -172,7 +180,7 @@ fn write_real_vector(writer: &mut Vec<u8>, vec: &[f64]) -> Result<()> {
 
 /// Write a logical vector.
 fn write_logical_vector(writer: &mut Vec<u8>, vec: &[Logical]) -> Result<()> {
-    write_flags(writer, LGLSXP, false, false)?;
+    write_flags(writer, LGLSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(vec.len() as u32)?;
     for logical in vec {
         let val = match logical {
@@ -187,7 +195,7 @@ fn write_logical_vector(writer: &mut Vec<u8>, vec: &[Logical]) -> Result<()> {
 
 /// Write a character vector.
 fn write_character_vector(writer: &mut Vec<u8>, vec: &[Arc<str>]) -> Result<()> {
-    write_flags(writer, STRSXP, false, false)?;
+    write_flags(writer, STRSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(vec.len() as u32)?;
     for s in vec {
         write_charsxp(writer, s.as_ref())?;
@@ -198,7 +206,7 @@ fn write_character_vector(writer: &mut Vec<u8>, vec: &[Arc<str>]) -> Result<()> 
 /// Write a CHARSXP (internal string).
 fn write_charsxp(writer: &mut Vec<u8>, s: &str) -> Result<()> {
     let bytes = s.as_bytes();
-    write_flags(writer, CHARSXP, false, false)?;
+    write_flags(writer, CHARSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(bytes.len() as u32)?;
     writer.write_all(bytes)?;
     Ok(())
@@ -206,7 +214,7 @@ fn write_charsxp(writer: &mut Vec<u8>, s: &str) -> Result<()> {
 
 /// Write a raw vector.
 fn write_raw_vector(writer: &mut Vec<u8>, vec: &[u8]) -> Result<()> {
-    write_flags(writer, RAWSXP, false, false)?;
+    write_flags(writer, RAWSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(vec.len() as u32)?;
     writer.write_all(vec)?;
     Ok(())
@@ -214,7 +222,7 @@ fn write_raw_vector(writer: &mut Vec<u8>, vec: &[u8]) -> Result<()> {
 
 /// Write a complex vector.
 fn write_complex_vector(writer: &mut Vec<u8>, vec: &[Complex]) -> Result<()> {
-    write_flags(writer, CPLXSXP, false, false)?;
+    write_flags(writer, CPLXSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(vec.len() as u32)?;
     for complex in vec {
         writer.write_f64::<BigEndian>(complex.real)?;
@@ -225,7 +233,7 @@ fn write_complex_vector(writer: &mut Vec<u8>, vec: &[Complex]) -> Result<()> {
 
 /// Write a list (VECSXP).
 fn write_list(writer: &mut Vec<u8>, elements: &[RObject], ref_table: &mut RefTable) -> Result<()> {
-    write_flags(writer, VECSXP, false, false)?;
+    write_flags(writer, VECSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(elements.len() as u32)?;
     for element in elements {
         write_object(writer, element, ref_table)?;
@@ -237,7 +245,7 @@ fn write_list(writer: &mut Vec<u8>, elements: &[RObject], ref_table: &mut RefTab
 /// Expression vectors are structurally identical to VECSXP, but semantically represent
 /// collections of unevaluated expressions (typically language objects).
 fn write_expression(writer: &mut Vec<u8>, elements: &[RObject], ref_table: &mut RefTable) -> Result<()> {
-    write_flags(writer, EXPRSXP, false, false)?;
+    write_flags(writer, EXPRSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(elements.len() as u32)?;
     for element in elements {
         write_object(writer, element, ref_table)?;
@@ -256,7 +264,7 @@ fn write_language(writer: &mut Vec<u8>, elements: &[RObject], ref_table: &mut Re
     // Language objects are structured as: CAR (function) + CDR (argument list)
     let has_tag = false; // Language objects typically don't have tags
 
-    write_flags(writer, LANGSXP, false, has_tag)?;
+    write_flags(writer, LANGSXP, false, has_tag, false)?;
 
     // Write the function (CAR)
     write_object(writer, &elements[0], ref_table)?;
@@ -287,7 +295,7 @@ fn write_pairlist(writer: &mut Vec<u8>, elements: &[PairlistElement], ref_table:
         let has_tag = element.tag.is_some();
         let is_last = i == elements.len() - 1;
 
-        write_flags(writer, LISTSXP, false, has_tag)?;
+        write_flags(writer, LISTSXP, false, has_tag, false)?;
 
         // Write the tag if present
         if let Some(ref tag) = element.tag {
@@ -315,7 +323,7 @@ fn write_pairlist(writer: &mut Vec<u8>, elements: &[PairlistElement], ref_table:
 
 /// Write a symbol (SYMSXP).
 fn write_symbol(writer: &mut Vec<u8>, name: &str) -> Result<()> {
-    write_flags(writer, SYMSXP, false, false)?;
+    write_flags(writer, SYMSXP, false, false, false)?;
     write_charsxp(writer, name)?;
     Ok(())
 }
@@ -328,7 +336,7 @@ fn write_closure(
     environment: &RObject,
     ref_table: &mut RefTable,
 ) -> Result<()> {
-    write_flags(writer, CLOSXP, false, false)?;
+    write_flags(writer, CLOSXP, false, false, false)?;
 
     // Write environment (closure environment)
     write_object(writer, environment, ref_table)?;
@@ -350,7 +358,7 @@ fn write_environment(
     hashtab: &RObject,
     ref_table: &mut RefTable,
 ) -> Result<()> {
-    write_flags(writer, ENVSXP, false, false)?;
+    write_flags(writer, ENVSXP, false, false, false)?;
 
     // Write locked flag (0 = unlocked)
     write_integer_vector(writer, &[0])?;
@@ -378,7 +386,7 @@ fn write_promise(
     environment: &RObject,
     ref_table: &mut RefTable,
 ) -> Result<()> {
-    write_flags(writer, PROMSXP, false, false)?;
+    write_flags(writer, PROMSXP, false, false, false)?;
 
     // Write the three components: value, expression, environment
     write_object(writer, value, ref_table)?;
@@ -391,7 +399,7 @@ fn write_promise(
 /// Write a special primitive function (SPECIALSXP).
 /// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
 fn write_special(writer: &mut Vec<u8>, name: &str) -> Result<()> {
-    write_flags(writer, SPECIALSXP, false, false)?;
+    write_flags(writer, SPECIALSXP, false, false, false)?;
     // Write the string length
     let bytes = name.as_bytes();
     writer.write_u32::<BigEndian>(bytes.len() as u32)?;
@@ -403,7 +411,7 @@ fn write_special(writer: &mut Vec<u8>, name: &str) -> Result<()> {
 /// Write a builtin primitive function (BUILTINSXP).
 /// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
 fn write_builtin(writer: &mut Vec<u8>, name: &str) -> Result<()> {
-    write_flags(writer, BUILTINSXP, false, false)?;
+    write_flags(writer, BUILTINSXP, false, false, false)?;
     // Write the string length
     let bytes = name.as_bytes();
     writer.write_u32::<BigEndian>(bytes.len() as u32)?;
@@ -420,7 +428,7 @@ fn write_bytecode(
     _expr: &RObject,
     ref_table: &mut RefTable,
 ) -> Result<()> {
-    write_flags(writer, BCODESXP, false, false)?;
+    write_flags(writer, BCODESXP, false, false, false)?;
     // For now, we don't emit any bytecode-specific reference table entries.
     writer.write_u32::<BigEndian>(0)?;
     write_bytecode_body(writer, code, constants, ref_table)
@@ -475,7 +483,7 @@ fn write_dataframe(
     let column_values: Vec<&RObject> = cols_vec.iter().map(|(_, obj)| *obj).collect();
 
     // Write as a list with attributes
-    write_flags(writer, VECSXP, true, false)?;
+    write_flags(writer, VECSXP, true, false, false)?;
     writer.write_u32::<BigEndian>(column_values.len() as u32)?;
 
     // Write each column
@@ -503,7 +511,7 @@ fn write_factor(
     ref_table: &mut RefTable,
 ) -> Result<()> {
     // Write the integer vector with attributes
-    write_flags(writer, INTSXP, true, false)?;
+    write_flags(writer, INTSXP, true, false, false)?;
     writer.write_u32::<BigEndian>(values.len() as u32)?;
     for &val in values {
         writer.write_i32::<BigEndian>(val)?;
@@ -536,21 +544,21 @@ fn write_s3_object(
     // Write the base object with attributes
     match base {
         RObject::List(elements) => {
-            write_flags(writer, VECSXP, true, false)?;
+            write_flags(writer, VECSXP, true, false, false)?;
             writer.write_u32::<BigEndian>(elements.len() as u32)?;
             for element in elements {
                 write_object(writer, element, ref_table)?;
             }
         }
         RObject::Integer(vec) => {
-            write_flags(writer, INTSXP, true, false)?;
+            write_flags(writer, INTSXP, true, false, false)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             for val in vec {
                 writer.write_i32::<BigEndian>(*val)?;
             }
         }
         RObject::Real(vec) => {
-            write_flags(writer, REALSXP, true, false)?;
+            write_flags(writer, REALSXP, true, false, false)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             for val in vec {
                 writer.write_f64::<BigEndian>(*val)?;
@@ -560,7 +568,7 @@ fn write_s3_object(
             // Language objects with attributes (e.g., formulas)
             // Attributes come BEFORE CAR/CDR for language objects
             let has_tag = false;
-            write_flags(writer, LANGSXP, true, has_tag)?;
+            write_flags(writer, LANGSXP, true, has_tag, false)?;
 
             // Write attributes FIRST (before CAR/CDR)
             let mut attrs = attributes.clone();
@@ -608,12 +616,24 @@ fn write_s3_object(
 
 /// Write an S4 object.
 fn write_s4_object(writer: &mut Vec<u8>, class: &[Arc<str>], slots: &HashMap<Arc<str>, RObject>, ref_table: &mut RefTable) -> Result<()> {
-    // S4 objects are written as S4SXP with attributes
-    write_flags(writer, S4SXP, true, false)?;
+    // S4 objects are written as S4SXP with attributes and IS_S4_BIT set
+    write_flags(writer, S4SXP, true, false, true)?;
 
     // Write attributes (class + slots)
     let mut attrs = Attributes::new();
-    attrs.insert(Arc::from("class"), RObject::Character(class.to_vec()));
+    
+    // For S4 objects, the class attribute must have a package attribute
+    // R uses ".GlobalEnv" as the default package for user-defined S4 classes
+    let class_obj = RObject::Character(class.to_vec());
+    let mut class_attrs = Attributes::new();
+    class_attrs.insert(Arc::from("package"), RObject::Character(vec![Arc::from(".GlobalEnv")]));
+    
+    let class_with_package = RObject::WithAttributes {
+        object: Box::new(class_obj),
+        attributes: class_attrs,
+    };
+    
+    attrs.insert(Arc::from("class"), class_with_package);
 
     // Add all slots as attributes
     for (name, value) in slots {
@@ -635,21 +655,28 @@ fn write_object_with_attributes(
     // Write the base object with HAS_ATTR flag set
     match object {
         RObject::Integer(vec) => {
-            write_flags(writer, INTSXP, true, false)?;
+            write_flags(writer, INTSXP, true, false, false)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             for val in vec {
                 writer.write_i32::<BigEndian>(*val)?;
             }
         }
         RObject::Real(vec) => {
-            write_flags(writer, REALSXP, true, false)?;
+            write_flags(writer, REALSXP, true, false, false)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             for val in vec {
                 writer.write_f64::<BigEndian>(*val)?;
             }
         }
+        RObject::Character(vec) => {
+            write_flags(writer, STRSXP, true, false, false)?;
+            writer.write_u32::<BigEndian>(vec.len() as u32)?;
+            for s in vec {
+                write_charsxp(writer, s)?;
+            }
+        }
         RObject::List(elements) => {
-            write_flags(writer, VECSXP, true, false)?;
+            write_flags(writer, VECSXP, true, false, false)?;
             writer.write_u32::<BigEndian>(elements.len() as u32)?;
             for element in elements {
                 write_object(writer, element, ref_table)?;
