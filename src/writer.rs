@@ -143,6 +143,7 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
             &data.slots,
             ref_table,
         ),
+        RObject::Namespace(names) => write_namespace(writer, names),
         RObject::WithAttributes { object, attributes } => {
             write_object_with_attributes(writer, object, attributes, ref_table)
         }
@@ -153,6 +154,22 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
 fn write_null(writer: &mut Vec<u8>) -> Result<()> {
     // Use NILVALUE_SXP (254) for singleton NULL
     write_flags(writer, NILVALUE_SXP, false, false, false)?;
+    Ok(())
+}
+
+/// Write a namespace reference (NAMESPACESXP).
+/// This triggers automatic package loading when the RDS file is read in R.
+fn write_namespace(writer: &mut Vec<u8>, names: &[Arc<str>]) -> Result<()> {
+    write_flags(writer, NAMESPACESXP, false, false, false)?;
+
+    // Write as OutStringVec format: flags, length, then CHARSXP entries
+    writer.write_u32::<BigEndian>(0)?; // unused flags
+    writer.write_u32::<BigEndian>(names.len() as u32)?;
+
+    for name in names {
+        write_charsxp(writer, name.as_ref())?;
+    }
+
     Ok(())
 }
 

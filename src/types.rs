@@ -102,6 +102,10 @@ pub enum RObject {
     /// Boxed to reduce enum size
     S4Object(Box<S4ObjectData>),
 
+    /// Namespace reference (triggers automatic package loading in R)
+    /// Contains namespace name components (e.g., ["Matrix"] or ["base"])
+    Namespace(Vec<Arc<str>>),
+
     /// Object with attributes (no class)
     WithAttributes {
         object: Box<RObject>,

@@ -363,7 +363,6 @@ fn test_s4_nested_as_attribute() {
     }
 }
 
-
 #[test]
 fn test_s4_flags_correctly_set() {
     // Test that S4 objects have correct serialization flags for R method dispatch

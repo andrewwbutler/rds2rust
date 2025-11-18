@@ -744,3 +744,138 @@ fn test_list_with_large_int() {
         _ => panic!("Expected List"),
     }
 }
+
+// =============================================================================
+// Namespace serialization tests
+// =============================================================================
+
+#[test]
+fn test_namespace_roundtrip() {
+    // Test that namespace references are preserved during roundtrip
+    use rds2rust::write_rds;
+    use std::sync::Arc;
+
+    // Create a namespace reference
+    let namespace = RObject::Namespace(vec![Arc::from("Matrix")]);
+
+    // Serialize
+    let serialized = write_rds(&namespace).expect("Failed to serialize namespace");
+
+    // Deserialize
+    let deserialized = read_rds(&serialized).expect("Failed to deserialize namespace");
+
+    // Verify
+    match deserialized {
+        RObject::Namespace(names) => {
+            assert_eq!(names.len(), 1);
+            assert_eq!(names[0].as_ref(), "Matrix");
+        }
+        _ => panic!("Expected Namespace, got {:?}", deserialized),
+    }
+}
+
+#[test]
+fn test_namespace_multiple_components() {
+    // Test namespace with multiple name components
+    use rds2rust::write_rds;
+    use std::sync::Arc;
+
+    let namespace = RObject::Namespace(vec![Arc::from("SeuratObject"), Arc::from("1.0.0")]);
+
+    let serialized = write_rds(&namespace).expect("Failed to serialize");
+    let deserialized = read_rds(&serialized).expect("Failed to deserialize");
+
+    match deserialized {
+        RObject::Namespace(names) => {
+            assert_eq!(names.len(), 2);
+            assert_eq!(names[0].as_ref(), "SeuratObject");
+            assert_eq!(names[1].as_ref(), "1.0.0");
+        }
+        _ => panic!("Expected Namespace"),
+    }
+}
+
+#[test]
+fn test_namespace_in_list() {
+    // Test that namespaces can be embedded in other structures
+    use rds2rust::write_rds;
+    use std::sync::Arc;
+
+    let list = RObject::List(vec![
+        RObject::Namespace(vec![Arc::from("base")]),
+        RObject::Integer(vec![1, 2, 3]),
+        RObject::Namespace(vec![Arc::from("Matrix")]),
+    ]);
+
+    let serialized = write_rds(&list).expect("Failed to serialize");
+    let deserialized = read_rds(&serialized).expect("Failed to deserialize");
+
+    match deserialized {
+        RObject::List(elements) => {
+            assert_eq!(elements.len(), 3);
+
+            match &elements[0] {
+                RObject::Namespace(names) => {
+                    assert_eq!(names[0].as_ref(), "base");
+                }
+                _ => panic!("Expected Namespace at index 0"),
+            }
+
+            match &elements[1] {
+                RObject::Integer(vals) => {
+                    assert_eq!(vals, &vec![1, 2, 3]);
+                }
+                _ => panic!("Expected Integer at index 1"),
+            }
+
+            match &elements[2] {
+                RObject::Namespace(names) => {
+                    assert_eq!(names[0].as_ref(), "Matrix");
+                }
+                _ => panic!("Expected Namespace at index 2"),
+            }
+        }
+        _ => panic!("Expected List"),
+    }
+}
+
+#[test]
+fn test_namespace_serialization_format() {
+    // Test that the serialized format is correct (NAMESPACESXP = 123)
+    use rds2rust::write_rds;
+    use std::sync::Arc;
+
+    let namespace = RObject::Namespace(vec![Arc::from("stats")]);
+    let serialized = write_rds(&namespace).expect("Failed to serialize");
+
+    // Decompress and check the format
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+    let mut decoder = GzDecoder::new(&serialized[..]);
+    let mut decompressed = Vec::new();
+    decoder
+        .read_to_end(&mut decompressed)
+        .expect("Failed to decompress");
+
+    // Skip header, find NAMESPACESXP (123 = 0x7B)
+    let mut found_namespace = false;
+    for i in 0..decompressed.len().saturating_sub(4) {
+        let flags = u32::from_be_bytes([
+            decompressed[i],
+            decompressed[i + 1],
+            decompressed[i + 2],
+            decompressed[i + 3],
+        ]);
+
+        if (flags & 0xFF) == 123 {
+            // NAMESPACESXP
+            found_namespace = true;
+            break;
+        }
+    }
+
+    assert!(
+        found_namespace,
+        "Could not find NAMESPACESXP in serialized output"
+    );
+}

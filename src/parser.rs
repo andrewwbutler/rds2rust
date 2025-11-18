@@ -1525,8 +1525,7 @@ fn parse_environment(
 
 /// Parse a namespace environment (NAMESPACESXP, type 123).
 /// Namespaces are special environments used by R packages.
-/// They have the same structure as regular environments but represent package namespaces.
-/// We treat them as NULL since they can't be meaningfully deserialized across sessions.
+/// They trigger automatic package loading when the RDS file is read in R.
 fn parse_namespace(
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
@@ -1538,14 +1537,23 @@ fn parse_namespace(
     let _names_flag = cursor.read_u32::<BigEndian>()?;
     let length = cursor.read_u32::<BigEndian>()? as usize;
 
+    let mut names = Vec::with_capacity(length);
     for _ in 0..length {
         // Each entry is written via WriteItem on a CHARSXP
-        let _ = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+        let obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+        // Extract the string from the parsed object
+        if let RObject::Character(chars) = obj {
+            if let Some(s) = chars.first() {
+                names.push(s.clone());
+            }
+        }
     }
 
-    // We don't attempt to reconstruct actual namespace environments;
-    // treat them as NULL placeholders.
-    Ok(RObject::Null)
+    if std::env::var("RDS_DEBUG").is_ok() {
+        eprintln!("[PARSE] Namespace: {:?}", names);
+    }
+
+    Ok(RObject::Namespace(names))
 }
 
 /// Parse a language object (LANGSXP).
