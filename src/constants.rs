@@ -149,3 +149,7 @@ pub const IS_OBJECT_BIT: u32 = 1 << 8; // 0x00000100
 /// LEVELS field for S4 objects - bit 4 in the gp field indicates S4
 /// ENCODE_LEVELS(v) = v << 12, so S4 bit (0x10) becomes 0x10000
 pub const S4_LEVELS: u32 = 0x10 << 12; // 0x00010000
+
+/// ASCII encoding flag for CHARSXP - bit 6 in GP field indicates ASCII string
+/// In the serialization format, this becomes bit 18 in the flags word
+pub const ASCII_LEVELS: u32 = 0x40 << 12; // 0x00040000

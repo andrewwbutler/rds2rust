@@ -94,6 +94,7 @@ fn test_closure_with_namespace_env_loads_package() {
     }
 
     // First, create a closure in R that's defined in the Matrix namespace
+    // Now supports named arguments in function calls!
     let setup_code = r#"
         library(Matrix)
         f <- evalq(function(x) sparseMatrix(i=1, j=1, x=x), envir = asNamespace("Matrix"))
@@ -134,8 +135,13 @@ fn test_closure_with_namespace_env_loads_package() {
 
         # Try to use the function
         tryCatch({
-            result <- f(5.0)
-            cat("PASS: Function executed successfully\n")
+            result <- f(5.0)  # Create 1x1 sparse matrix with value 5
+            if (nrow(result) == 1 && ncol(result) == 1 && result[1,1] == 5) {
+                cat("PASS: Function executed successfully\n")
+            } else {
+                cat("FAIL: Unexpected result\n")
+                quit(status = 1)
+            }
         }, error = function(e) {
             cat("FAIL: Function execution failed:", e$message, "\n")
             quit(status = 1)

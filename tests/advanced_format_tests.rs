@@ -10,7 +10,7 @@
 //! - Multi-level reference tracking
 //! - Various attribute edge cases
 
-use rds2rust::{read_rds, RObject};
+use rds2rust::{read_rds, PairlistElement, RObject};
 use std::fs;
 use std::path::Path;
 
@@ -614,17 +614,17 @@ fn test_language_variants() {
     // Simple call
     let data = read_test_file("lang_simple_call.rds");
     let obj = read_rds(&data).expect("Failed to parse simple call");
-    assert!(matches!(obj, RObject::Language(_)));
+    assert!(matches!(obj, RObject::Language { .. }));
 
     // Named arguments
     let data = read_test_file("lang_named_args.rds");
     let obj = read_rds(&data).expect("Failed to parse named args call");
-    assert!(matches!(obj, RObject::Language(_)));
+    assert!(matches!(obj, RObject::Language { .. }));
 
     // Deeply nested
     let data = read_test_file("lang_deep_nested.rds");
     let obj = read_rds(&data).expect("Failed to parse deep nested call");
-    assert!(matches!(obj, RObject::Language(_)));
+    assert!(matches!(obj, RObject::Language { .. }));
 }
 
 // =============================================================================
@@ -894,10 +894,14 @@ fn test_closure_with_namespace_environment() {
 
     let closure = RObject::Closure {
         formals: Box::new(RObject::Null),
-        body: Box::new(RObject::Language(vec![
-            RObject::Character(vec![Arc::from("print")]),
-            RObject::Character(vec![Arc::from("x")]),
-        ])),
+        body: Box::new(RObject::Language {
+            function: Box::new(RObject::Character(vec![Arc::from("print")])),
+            args: vec![PairlistElement {
+                tag: None,
+                value: RObject::Character(vec![Arc::from("x")]),
+                tag_object: None,
+            }],
+        }),
         environment: Box::new(namespace_env),
     };
 

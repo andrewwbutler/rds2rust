@@ -41,7 +41,7 @@ fn test_formula_simple() {
 
             // The base should be a language object representing y ~ x
             match base.as_ref() {
-                RObject::Language(_) => {
+                RObject::Language { .. } => {
                     // Good, formula is a language object
                 }
                 _ => panic!("Expected Language object as formula base"),
@@ -68,7 +68,7 @@ fn test_formula_multiple() {
 
             assert_eq!(class[0].as_ref(), "formula");
             match base.as_ref() {
-                RObject::Language(_) => {
+                RObject::Language { .. } => {
                     // Good, y ~ x + z is a language object
                 }
                 _ => panic!("Expected Language object as formula base"),
@@ -95,7 +95,7 @@ fn test_formula_interaction() {
 
             assert_eq!(class[0].as_ref(), "formula");
             match base.as_ref() {
-                RObject::Language(_) => {
+                RObject::Language { .. } => {
                     // Good, y ~ x * z is a language object
                 }
                 _ => panic!("Expected Language object as formula base"),
@@ -122,7 +122,7 @@ fn test_formula_functions() {
 
             assert_eq!(class[0].as_ref(), "formula");
             match base.as_ref() {
-                RObject::Language(_) => {
+                RObject::Language { .. } => {
                     // Good, log(y) ~ sqrt(x) + I(z^2) is a language object
                 }
                 _ => panic!("Expected Language object as formula base"),
@@ -149,7 +149,7 @@ fn test_formula_no_intercept() {
 
             assert_eq!(class[0].as_ref(), "formula");
             match base.as_ref() {
-                RObject::Language(_) => {
+                RObject::Language { .. } => {
                     // Good, y ~ x - 1 is a language object
                 }
                 _ => panic!("Expected Language object as formula base"),
@@ -176,7 +176,7 @@ fn test_formula_one_sided() {
 
             assert_eq!(class[0].as_ref(), "formula");
             match base.as_ref() {
-                RObject::Language(_) => {
+                RObject::Language { .. } => {
                     // Good, ~ x + y is a language object
                 }
                 _ => panic!("Expected Language object as formula base"),

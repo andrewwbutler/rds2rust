@@ -28,11 +28,11 @@ fn test_lang_simple() {
     let obj = read_rds(&data).expect("Failed to parse simple language object");
 
     match obj {
-        RObject::Language(elements) => {
-            // quote(sum(1, 2, 3)) => [sum, 1, 2, 3]
-            assert!(elements.len() >= 1);
-            // First element should be the function (sum)
-            // Remaining elements are the arguments
+        RObject::Language { function, args } => {
+            // quote(sum(1, 2, 3)) => function=sum, args=[1, 2, 3]
+            // Just verify we got the structure
+            let _ = function; // function should be sum
+            let _ = args; // args should be the arguments
         }
         _ => panic!("Expected Language object, got {:?}", obj),
     }
@@ -49,9 +49,10 @@ fn test_lang_with_args() {
     let obj = read_rds(&data).expect("Failed to parse language object with args");
 
     match obj {
-        RObject::Language(elements) => {
-            // quote(mean(x, na.rm = TRUE)) => [mean, x, TRUE]
-            assert!(elements.len() >= 1);
+        RObject::Language { function, args } => {
+            // quote(mean(x, na.rm = TRUE)) => function=mean, args=[x, TRUE]
+            let _ = function;
+            let _ = args;
         }
         _ => panic!("Expected Language object, got {:?}", obj),
     }
@@ -68,14 +69,14 @@ fn test_lang_nested() {
     let obj = read_rds(&data).expect("Failed to parse nested language object");
 
     match obj {
-        RObject::Language(elements) => {
-            // quote(sqrt(sum(x, y))) => [sqrt, sum(x, y)]
-            assert!(elements.len() >= 1);
+        RObject::Language { function, args } => {
+            // quote(sqrt(sum(x, y))) => function=sqrt, args=[sum(x, y)]
+            let _ = function;
 
-            // The second element should be another language object: sum(x, y)
-            if elements.len() > 1 {
-                match &elements[1] {
-                    RObject::Language(_) => {
+            // The first argument should be another language object: sum(x, y)
+            if !args.is_empty() {
+                match &args[0].value {
+                    RObject::Language { .. } => {
                         // Good, nested call structure preserved
                     }
                     _ => {

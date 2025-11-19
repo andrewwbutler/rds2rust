@@ -53,7 +53,7 @@ fn test_bytecode_func() {
                     );
                     // Constants and expr might be null for simple functions
                 }
-                RObject::Language(_) => {
+                RObject::Language { .. } => {
                     // Some functions might not be compiled to bytecode
                     // This is okay - we just want to ensure we can parse both
                 }
@@ -165,7 +165,7 @@ fn test_uncompiled_func() {
             // The body should be a Language object (not bytecode)
             // But R might still compile it automatically, so we accept both
             match body.as_ref() {
-                RObject::Language(_) => {
+                RObject::Language { .. } => {
                     // Uncompiled - body is source expression
                 }
                 RObject::Bytecode { .. } => {

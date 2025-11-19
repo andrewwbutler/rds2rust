@@ -71,7 +71,7 @@ fn test_simple_function() {
 
             // Check body - allow Language or Bytecode (R may compile functions automatically)
             match body.as_ref() {
-                RObject::Language(_) => {
+                RObject::Language { .. } => {
                     // Body structure is complex, just verify it's a language object
                 }
                 RObject::Bytecode { .. } => {
@@ -80,9 +80,9 @@ fn test_simple_function() {
                 other => panic!("Expected Language or Bytecode for body, got {:?}", other),
             }
 
-            // Check environment - should be global env (NULL)
+            // Check environment - should be global env
             assert!(
-                matches!(environment.as_ref(), RObject::Null),
+                matches!(environment.as_ref(), RObject::GlobalEnv),
                 "Simple function should have global environment"
             );
         }
@@ -131,7 +131,7 @@ fn test_closure_with_environment() {
             // Check body - accept Language or Bytecode
             if !matches!(
                 body.as_ref(),
-                RObject::Language(_) | RObject::Bytecode { .. }
+                RObject::Language { .. } | RObject::Bytecode { .. }
             ) {
                 eprintln!("Body is: {:#?}", body);
                 panic!("Body should be a Language or Bytecode object");
@@ -186,9 +186,9 @@ fn test_simple_environment() {
             frame: _,
             hashtab,
         } => {
-            // Enclosing should be global env (NULL)
+            // Enclosing should be global env
             assert!(
-                matches!(enclosing.as_ref(), RObject::Null),
+                matches!(enclosing.as_ref(), RObject::GlobalEnv),
                 "Simple environment should have global as parent"
             );
 

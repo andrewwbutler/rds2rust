@@ -144,7 +144,7 @@ fn test_ref_shared_expression() {
 
     // First two should be language objects (the shared expression)
     match &elements[0] {
-        RObject::Language(_) => {
+        RObject::Language { .. } => {
             // Good - parsed the shared expression
         }
         _ => {

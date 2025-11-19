@@ -36,7 +36,7 @@ fn test_expr_single() {
             assert_eq!(elements.len(), 1);
             // The element should be a language object representing x + 1
             match &elements[0] {
-                RObject::Language(_) => {
+                RObject::Language { .. } => {
                     // Good, expression contains a language object
                 }
                 _ => {
@@ -65,7 +65,7 @@ fn test_expr_multiple() {
             // Each element should be a language object
             for element in &elements {
                 match element {
-                    RObject::Language(_) => {
+                    RObject::Language { .. } => {
                         // Good
                     }
                     _ => {
@@ -114,7 +114,7 @@ fn test_expr_calls() {
             // Each should be a function call (language object)
             for element in &elements {
                 match element {
-                    RObject::Language(_) => {
+                    RObject::Language { .. } => {
                         // Good, each is a language object (function call)
                     }
                     _ => {
@@ -143,7 +143,7 @@ fn test_expr_complex() {
             assert_eq!(elements.len(), 1);
             // Should be a language object representing the nested call
             match &elements[0] {
-                RObject::Language(_) => {
+                RObject::Language { .. } => {
                     // Good, nested call structure
                 }
                 _ => {
@@ -172,7 +172,7 @@ fn test_expr_manual() {
             // Each should be a language object
             for element in &elements {
                 match element {
-                    RObject::Language(_) => {
+                    RObject::Language { .. } => {
                         // Good
                     }
                     _ => {

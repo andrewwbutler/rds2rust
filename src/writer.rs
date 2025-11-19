@@ -19,6 +19,8 @@ struct RefTable {
     next_index: u32,
     /// Map from namespace name to reference index
     namespace_refs: HashMap<String, u32>,
+    /// Map from symbol name to reference index
+    symbol_refs: HashMap<String, u32>,
 }
 
 impl RefTable {
@@ -26,6 +28,7 @@ impl RefTable {
         RefTable {
             next_index: 1, // R uses 1-based indexing for references
             namespace_refs: HashMap::new(),
+            symbol_refs: HashMap::new(),
         }
     }
 
@@ -46,6 +49,19 @@ impl RefTable {
             None
         }
     }
+
+    /// Check if a symbol has been written before, returning its reference index if so.
+    /// Otherwise, register it and return None.
+    fn check_symbol(&mut self, name: &str) -> Option<u32> {
+        if let Some(&ref_idx) = self.symbol_refs.get(name) {
+            Some(ref_idx)
+        } else {
+            let idx = self.next_index;
+            self.next_index += 1;
+            self.symbol_refs.insert(name.to_string(), idx);
+            None
+        }
+    }
 }
 
 /// Determine if an object type should be tracked for references.
@@ -56,7 +72,7 @@ fn should_track_reference_type(obj: &RObject) -> bool {
         obj,
         RObject::List(_)
             | RObject::Expression(_)
-            | RObject::Language(_)
+            | RObject::Language { .. }
             | RObject::Pairlist(_)
             | RObject::S4Object { .. }
             | RObject::WithAttributes { .. }
@@ -114,13 +130,21 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
         RObject::Integer(vec) => write_integer_vector(writer, vec),
         RObject::Real(vec) => write_real_vector(writer, vec),
         RObject::Logical(vec) => write_logical_vector(writer, vec),
-        RObject::Character(vec) => write_character_vector(writer, vec.as_slice()),
+        RObject::Character(vec) => {
+            // Single-element character vectors may be symbols
+            // In most contexts they should be written as symbols with reference tracking
+            if vec.len() == 1 {
+                write_symbol_with_ref(writer, &vec[0], ref_table)
+            } else {
+                write_character_vector(writer, vec.as_slice())
+            }
+        }
         RObject::Raw(vec) => write_raw_vector(writer, vec),
         RObject::Complex(vec) => write_complex_vector(writer, vec),
         RObject::List(elements) => write_list(writer, elements, ref_table),
         RObject::Expression(elements) => write_expression(writer, elements, ref_table),
         RObject::Pairlist(elements) => write_pairlist(writer, elements, ref_table),
-        RObject::Language(elements) => write_language(writer, elements, ref_table),
+        RObject::Language { function, args } => write_language(writer, function, args, ref_table),
         RObject::Closure {
             formals,
             body,
@@ -160,6 +184,11 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
             ref_table,
         ),
         RObject::Namespace(names) => write_namespace(writer, names, ref_table),
+        RObject::GlobalEnv => write_global_env(writer),
+        RObject::BaseEnv => write_base_env(writer),
+        RObject::EmptyEnv => write_empty_env(writer),
+        RObject::MissingArg => write_missing_arg(writer),
+        RObject::UnboundValue => write_unbound_value(writer),
         RObject::WithAttributes { object, attributes } => {
             write_object_with_attributes(writer, object, attributes, ref_table)
         }
@@ -170,6 +199,36 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
 fn write_null(writer: &mut Vec<u8>) -> Result<()> {
     // Use NILVALUE_SXP (254) for singleton NULL
     write_flags(writer, NILVALUE_SXP, false, false, false)?;
+    Ok(())
+}
+
+/// Write global environment reference (GLOBALENV_SXP).
+fn write_global_env(writer: &mut Vec<u8>) -> Result<()> {
+    write_flags(writer, GLOBALENV_SXP, false, false, false)?;
+    Ok(())
+}
+
+/// Write base environment reference (BASEENV_SXP).
+fn write_base_env(writer: &mut Vec<u8>) -> Result<()> {
+    write_flags(writer, BASEENV_SXP, false, false, false)?;
+    Ok(())
+}
+
+/// Write empty environment reference (EMPTYENV_SXP).
+fn write_empty_env(writer: &mut Vec<u8>) -> Result<()> {
+    write_flags(writer, EMPTYENV_SXP, false, false, false)?;
+    Ok(())
+}
+
+/// Write missing argument marker (MISSINGARG_SXP).
+fn write_missing_arg(writer: &mut Vec<u8>) -> Result<()> {
+    write_flags(writer, MISSINGARG_SXP, false, false, false)?;
+    Ok(())
+}
+
+/// Write unbound value marker (UNBOUNDVALUE_SXP).
+fn write_unbound_value(writer: &mut Vec<u8>) -> Result<()> {
+    write_flags(writer, UNBOUNDVALUE_SXP, false, false, false)?;
     Ok(())
 }
 
@@ -283,7 +342,14 @@ fn write_character_vector(writer: &mut Vec<u8>, vec: &[Arc<str>]) -> Result<()> 
 /// Write a CHARSXP (internal string).
 fn write_charsxp(writer: &mut Vec<u8>, s: &str) -> Result<()> {
     let bytes = s.as_bytes();
-    write_flags(writer, CHARSXP, false, false, false)?;
+    // Check if the string is ASCII
+    let is_ascii = bytes.iter().all(|&b| b < 128);
+    // Build flags with ASCII encoding bit if applicable
+    let mut flags = CHARSXP;
+    if is_ascii {
+        flags |= ASCII_LEVELS;
+    }
+    writer.write_u32::<BigEndian>(flags)?;
     writer.write_u32::<BigEndian>(bytes.len() as u32)?;
     writer.write_all(bytes)?;
     Ok(())
@@ -338,34 +404,21 @@ fn write_expression(
 /// Language objects represent unevaluated calls: function + arguments.
 fn write_language(
     writer: &mut Vec<u8>,
-    elements: &[RObject],
+    function: &RObject,
+    args: &[PairlistElement],
     ref_table: &mut RefTable,
 ) -> Result<()> {
-    if elements.is_empty() {
-        // Empty language object? Just write NULL
-        return write_null(writer);
-    }
-
     // Language objects are structured as: CAR (function) + CDR (argument list)
     let has_tag = false; // Language objects typically don't have tags
 
     write_flags(writer, LANGSXP, false, has_tag, false)?;
 
     // Write the function (CAR)
-    write_object(writer, &elements[0], ref_table)?;
+    write_object(writer, function, ref_table)?;
 
     // Write the arguments (CDR) as a pairlist or NULL
-    if elements.len() > 1 {
-        // Convert remaining elements to a pairlist
-        let args: Vec<PairlistElement> = elements[1..]
-            .iter()
-            .map(|obj| PairlistElement {
-                tag: None,
-                value: obj.clone(),
-                tag_object: None,
-            })
-            .collect();
-        write_pairlist(writer, &args, ref_table)?;
+    if !args.is_empty() {
+        write_pairlist(writer, args, ref_table)?;
     } else {
         // No arguments
         write_null(writer)?;
@@ -388,7 +441,7 @@ fn write_pairlist(
 
         // Write the tag if present
         if let Some(ref tag) = element.tag {
-            write_symbol(writer, tag)?;
+            write_symbol_with_ref(writer, tag, ref_table)?;
         }
 
         // Write the value
@@ -410,12 +463,24 @@ fn write_pairlist(
     Ok(())
 }
 
-/// Write a symbol (SYMSXP).
-fn write_symbol(writer: &mut Vec<u8>, name: &str) -> Result<()> {
-    write_flags(writer, SYMSXP, false, false, false)?;
-    write_charsxp(writer, name)?;
+/// Write a symbol (SYMSXP) with reference tracking.
+fn write_symbol_with_ref(
+    writer: &mut Vec<u8>,
+    name: &str,
+    ref_table: &mut RefTable,
+) -> Result<()> {
+    // Check if this symbol was already written
+    if let Some(ref_idx) = ref_table.check_symbol(name) {
+        // Write a reference to the previous occurrence
+        write_refsxp(writer, ref_idx)?;
+    } else {
+        // Write the symbol for the first time
+        write_flags(writer, SYMSXP, false, false, false)?;
+        write_charsxp(writer, name)?;
+    }
     Ok(())
 }
+
 
 /// Write a closure (CLOSXP).
 fn write_closure(
@@ -425,7 +490,9 @@ fn write_closure(
     environment: &RObject,
     ref_table: &mut RefTable,
 ) -> Result<()> {
-    write_flags(writer, CLOSXP, false, false, false)?;
+    // R sets HAS_TAG for CLOSXP in most cases (for srcref tracking)
+    // We match R's behavior by always setting has_tag=true
+    write_flags(writer, CLOSXP, false, true, false)?;
 
     // Write environment (closure environment)
     write_object(writer, environment, ref_table)?;
@@ -661,7 +728,7 @@ fn write_s3_object(
                 writer.write_f64::<BigEndian>(*val)?;
             }
         }
-        RObject::Language(elements) => {
+        RObject::Language { function, args } => {
             // Language objects with attributes (e.g., formulas)
             // Attributes come BEFORE CAR/CDR for language objects
             let has_tag = false;
@@ -672,25 +739,12 @@ fn write_s3_object(
             attrs.insert(Arc::from("class"), RObject::Character(class.to_vec()));
             write_attributes(writer, &attrs, ref_table)?;
 
-            // Now write the CAR/CDR
-            if elements.is_empty() {
-                return write_null(writer);
-            }
-
             // Write the function (CAR)
-            write_object(writer, &elements[0], ref_table)?;
+            write_object(writer, function, ref_table)?;
 
             // Write the arguments (CDR) as a pairlist or NULL
-            if elements.len() > 1 {
-                let args: Vec<PairlistElement> = elements[1..]
-                    .iter()
-                    .map(|obj| PairlistElement {
-                        tag: None,
-                        value: obj.clone(),
-                        tag_object: None,
-                    })
-                    .collect();
-                write_pairlist(writer, &args, ref_table)?;
+            if !args.is_empty() {
+                write_pairlist(writer, args, ref_table)?;
             } else {
                 write_null(writer)?;
             }

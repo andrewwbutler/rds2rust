@@ -35,8 +35,11 @@ pub enum RObject {
     Pairlist(Vec<PairlistElement>),
 
     /// Language object (unevaluated call/expression)
-    /// Stored as a list: [function, arg1, arg2, ...]
-    Language(Vec<RObject>),
+    /// Contains the function being called and its arguments with optional names
+    Language {
+        function: Box<RObject>,       // Function being called (symbol, closure, etc.)
+        args: Vec<PairlistElement>,   // Arguments with optional names (tags)
+    },
 
     /// Expression vector (vector of language objects)
     /// Typically the result of parse() - a collection of unevaluated expressions
@@ -105,6 +108,26 @@ pub enum RObject {
     /// Namespace reference (triggers automatic package loading in R)
     /// Contains namespace name components (e.g., ["Matrix"] or ["base"])
     Namespace(Vec<Arc<str>>),
+
+    /// Global environment reference
+    /// This is a singleton in R that persists across the session
+    GlobalEnv,
+
+    /// Base environment reference
+    /// Contains base package bindings
+    BaseEnv,
+
+    /// Empty environment reference
+    /// The root of the environment tree (has no parent)
+    EmptyEnv,
+
+    /// Missing argument marker
+    /// Used for default arguments in function formals
+    MissingArg,
+
+    /// Unbound value marker
+    /// Used to indicate an unbound variable
+    UnboundValue,
 
     /// Object with attributes (no class)
     WithAttributes {

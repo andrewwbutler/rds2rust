@@ -85,15 +85,6 @@ impl SymbolTable {
         self.symbols.push(symbol);
         self.symbols.len() as u32 // 1-based index
     }
-
-    /// Get a symbol by its 1-based index
-    fn get(&self, index: u32) -> Option<&RObject> {
-        if index == 0 || index > self.symbols.len() as u32 {
-            None
-        } else {
-            Some(&self.symbols[(index - 1) as usize]) // Convert to 0-based
-        }
-    }
 }
 
 /// Deduplication table for memory-efficient object sharing.
@@ -183,20 +174,19 @@ fn should_cache_for_dedup(obj: &RObject) -> bool {
 }
 
 /// Determine if an object should be tracked in the reference table.
-/// Based on R's serialization logic, most object types are tracked to handle sharing.
-/// Only very simple/primitive types are not tracked.
-fn should_track_reference(sexp_type: u32, has_attr: bool) -> bool {
-    // Don't track references for:
-    // - NILSXP/NILVALUE_SXP - singleton NULL
-    // - CHARSXP - internal strings (handled differently)
-    // - REFSXP - references to other objects (returns immediately, no object created)
-    // - Simple vectors without attributes
+/// Based on R's serialization logic in serialize.c, only specific types are tracked
+/// for deduplication via REFSXP.
+fn should_track_reference(sexp_type: u32, _has_attr: bool) -> bool {
+    // R only tracks these types in the reference table (from serialize.c MakeRefIndex):
+    // - SYMSXP (symbols) - for deduplication of repeated symbols
+    // - ENVSXP (environments) - for handling circular references
+    // - EXTPTRSXP (external pointers)
+    // - WEAKREFSXP (weak references)
+    // - NAMESPACESXP and NAMESPACESXP_SERIAL (namespace environments)
+    // Other types like CLOSXP, LANGSXP, LISTSXP are NOT tracked
     match sexp_type {
-        NILSXP | NILVALUE_SXP | GLOBALENV_SXP | CHARSXP | REFSXP => false,
-        // Simple vectors without attributes are not tracked
-        INTSXP | REALSXP | LGLSXP | RAWSXP | CPLXSXP if !has_attr => false,
-        // Everything else is tracked
-        _ => true,
+        SYMSXP | ENVSXP | EXTPTRSXP | WEAKREFSXP | NAMESPACESXP | NAMESPACESXP_SERIAL => true,
+        _ => false,
     }
 }
 
@@ -369,10 +359,6 @@ fn parse_object(
     }
     let early_attributes =
         if has_attr && (sexp_type == LISTSXP || sexp_type == LANGSXP || sexp_type == CLOSXP) {
-            eprintln!(
-                "[EARLY_ATTR_BLOCK] Entered early_attributes block for type {}",
-                sexp_type
-            );
             if std::env::var("RDS_DEBUG").is_ok() {
                 eprintln!(
                     "[EARLY_ATTR] Parsing early attributes for type {} (has_attr={}, has_tag={})",
@@ -408,10 +394,10 @@ fn parse_object(
     // Parse the object based on type
     let mut obj = match sexp_type {
         NILSXP | NILVALUE_SXP => RObject::Null,
-        UNBOUNDVALUE_SXP => RObject::Null, // Unbound/missing argument marker
-        EMPTYENV_SXP => RObject::Null,     // Empty environment marker
-        BASEENV_SXP => RObject::Null,      // Base environment - treat as NULL
-        GLOBALENV_SXP => RObject::Null,    // Global environment - treat as NULL
+        UNBOUNDVALUE_SXP => RObject::UnboundValue, // Unbound value marker
+        EMPTYENV_SXP => RObject::EmptyEnv, // Empty environment (root of env tree)
+        BASEENV_SXP => RObject::BaseEnv,   // Base environment
+        GLOBALENV_SXP => RObject::GlobalEnv, // Global environment
         SYMSXP => parse_symbol(cursor, ref_table, symbol_table, dedup_table)?,
         INTSXP => parse_integer_vector(cursor)?,
         REALSXP => parse_real_vector(cursor)?,
@@ -632,8 +618,8 @@ fn parse_object(
             RObject::Null
         }
         MISSINGARG_SXP => {
-            // Missing argument marker (same as unboundvalue)
-            RObject::Null
+            // Missing argument marker (default value placeholder in formals)
+            RObject::MissingArg
         }
         GENERICREFSXP | CLASSREFSXP => {
             // Generic function or class reference
@@ -1380,18 +1366,19 @@ fn parse_bc_lang_struct(
 }
 
 fn build_language_from_bc(car: RObject, cdr: RObject) -> RObject {
-    let mut elements = Vec::new();
-    elements.push(car);
-    match cdr {
-        RObject::Null => {}
-        RObject::Pairlist(rest) => {
-            for elem in rest {
-                elements.push(elem.value);
-            }
-        }
-        other => elements.push(other),
+    let args = match cdr {
+        RObject::Null => Vec::new(),
+        RObject::Pairlist(rest) => rest,
+        other => vec![PairlistElement {
+            tag: None,
+            value: other,
+            tag_object: None,
+        }],
+    };
+    RObject::Language {
+        function: Box::new(car),
+        args,
     }
-    RObject::Language(elements)
 }
 
 fn build_pairlist_from_bc(tag_obj: RObject, car: RObject, cdr: RObject) -> RObject {
@@ -1566,8 +1553,6 @@ fn parse_language(
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
 ) -> Result<RObject> {
-    let mut elements = Vec::new();
-
     // Parse the TAG if present (usually not for language objects)
     if has_tag {
         let _tag_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
@@ -1575,30 +1560,35 @@ fn parse_language(
     }
 
     // Parse the CAR (the function being called)
-    let car = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-    elements.push(car);
+    let function = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
     // Parse the CDR (the argument list)
     let cdr = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
-    // If CDR is a pairlist, extract all arguments
-    match cdr {
+    // Extract arguments with their names (tags) from the CDR
+    let args = match cdr {
         RObject::Null => {
             // No arguments
+            Vec::new()
         }
         RObject::Pairlist(pairlist_elements) => {
-            // Add all arguments from the pairlist
-            for elem in pairlist_elements {
-                elements.push(elem.value);
-            }
+            // Keep all arguments with their tags (names)
+            pairlist_elements
         }
         other => {
             // Single argument (unusual but possible)
-            elements.push(other);
+            vec![PairlistElement {
+                tag: None,
+                value: other,
+                tag_object: None,
+            }]
         }
-    }
+    };
 
-    Ok(RObject::Language(elements))
+    Ok(RObject::Language {
+        function: Box::new(function),
+        args,
+    })
 }
 
 /// Helper function to parse a single pairlist element (TAG if has_tag, then CAR).
@@ -1617,51 +1607,9 @@ fn parse_pairlist_element(
 
     // Parse the TAG if present (comes before CAR)
     let (tag, tag_object) = if has_tag {
-        // SPECIAL CASE: When TAG is a REFSXP, it references the symbol table, not the ref table!
-        // R uses a separate symbol table for TAG positions in pairlists (for attribute names).
-        // Peek at the flags to check if this is a REFSXP.
-        let pos = cursor.position();
-        let flags = cursor.read_u32::<BigEndian>()?;
-        cursor.set_position(pos); // Reset position to re-read in parse_object
-
-        let type_from_0_7 = flags & 0xFF;
-        let is_refsxp = type_from_0_7 == REFSXP;
-
-        let tag_obj = if is_refsxp {
-            // TAG is a REFSXP - look it up in the symbol table
-            let ref_index = ((flags >> 8) & 0xFF) as u32;
-            cursor.set_position(pos + 4); // Skip the flags we just read
-
-            if std::env::var("RDS_DEBUG").is_ok() {
-                eprintln!(
-                    "[PAIRLIST_ELEM] TAG is REFSXP({}), looking up in symbol table",
-                    ref_index
-                );
-            }
-
-            match symbol_table.get(ref_index) {
-                Some(obj) => {
-                    if std::env::var("RDS_DEBUG").is_ok() {
-                        if let RObject::Character(chars) = obj {
-                            eprintln!(
-                                "[PAIRLIST_ELEM]   Symbol table[{}] = {:?}",
-                                ref_index, chars
-                            );
-                        }
-                    }
-                    obj.clone()
-                }
-                None => {
-                    return Err(Error::InvalidFormat(format!(
-                        "Invalid symbol table reference in TAG: {}",
-                        ref_index
-                    )));
-                }
-            }
-        } else {
-            // TAG is a regular object (SYMSXP, etc.) - parse normally
-            parse_object(cursor, ref_table, symbol_table, dedup_table)?
-        };
+        // Parse the TAG using normal object parsing
+        // REFSXP references in TAGs use the main ref_table, same as everywhere else
+        let tag_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
         if std::env::var("RDS_DEBUG").is_ok() {
             eprintln!(
