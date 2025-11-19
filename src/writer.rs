@@ -131,13 +131,10 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
         RObject::Real(vec) => write_real_vector(writer, vec),
         RObject::Logical(vec) => write_logical_vector(writer, vec),
         RObject::Character(vec) => {
-            // Single-element character vectors may be symbols
-            // In most contexts they should be written as symbols with reference tracking
-            if vec.len() == 1 {
-                write_symbol_with_ref(writer, &vec[0], ref_table)
-            } else {
-                write_character_vector(writer, vec.as_slice())
-            }
+            // Character vectors are always written as STRSXP
+            // Symbols (SYMSXP) are only written in specific contexts like pairlist tags
+            // or Language function positions, not here
+            write_character_vector(writer, vec.as_slice())
         }
         RObject::Raw(vec) => write_raw_vector(writer, vec),
         RObject::Complex(vec) => write_complex_vector(writer, vec),
@@ -414,11 +411,19 @@ fn write_language(
     write_flags(writer, LANGSXP, false, has_tag, false)?;
 
     // Write the function (CAR)
-    write_object(writer, function, ref_table)?;
+    // If it's a single-element Character, write it as a symbol (function name)
+    match function {
+        RObject::Character(vec) if vec.len() == 1 => {
+            write_symbol_with_ref(writer, &vec[0], ref_table)?;
+        }
+        _ => {
+            write_object(writer, function, ref_table)?;
+        }
+    }
 
     // Write the arguments (CDR) as a pairlist or NULL
     if !args.is_empty() {
-        write_pairlist(writer, args, ref_table)?;
+        write_pairlist_as_args(writer, args, ref_table)?;
     } else {
         // No arguments
         write_null(writer)?;
@@ -428,10 +433,13 @@ fn write_language(
 }
 
 /// Write a pairlist (LISTSXP).
-fn write_pairlist(
+/// When `values_are_symbols` is true, single-element Character values are written as SYMSXP.
+/// This is used for Language argument lists where values may be variable references.
+fn write_pairlist_internal(
     writer: &mut Vec<u8>,
     elements: &[PairlistElement],
     ref_table: &mut RefTable,
+    values_are_symbols: bool,
 ) -> Result<()> {
     for (i, element) in elements.iter().enumerate() {
         let has_tag = element.tag.is_some();
@@ -445,7 +453,19 @@ fn write_pairlist(
         }
 
         // Write the value
-        write_object(writer, &element.value, ref_table)?;
+        // If values_are_symbols and value is single-element Character, write as symbol
+        if values_are_symbols {
+            match &element.value {
+                RObject::Character(vec) if vec.len() == 1 => {
+                    write_symbol_with_ref(writer, &vec[0], ref_table)?;
+                }
+                _ => {
+                    write_object(writer, &element.value, ref_table)?;
+                }
+            }
+        } else {
+            write_object(writer, &element.value, ref_table)?;
+        }
 
         // Write the CDR (tail)
         if is_last {
@@ -461,6 +481,26 @@ fn write_pairlist(
     }
 
     Ok(())
+}
+
+/// Write a pairlist (LISTSXP) for general use.
+fn write_pairlist(
+    writer: &mut Vec<u8>,
+    elements: &[PairlistElement],
+    ref_table: &mut RefTable,
+) -> Result<()> {
+    // For general pairlists (like formals), don't convert values to symbols
+    write_pairlist_internal(writer, elements, ref_table, false)
+}
+
+/// Write a pairlist for Language arguments where single-element Characters are symbols.
+fn write_pairlist_as_args(
+    writer: &mut Vec<u8>,
+    elements: &[PairlistElement],
+    ref_table: &mut RefTable,
+) -> Result<()> {
+    // For Language arguments, convert single-element Character values to symbols
+    write_pairlist_internal(writer, elements, ref_table, true)
 }
 
 /// Write a symbol (SYMSXP) with reference tracking.
@@ -740,11 +780,19 @@ fn write_s3_object(
             write_attributes(writer, &attrs, ref_table)?;
 
             // Write the function (CAR)
-            write_object(writer, function, ref_table)?;
+            // If it's a single-element Character, write it as a symbol (function name)
+            match function.as_ref() {
+                RObject::Character(vec) if vec.len() == 1 => {
+                    write_symbol_with_ref(writer, &vec[0], ref_table)?;
+                }
+                _ => {
+                    write_object(writer, function, ref_table)?;
+                }
+            }
 
             // Write the arguments (CDR) as a pairlist or NULL
             if !args.is_empty() {
-                write_pairlist(writer, args, ref_table)?;
+                write_pairlist_as_args(writer, args, ref_table)?;
             } else {
                 write_null(writer)?;
             }

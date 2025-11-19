@@ -5,10 +5,32 @@
 use rds2rust::{read_rds, write_rds, Logical, RObject};
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 use std::sync::Arc;
 
 fn test_data_exists() -> bool {
     Path::new("tests/data").exists()
+}
+
+fn r_available() -> bool {
+    Command::new("R")
+        .args(["--version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn run_r_code(code: &str) -> Result<String, String> {
+    let output = Command::new("R")
+        .args(["--vanilla", "--slave", "-e", code])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
 }
 
 fn read_test_file(filename: &str) -> Vec<u8> {
@@ -542,4 +564,163 @@ fn test_complex_roundtrip_existing() {
     let deserialized = read_rds(&serialized).expect("Failed to read serialized complex");
 
     assert_eq!(obj, deserialized);
+}
+
+/// Test that single-element character vectors roundtrip correctly as STRSXP.
+/// They should NOT be converted to symbols.
+#[test]
+fn test_single_element_character_not_symbol() {
+    if !r_available() {
+        eprintln!("Skipping test: R not available");
+        return;
+    }
+
+    // Create various single-element character vectors in R
+    let setup = r#"
+        data <- list(
+            single_char = "hello",
+            char_in_list = list("world"),
+            names_attr = setNames(1:3, c("a", "b", "c"))
+        )
+        saveRDS(data, "/tmp/rds2rust_single_char_regression.rds")
+        cat("ok")
+    "#;
+
+    let result = run_r_code(setup);
+    assert!(result.is_ok(), "Failed to create test data: {:?}", result);
+
+    // Roundtrip through Rust
+    let data = fs::read("/tmp/rds2rust_single_char_regression.rds").expect("Failed to read");
+    let obj = read_rds(&data).expect("Failed to parse");
+    let output = write_rds(&obj).expect("Failed to serialize");
+    fs::write("/tmp/rds2rust_single_char_regression_out.rds", &output).expect("Failed to write");
+
+    // Verify in R that everything is correct type
+    let verify = r#"
+        data <- readRDS("/tmp/rds2rust_single_char_regression_out.rds")
+
+        # Check single_char is character, not symbol
+        if (!is.character(data$single_char)) {
+            cat("FAIL: single_char is not character, got:", typeof(data$single_char), "\n")
+            quit(status = 1)
+        }
+        if (data$single_char != "hello") {
+            cat("FAIL: single_char value wrong\n")
+            quit(status = 1)
+        }
+
+        # Check char_in_list
+        if (!is.character(data$char_in_list[[1]])) {
+            cat("FAIL: char_in_list[[1]] is not character\n")
+            quit(status = 1)
+        }
+
+        # Check names_attr - names should be character
+        if (!is.character(names(data$names_attr))) {
+            cat("FAIL: names_attr names are not character\n")
+            quit(status = 1)
+        }
+
+        cat("PASS")
+    "#;
+
+    let result = run_r_code(verify);
+    assert!(
+        result.is_ok() && result.as_ref().unwrap().contains("PASS"),
+        "Single-element character verification failed: {:?}",
+        result
+    );
+
+    // Cleanup
+    let _ = fs::remove_file("/tmp/rds2rust_single_char_regression.rds");
+    let _ = fs::remove_file("/tmp/rds2rust_single_char_regression_out.rds");
+}
+
+/// Test that character vectors in various contexts remain as character vectors.
+/// This is a comprehensive test for the symbol/string distinction.
+#[test]
+fn test_character_vs_symbol_contexts() {
+    if !r_available() {
+        eprintln!("Skipping test: R not available");
+        return;
+    }
+
+    let setup = r#"
+        # Various contexts where character vectors should NOT become symbols
+        data <- list(
+            # Plain character vector
+            plain_char = c("a", "b", "c"),
+
+            # Single element character
+            single = "single",
+
+            # Character in data frame column
+            df = data.frame(x = 1:3, name = c("foo", "bar", "baz"), stringsAsFactors = FALSE),
+
+            # Named vector (names should stay as character)
+            named_vec = c(first = 1, second = 2, third = 3),
+
+            # Nested list with characters
+            nested = list(inner = list(value = "nested_char"))
+        )
+        saveRDS(data, "/tmp/rds2rust_char_contexts_regression.rds")
+        cat("ok")
+    "#;
+
+    let result = run_r_code(setup);
+    assert!(result.is_ok(), "Failed to create test data: {:?}", result);
+
+    // Roundtrip through Rust
+    let data = fs::read("/tmp/rds2rust_char_contexts_regression.rds").expect("Failed to read");
+    let obj = read_rds(&data).expect("Failed to parse");
+    let output = write_rds(&obj).expect("Failed to serialize");
+    fs::write("/tmp/rds2rust_char_contexts_regression_out.rds", &output).expect("Failed to write");
+
+    // Verify everything is correct type
+    let verify = r#"
+        data <- readRDS("/tmp/rds2rust_char_contexts_regression_out.rds")
+
+        # Plain character vector
+        if (!is.character(data$plain_char) || length(data$plain_char) != 3) {
+            cat("FAIL: plain_char not correct\n")
+            quit(status = 1)
+        }
+
+        # Single element
+        if (!is.character(data$single) || data$single != "single") {
+            cat("FAIL: single not correct, type:", typeof(data$single), "\n")
+            quit(status = 1)
+        }
+
+        # Data frame column
+        if (!is.character(data$df$name)) {
+            cat("FAIL: df$name not character\n")
+            quit(status = 1)
+        }
+
+        # Named vector names
+        if (!is.character(names(data$named_vec))) {
+            cat("FAIL: named_vec names not character\n")
+            quit(status = 1)
+        }
+
+        # Nested character
+        if (!is.character(data$nested$inner$value) || data$nested$inner$value != "nested_char") {
+            cat("FAIL: nested character not correct\n")
+            quit(status = 1)
+        }
+
+        cat("PASS")
+    "#;
+
+    let result = run_r_code(verify);
+    assert!(
+        result.is_ok() && result.as_ref().unwrap().contains("PASS"),
+        "Character contexts verification failed: {:?}",
+        result
+    );
+
+    // Cleanup
+    let _ = fs::remove_file("/tmp/rds2rust_char_contexts_regression.rds");
+    let _ = fs::remove_file("/tmp/rds2rust_char_contexts_regression_out.rds");
 }

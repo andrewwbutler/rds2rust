@@ -1,8 +1,9 @@
 //! Integration and roundtrip tests for Language objects (unevaluated R expressions/calls).
 
-use rds2rust::{read_rds, write_rds, RObject};
+use rds2rust::{read_rds, write_rds, PairlistElement, RObject};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 fn test_data_exists() -> bool {
     Path::new("tests/data").exists()
@@ -142,4 +143,51 @@ fn test_lang_nested_roundtrip() {
         read_rds(&serialized).expect("Failed to read serialized nested language object");
 
     assert_eq!(obj, deserialized);
+}
+
+/// Test constructing a Language object programmatically and verifying it roundtrips.
+#[test]
+fn test_language_construction_roundtrip() {
+    // Construct a Language object: print("hello")
+    let lang = RObject::Language {
+        function: Box::new(RObject::Character(vec![Arc::from("print")])),
+        args: vec![PairlistElement {
+            tag: None,
+            value: RObject::Character(vec![Arc::from("hello")]),
+            tag_object: None,
+        }],
+    };
+
+    // Wrap in a closure
+    let closure = RObject::Closure {
+        formals: Box::new(RObject::Null),
+        body: Box::new(lang),
+        environment: Box::new(RObject::GlobalEnv),
+    };
+
+    // Roundtrip
+    let serialized = write_rds(&closure).expect("Failed to serialize");
+    let deserialized = read_rds(&serialized).expect("Failed to deserialize");
+
+    // Verify structure
+    match deserialized {
+        RObject::Closure { body, .. } => match body.as_ref() {
+            RObject::Language { function, args } => {
+                // Function should be the symbol "print"
+                match function.as_ref() {
+                    RObject::Character(v) if v.len() == 1 && v[0].as_ref() == "print" => {}
+                    other => panic!("Expected print symbol, got {:?}", other),
+                }
+                // Should have one argument
+                assert_eq!(args.len(), 1, "Should have 1 argument");
+                // Argument should be the string "hello"
+                match &args[0].value {
+                    RObject::Character(v) if v.len() == 1 && v[0].as_ref() == "hello" => {}
+                    other => panic!("Expected hello string, got {:?}", other),
+                }
+            }
+            other => panic!("Expected Language body, got {:?}", other),
+        },
+        other => panic!("Expected Closure, got {:?}", other),
+    }
 }

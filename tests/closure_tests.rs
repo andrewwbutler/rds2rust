@@ -6,9 +6,31 @@
 use rds2rust::{read_rds, write_rds, RObject};
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 fn test_data_exists() -> bool {
     Path::new("tests/data").exists()
+}
+
+fn r_available() -> bool {
+    Command::new("R")
+        .args(["--version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn run_r_code(code: &str) -> Result<String, String> {
+    let output = Command::new("R")
+        .args(["--vanilla", "--slave", "-e", code])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
 }
 
 fn read_test_file(filename: &str) -> Vec<u8> {
@@ -284,4 +306,127 @@ fn test_environment_roundtrip() {
         }
         _ => panic!("Objects don't match types after roundtrip"),
     }
+}
+
+/// Test that closures with simple expressions roundtrip correctly.
+#[test]
+fn test_closure_simple_expression_roundtrip() {
+    if !r_available() {
+        eprintln!("Skipping test: R not available");
+        return;
+    }
+
+    // Create closures with various body expressions
+    let setup = r#"
+        f1 <- function(x) x + 1
+        f2 <- function(x, y) x * y
+        f3 <- function(a) sqrt(a)
+
+        saveRDS(list(f1 = f1, f2 = f2, f3 = f3), "/tmp/rds2rust_closure_expr_regression.rds")
+        cat("ok")
+    "#;
+
+    let result = run_r_code(setup);
+    assert!(result.is_ok(), "Failed to create test data: {:?}", result);
+
+    // Roundtrip through Rust
+    let data = fs::read("/tmp/rds2rust_closure_expr_regression.rds").expect("Failed to read");
+    let obj = read_rds(&data).expect("Failed to parse");
+    let output = write_rds(&obj).expect("Failed to serialize");
+    fs::write("/tmp/rds2rust_closure_expr_regression_out.rds", &output).expect("Failed to write");
+
+    // Verify closures work correctly
+    let verify = r#"
+        funcs <- readRDS("/tmp/rds2rust_closure_expr_regression_out.rds")
+
+        # Test f1: x + 1
+        if (funcs$f1(5) != 6) {
+            cat("FAIL: f1(5) should be 6, got:", funcs$f1(5), "\n")
+            quit(status = 1)
+        }
+
+        # Test f2: x * y
+        if (funcs$f2(3, 4) != 12) {
+            cat("FAIL: f2(3, 4) should be 12, got:", funcs$f2(3, 4), "\n")
+            quit(status = 1)
+        }
+
+        # Test f3: sqrt(a)
+        if (funcs$f3(16) != 4) {
+            cat("FAIL: f3(16) should be 4, got:", funcs$f3(16), "\n")
+            quit(status = 1)
+        }
+
+        cat("PASS")
+    "#;
+
+    let result = run_r_code(verify);
+    assert!(
+        result.is_ok() && result.as_ref().unwrap().contains("PASS"),
+        "Closure expression verification failed: {:?}",
+        result
+    );
+
+    // Cleanup
+    let _ = fs::remove_file("/tmp/rds2rust_closure_expr_regression.rds");
+    let _ = fs::remove_file("/tmp/rds2rust_closure_expr_regression_out.rds");
+}
+
+/// Test that function calls with named arguments preserve the argument names.
+#[test]
+fn test_closure_named_arguments_preserved() {
+    if !r_available() {
+        eprintln!("Skipping test: R not available");
+        return;
+    }
+
+    // Create a closure that calls a function with named arguments
+    let setup = r#"
+        # A function that uses named arguments
+        f <- function(x, y) {
+            seq(from = x, to = y, by = 1)
+        }
+        saveRDS(f, "/tmp/rds2rust_named_args_regression.rds")
+        cat("ok")
+    "#;
+
+    let result = run_r_code(setup);
+    assert!(result.is_ok(), "Failed to create test data: {:?}", result);
+
+    // Roundtrip through Rust
+    let data = fs::read("/tmp/rds2rust_named_args_regression.rds").expect("Failed to read");
+    let obj = read_rds(&data).expect("Failed to parse");
+    let output = write_rds(&obj).expect("Failed to serialize");
+    fs::write("/tmp/rds2rust_named_args_regression_out.rds", &output).expect("Failed to write");
+
+    // Verify the function works and argument names are preserved
+    let verify = r#"
+        f <- readRDS("/tmp/rds2rust_named_args_regression_out.rds")
+
+        # Test that function executes correctly
+        result <- f(1, 5)
+        expected <- c(1, 2, 3, 4, 5)  # Use numeric to match seq() output
+        if (!all(result == expected)) {
+            stop(paste("FAIL: f(1, 5) should be 1:5, got:", paste(result, collapse=",")))
+        }
+
+        # Check that the function body shows named arguments
+        body_str <- deparse(body(f))
+        if (!any(grepl("from.*=", body_str))) {
+            stop(paste("FAIL: Named argument 'from' not preserved in body. Body:", paste(body_str, collapse="\n")))
+        }
+
+        cat("PASS")
+    "#;
+
+    let result = run_r_code(verify);
+    assert!(
+        result.is_ok() && result.as_ref().unwrap().contains("PASS"),
+        "Named arguments verification failed: {:?}",
+        result
+    );
+
+    // Cleanup
+    let _ = fs::remove_file("/tmp/rds2rust_named_args_regression.rds");
+    let _ = fs::remove_file("/tmp/rds2rust_named_args_regression_out.rds");
 }
