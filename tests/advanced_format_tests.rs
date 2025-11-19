@@ -857,7 +857,8 @@ fn test_namespace_serialization_format() {
         .read_to_end(&mut decompressed)
         .expect("Failed to decompress");
 
-    // Skip header, find NAMESPACESXP (123 = 0x7B)
+    // Skip header, find NAMESPACESXP_SERIAL (249 = 0xF9)
+    // Note: R uses type 249 for serialized namespaces, not type 123
     let mut found_namespace = false;
     for i in 0..decompressed.len().saturating_sub(4) {
         let flags = u32::from_be_bytes([
@@ -867,8 +868,8 @@ fn test_namespace_serialization_format() {
             decompressed[i + 3],
         ]);
 
-        if (flags & 0xFF) == 123 {
-            // NAMESPACESXP
+        if (flags & 0xFF) == 249 {
+            // NAMESPACESXP_SERIAL
             found_namespace = true;
             break;
         }
@@ -876,6 +877,81 @@ fn test_namespace_serialization_format() {
 
     assert!(
         found_namespace,
-        "Could not find NAMESPACESXP in serialized output"
+        "Could not find NAMESPACESXP_SERIAL (type 249) in serialized output"
     );
+}
+
+#[test]
+fn test_closure_with_namespace_environment() {
+    // Test that closures with namespace environments are preserved
+    // This is critical for S4 method dispatch in packages like Seurat
+    use rds2rust::write_rds;
+    use std::sync::Arc;
+
+    // Create a closure whose environment chain includes a namespace
+    // This mimics what happens with SeuratCommand objects
+    let namespace_env = RObject::Namespace(vec![Arc::from("SeuratObject")]);
+
+    let closure = RObject::Closure {
+        formals: Box::new(RObject::Null),
+        body: Box::new(RObject::Language(vec![
+            RObject::Character(vec![Arc::from("print")]),
+            RObject::Character(vec![Arc::from("x")]),
+        ])),
+        environment: Box::new(namespace_env),
+    };
+
+    // Serialize
+    let serialized = write_rds(&closure).expect("Failed to serialize closure");
+
+    // Deserialize
+    let deserialized = read_rds(&serialized).expect("Failed to deserialize closure");
+
+    // Verify the closure structure is preserved
+    match deserialized {
+        RObject::Closure { environment, .. } => {
+            // The environment should be our namespace
+            match *environment {
+                RObject::Namespace(names) => {
+                    assert_eq!(names.len(), 1);
+                    assert_eq!(names[0].as_ref(), "SeuratObject");
+                }
+                _ => panic!("Expected Namespace environment, got {:?}", environment),
+            }
+        }
+        _ => panic!("Expected Closure, got {:?}", deserialized),
+    }
+}
+
+#[test]
+fn test_environment_chain_with_namespace() {
+    // Test that environment chains containing namespaces are preserved
+    use rds2rust::write_rds;
+    use std::sync::Arc;
+
+    // Create an environment whose enclosing environment is a namespace
+    let namespace = RObject::Namespace(vec![Arc::from("Matrix")]);
+
+    let env = RObject::Environment {
+        enclosing: Box::new(namespace),
+        frame: Box::new(RObject::Null),
+        hashtab: Box::new(RObject::Null),
+    };
+
+    // Serialize
+    let serialized = write_rds(&env).expect("Failed to serialize environment");
+
+    // Deserialize
+    let deserialized = read_rds(&serialized).expect("Failed to deserialize environment");
+
+    // Verify
+    match deserialized {
+        RObject::Environment { enclosing, .. } => match *enclosing {
+            RObject::Namespace(names) => {
+                assert_eq!(names[0].as_ref(), "Matrix");
+            }
+            _ => panic!("Expected Namespace as enclosing, got {:?}", enclosing),
+        },
+        _ => panic!("Expected Environment"),
+    }
 }

@@ -14,20 +14,36 @@ use std::sync::Arc;
 /// R's serialization uses reference tracking to avoid duplicating shared objects.
 /// When the same object appears multiple times, the first occurrence is written normally,
 /// and subsequent occurrences are written as REFSXP with an index pointing to the first.
-///
-/// Note: For now, this is a placeholder that doesn't actually perform deduplication.
-/// True reference tracking requires tracking object identity across the entire object graph,
-/// which is complex in Rust. This infrastructure is in place for future enhancement.
 struct RefTable {
-    /// Placeholder for future reference tracking
-    #[allow(dead_code)]
+    /// Next reference index to assign
     next_index: u32,
+    /// Map from namespace name to reference index
+    namespace_refs: HashMap<String, u32>,
 }
 
 impl RefTable {
     fn new() -> Self {
         RefTable {
             next_index: 1, // R uses 1-based indexing for references
+            namespace_refs: HashMap::new(),
+        }
+    }
+
+    /// Check if a namespace has been written before, returning its reference index if so.
+    /// Otherwise, register it and return None.
+    fn check_namespace(&mut self, names: &[Arc<str>]) -> Option<u32> {
+        let key = names
+            .iter()
+            .map(|s| s.as_ref())
+            .collect::<Vec<_>>()
+            .join("::");
+        if let Some(&ref_idx) = self.namespace_refs.get(&key) {
+            Some(ref_idx)
+        } else {
+            let idx = self.next_index;
+            self.next_index += 1;
+            self.namespace_refs.insert(key, idx);
+            None
         }
     }
 }
@@ -143,7 +159,7 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
             &data.slots,
             ref_table,
         ),
-        RObject::Namespace(names) => write_namespace(writer, names),
+        RObject::Namespace(names) => write_namespace(writer, names, ref_table),
         RObject::WithAttributes { object, attributes } => {
             write_object_with_attributes(writer, object, attributes, ref_table)
         }
@@ -159,8 +175,21 @@ fn write_null(writer: &mut Vec<u8>) -> Result<()> {
 
 /// Write a namespace reference (NAMESPACESXP).
 /// This triggers automatic package loading when the RDS file is read in R.
-fn write_namespace(writer: &mut Vec<u8>, names: &[Arc<str>]) -> Result<()> {
-    write_flags(writer, NAMESPACESXP, false, false, false)?;
+fn write_namespace(
+    writer: &mut Vec<u8>,
+    names: &[Arc<str>],
+    ref_table: &mut RefTable,
+) -> Result<()> {
+    // Check if this namespace was already written
+    if let Some(ref_idx) = ref_table.check_namespace(names) {
+        // Write a reference to the previous occurrence
+        write_refsxp(writer, ref_idx)?;
+        return Ok(());
+    }
+
+    // First occurrence - write the full namespace
+    // Use NAMESPACESXP_SERIAL (249) not NAMESPACESXP (123) for serialization
+    write_flags(writer, NAMESPACESXP_SERIAL, false, false, false)?;
 
     // Write as OutStringVec format: flags, length, then CHARSXP entries
     writer.write_u32::<BigEndian>(0)?; // unused flags
@@ -170,6 +199,15 @@ fn write_namespace(writer: &mut Vec<u8>, names: &[Arc<str>]) -> Result<()> {
         write_charsxp(writer, name.as_ref())?;
     }
 
+    Ok(())
+}
+
+/// Write a reference to a previously written object (REFSXP).
+fn write_refsxp(writer: &mut Vec<u8>, ref_index: u32) -> Result<()> {
+    // REFSXP encodes the reference index in the flags field
+    // The format is: type=255 (REFSXP), with the index in bits 8-31
+    let flags = REFSXP | (ref_index << 8);
+    writer.write_u32::<BigEndian>(flags)?;
     Ok(())
 }
 
