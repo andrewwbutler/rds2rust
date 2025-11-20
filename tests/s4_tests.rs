@@ -1,5 +1,6 @@
 //! Integration and roundtrip tests for S4 objects.
 
+use indexmap::IndexMap;
 use rds2rust::{read_rds, write_rds, Logical, RObject};
 use std::fs;
 use std::path::Path;
@@ -240,10 +241,10 @@ fn test_s4_as_attribute_container() {
     // encountering an S4Object, causing the class field to be lost.
 
     use rds2rust::S4ObjectData;
-    use std::collections::HashMap;
+    // Using IndexMap instead of HashMap for order preservation
 
     // Create an S4 object with a class and slots
-    let mut slots = HashMap::new();
+    let mut slots = IndexMap::new();
     slots.insert(Arc::from("data"), RObject::Integer(vec![1, 2, 3]));
     slots.insert(
         Arc::from("metadata"),
@@ -298,10 +299,10 @@ fn test_s4_as_attribute_container() {
 fn test_s4_nested_as_attribute() {
     // Test S4 objects that contain other S4 objects in their slots
     use rds2rust::S4ObjectData;
-    use std::collections::HashMap;
+    // Using IndexMap instead of HashMap for order preservation
 
     // Create inner S4 object
-    let mut inner_slots = HashMap::new();
+    let mut inner_slots = IndexMap::new();
     inner_slots.insert(Arc::from("value"), RObject::Real(vec![3.14]));
 
     let inner_s4 = RObject::S4Object(Box::new(S4ObjectData {
@@ -311,7 +312,7 @@ fn test_s4_nested_as_attribute() {
     }));
 
     // Create outer S4 object containing the inner one
-    let mut outer_slots = HashMap::new();
+    let mut outer_slots = IndexMap::new();
     outer_slots.insert(Arc::from("inner"), inner_s4);
     outer_slots.insert(
         Arc::from("name"),
@@ -368,10 +369,10 @@ fn test_s4_flags_correctly_set() {
     // Test that S4 objects have correct serialization flags for R method dispatch
     // This ensures isS4() returns TRUE and slot accessors work in R
     use rds2rust::S4ObjectData;
-    use std::collections::HashMap;
+    // Using IndexMap instead of HashMap for order preservation
 
     // Create an S4 object similar to a Matrix dgCMatrix
-    let mut slots = HashMap::new();
+    let mut slots = IndexMap::new();
     slots.insert(Arc::from("Dim"), RObject::Integer(vec![3, 3]));
     slots.insert(
         Arc::from("Dimnames"),
@@ -466,7 +467,7 @@ fn test_s4_package_attribute_preserved() {
     // Test that the package attribute is correctly preserved during roundtrip
     // This is essential for R's method dispatch to find the correct methods
     use rds2rust::S4ObjectData;
-    use std::collections::HashMap;
+    // Using IndexMap instead of HashMap for order preservation
 
     let test_cases = vec![
         ("Matrix", "dgCMatrix"),
@@ -476,7 +477,7 @@ fn test_s4_package_attribute_preserved() {
     ];
 
     for (package, class_name) in test_cases {
-        let mut slots = HashMap::new();
+        let mut slots = IndexMap::new();
         slots.insert(Arc::from("data"), RObject::Integer(vec![1, 2, 3]));
 
         let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
@@ -512,9 +513,9 @@ fn test_s4_package_attribute_preserved() {
 fn test_s4_default_package_fallback() {
     // Test that S4 objects without a package get .GlobalEnv as default
     use rds2rust::S4ObjectData;
-    use std::collections::HashMap;
+    // Using IndexMap instead of HashMap for order preservation
 
-    let mut slots = HashMap::new();
+    let mut slots = IndexMap::new();
     slots.insert(Arc::from("value"), RObject::Real(vec![42.0]));
 
     let s4_obj = RObject::S4Object(Box::new(S4ObjectData {

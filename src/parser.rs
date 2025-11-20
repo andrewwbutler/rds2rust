@@ -8,6 +8,7 @@ use crate::types::{
 };
 use byteorder::{BigEndian, ReadBytesExt};
 use flate2::read::GzDecoder;
+use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::sync::Arc;
@@ -1062,8 +1063,18 @@ fn parse_symbol(
     // A symbol consists of a CHARSXP for the name
     let name_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
-    // Extract the name and return as a character vector
+    // Extract the name
     match name_obj {
+        RObject::Character(names) if names.len() == 1 => {
+            let name = &names[0];
+            // Check for the special NULL marker used by R for OptionalCharacter slots
+            if name.as_ref() == "\x01NULL\x01" {
+                Ok(RObject::Symbol(names.into_iter().next().unwrap()))
+            } else {
+                // Regular symbol - return as Character for backwards compatibility
+                Ok(RObject::Character(names))
+            }
+        }
         RObject::Character(names) => Ok(RObject::Character(names)),
         _ => {
             // If we got something unexpected, just return it
@@ -2572,7 +2583,6 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
 
 /// Try to convert a list with attributes to a data.frame if it has the right structure.
 fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RObject> {
-    use std::collections::HashMap;
 
     // Check if this has class="data.frame"
     let class_attr = attributes.get("class")?;
@@ -2603,8 +2613,8 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
         return None;
     }
 
-    // Build the columns HashMap
-    let mut columns = HashMap::new();
+    // Build the columns IndexMap (preserves insertion order from R)
+    let mut columns = IndexMap::new();
     for (name, column) in column_names.iter().zip(columns_list.iter()) {
         columns.insert(name.clone(), column.clone());
     }
@@ -2736,7 +2746,6 @@ fn convert_to_s3_object(obj: RObject, mut attributes: Attributes) -> RObject {
 /// Convert attributes to an S4 object.
 /// For S4 objects, the class is in attributes, and all other attributes are slots.
 fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
-    use std::collections::HashMap;
 
     // Extract the class attribute and package attribute
     // The class may be wrapped in WithAttributes if it has a package attribute
@@ -2795,8 +2804,8 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
             && k.as_ref() != "__ref_object__"
     });
 
-    // All remaining attributes are the slots
-    let mut slots = HashMap::new();
+    // All remaining attributes are the slots (using IndexMap to preserve order)
+    let mut slots = IndexMap::new();
     for (key, value) in attributes.attrs.into_iter() {
         if std::env::var("RDS_DEBUG").is_ok() {
             eprintln!(

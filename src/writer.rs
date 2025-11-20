@@ -6,6 +6,7 @@ use crate::types::{Attributes, Complex, Logical, PairlistElement, RObject};
 use byteorder::{BigEndian, WriteBytesExt};
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
@@ -135,6 +136,10 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
             // Symbols (SYMSXP) are only written in specific contexts like pairlist tags
             // or Language function positions, not here
             write_character_vector(writer, vec.as_slice())
+        }
+        RObject::Symbol(name) => {
+            // Write as SYMSXP - used for R's symbol table and special markers
+            write_symbol_with_ref(writer, name.as_ref(), ref_table)
         }
         RObject::Raw(vec) => write_raw_vector(writer, vec),
         RObject::Complex(vec) => write_complex_vector(writer, vec),
@@ -275,6 +280,17 @@ fn write_flags(
     has_tag: bool,
     is_s4: bool,
 ) -> Result<()> {
+    write_flags_with_object(writer, sexp_type, has_attr, has_tag, is_s4, false)
+}
+
+fn write_flags_with_object(
+    writer: &mut Vec<u8>,
+    sexp_type: u32,
+    has_attr: bool,
+    has_tag: bool,
+    is_s4: bool,
+    is_object: bool,
+) -> Result<()> {
     let mut flags = sexp_type;
     if has_attr {
         flags |= HAS_ATTR_BIT;
@@ -286,6 +302,9 @@ fn write_flags(
         // S4 objects need both IS_OBJECT_BIT (bit 8) and S4_LEVELS (bit 4 in gp field)
         flags |= IS_OBJECT_BIT;
         flags |= S4_LEVELS;
+    } else if is_object {
+        // S3 objects (like data.frame) need IS_OBJECT_BIT but not S4_LEVELS
+        flags |= IS_OBJECT_BIT;
     }
     writer.write_u32::<BigEndian>(flags)?;
     Ok(())
@@ -669,13 +688,12 @@ fn write_bytecode_body(
 /// Write a data frame.
 fn write_dataframe(
     writer: &mut Vec<u8>,
-    columns: &HashMap<Arc<str>, RObject>,
+    columns: &IndexMap<Arc<str>, RObject>,
     row_names: &[Arc<str>],
     ref_table: &mut RefTable,
 ) -> Result<()> {
-    // Convert HashMap to Vec for consistent ordering
-    let mut cols_vec: Vec<_> = columns.iter().collect();
-    cols_vec.sort_by(|(a, _), (b, _)| a.as_ref().cmp(b.as_ref()));
+    // IndexMap preserves insertion order, so we can iterate directly
+    let cols_vec: Vec<_> = columns.iter().collect();
 
     let column_names: Vec<Arc<str>> = cols_vec.iter().map(|(name, _)| (*name).clone()).collect();
     let column_values: Vec<&RObject> = cols_vec.iter().map(|(_, obj)| *obj).collect();
@@ -818,7 +836,7 @@ fn write_s4_object(
     writer: &mut Vec<u8>,
     class: &[Arc<str>],
     package: Option<&Arc<str>>,
-    slots: &HashMap<Arc<str>, RObject>,
+    slots: &IndexMap<Arc<str>, RObject>,
     ref_table: &mut RefTable,
 ) -> Result<()> {
     // S4 objects are written as S4SXP with attributes and IS_S4_BIT set
@@ -858,31 +876,37 @@ fn write_object_with_attributes(
     attributes: &Attributes,
     ref_table: &mut RefTable,
 ) -> Result<()> {
-    // Write the base object with HAS_ATTR flag set
+    // Check if this has a class attribute that makes it an S3 object
+    let is_s3_object = attributes.attrs.iter().any(|(k, v)| {
+        k.as_ref() == "class"
+            && matches!(**v, RObject::Character(ref vec) if !vec.is_empty())
+    });
+
+    // Write the base object with HAS_ATTR flag set (and OBJ flag if S3 object)
     match object {
         RObject::Integer(vec) => {
-            write_flags(writer, INTSXP, true, false, false)?;
+            write_flags_with_object(writer, INTSXP, true, false, false, is_s3_object)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             for val in vec {
                 writer.write_i32::<BigEndian>(*val)?;
             }
         }
         RObject::Real(vec) => {
-            write_flags(writer, REALSXP, true, false, false)?;
+            write_flags_with_object(writer, REALSXP, true, false, false, is_s3_object)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             for val in vec {
                 writer.write_f64::<BigEndian>(*val)?;
             }
         }
         RObject::Character(vec) => {
-            write_flags(writer, STRSXP, true, false, false)?;
+            write_flags_with_object(writer, STRSXP, true, false, false, is_s3_object)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             for s in vec {
                 write_charsxp(writer, s)?;
             }
         }
         RObject::List(elements) => {
-            write_flags(writer, VECSXP, true, false, false)?;
+            write_flags_with_object(writer, VECSXP, true, false, false, is_s3_object)?;
             writer.write_u32::<BigEndian>(elements.len() as u32)?;
             for element in elements {
                 write_object(writer, element, ref_table)?;
@@ -913,11 +937,29 @@ fn write_attributes(
     // Convert to pairlist elements
     let mut elements = Vec::new();
 
-    // Sort keys for consistent output (sort by string content)
-    let mut sorted_attrs: Vec<_> = attributes.attrs.iter().collect();
-    sorted_attrs.sort_by_key(|(k, _)| k.as_ref());
+    // Check if this is a data.frame - they require specific attribute order
+    let is_dataframe = attributes.attrs.iter().any(|(k, v)| {
+        k.as_ref() == "class"
+            && matches!(**v, RObject::Character(ref vec) if vec.iter().any(|s| s.as_ref() == "data.frame"))
+    });
 
-    for (key, value) in sorted_attrs {
+    // Check if this is an S4 object - they should preserve slot order
+    let is_s4_object = attributes.attrs.iter().any(|(k, v)| {
+        k.as_ref() == "class"
+            && matches!(**v, RObject::WithAttributes { .. })
+    });
+
+    let attrs_iter: Vec<_> = if is_dataframe || is_s4_object {
+        // For data.frames and S4 objects, preserve insertion order
+        attributes.attrs.iter().collect()
+    } else {
+        // For other objects, sort keys for consistent output
+        let mut sorted_attrs: Vec<_> = attributes.attrs.iter().collect();
+        sorted_attrs.sort_by_key(|(k, _)| k.as_ref());
+        sorted_attrs
+    };
+
+    for (key, value) in attrs_iter {
         elements.push(PairlistElement {
             tag: Some(key.clone()),
             value: (**value).clone(), // Unbox the RObject

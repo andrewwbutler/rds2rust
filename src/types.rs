@@ -1,7 +1,7 @@
 //! Type definitions for R objects.
 
+use indexmap::IndexMap;
 use smallvec::SmallVec;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Represents any R object that can be stored in an RDS file.
@@ -21,6 +21,10 @@ pub enum RObject {
 
     /// Character vector (using Arc<str> for string interning)
     Character(Vec<Arc<str>>),
+
+    /// Symbol (SYMSXP) - a named symbol
+    /// Used for R's internal symbol table and special markers
+    Symbol(Arc<str>),
 
     /// Raw (byte) vector
     Raw(Vec<u8>),
@@ -139,7 +143,7 @@ pub enum RObject {
 /// Data frame structure (boxed to reduce RObject enum size)
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataFrameData {
-    pub columns: HashMap<Arc<str>, RObject>,
+    pub columns: IndexMap<Arc<str>, RObject>,
     pub row_names: Vec<Arc<str>>,
 }
 
@@ -162,9 +166,9 @@ pub struct S3ObjectData {
 /// S4 object structure (boxed to reduce RObject enum size)
 #[derive(Debug, Clone, PartialEq)]
 pub struct S4ObjectData {
-    pub class: Vec<Arc<str>>,              // Class names (interned)
-    pub package: Option<Arc<str>>,         // Package attribute (e.g., "SeuratObject", "Matrix")
-    pub slots: HashMap<Arc<str>, RObject>, // Slot names (interned)
+    pub class: Vec<Arc<str>>,                 // Class names (interned)
+    pub package: Option<Arc<str>>,            // Package attribute (e.g., "SeuratObject", "Matrix")
+    pub slots: IndexMap<Arc<str>, RObject>,   // Slot names (interned)
 }
 
 /// An element in a pairlist, optionally tagged
