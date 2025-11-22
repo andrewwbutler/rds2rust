@@ -2708,11 +2708,30 @@ fn try_convert_to_factor(obj: &RObject, attributes: &Attributes) -> Option<RObje
         _ => return None,
     };
 
-    Some(RObject::Factor(Box::new(FactorData {
+    let factor = RObject::Factor(Box::new(FactorData {
         values,
         levels,
         ordered,
-    })))
+    }));
+
+    // Preserve any additional attributes (e.g., names, contrasts) by wrapping
+    // the factor in WithAttributes.
+    let mut extra_attrs = Attributes::new();
+    for (key, value) in attributes.iter() {
+        if matches!(key.as_ref(), "levels" | "class") {
+            continue;
+        }
+        extra_attrs.insert(key.clone(), value.clone());
+    }
+
+    if extra_attrs.is_empty() {
+        Some(factor)
+    } else {
+        Some(RObject::WithAttributes {
+            object: Box::new(factor),
+            attributes: extra_attrs,
+        })
+    }
 }
 
 /// Convert an object with attributes to an S3 object.

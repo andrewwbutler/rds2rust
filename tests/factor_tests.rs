@@ -1,8 +1,9 @@
 //! Integration and roundtrip tests for Factor types.
 
-use rds2rust::{read_rds, write_rds, RObject};
+use rds2rust::{read_rds, write_rds, Attributes, FactorData, RObject};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 fn test_data_exists() -> bool {
     Path::new("tests/data").exists()
@@ -129,4 +130,45 @@ fn test_factor_ordered_roundtrip() {
     let deserialized = read_rds(&serialized).expect("Failed to read serialized ordered factor");
 
     assert_eq!(obj, deserialized);
+}
+
+#[test]
+fn test_factor_with_names_roundtrip() {
+    let factor = FactorData {
+        values: vec![1, 2, 2, 1],
+        levels: vec![Arc::from("alpha"), Arc::from("beta")],
+        ordered: false,
+    };
+    let expected_names = vec![
+        Arc::from("cell_a"),
+        Arc::from("cell_b"),
+        Arc::from("cell_c"),
+        Arc::from("cell_d"),
+    ];
+
+    let mut attrs = Attributes::new();
+    attrs.insert(Arc::from("names"), RObject::Character(expected_names.clone()));
+
+    let obj = factor.clone().with_attributes(attrs);
+
+    let serialized = write_rds(&obj).expect("Failed to write factor with names");
+    let deserialized = read_rds(&serialized).expect("Failed to read factor with names");
+
+    match deserialized {
+        RObject::WithAttributes { object, attributes } => {
+            let data = match object.as_ref() {
+                RObject::Factor(data) => data,
+                other => panic!("Expected Factor inside WithAttributes, got {:?}", other),
+            };
+            assert_eq!(data.values, factor.values);
+            assert_eq!(data.levels, factor.levels);
+            assert_eq!(data.ordered, factor.ordered);
+
+            match attributes.get("names") {
+                Some(RObject::Character(names)) => assert_eq!(names, &expected_names),
+                other => panic!("Expected names attribute, got {:?}", other),
+            }
+        }
+        other => panic!("Expected WithAttributes wrapping Factor, got {:?}", other),
+    }
 }

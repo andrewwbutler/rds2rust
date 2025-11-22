@@ -240,6 +240,38 @@ impl Attributes {
     }
 }
 
+impl FactorData {
+    pub(crate) fn base_attributes(&self) -> Attributes {
+        let mut attrs = Attributes::new();
+        attrs.insert(Arc::from("levels"), RObject::Character(self.levels.clone()));
+
+        let class = if self.ordered {
+            vec![Arc::from("ordered"), Arc::from("factor")]
+        } else {
+            vec![Arc::from("factor")]
+        };
+        attrs.insert(Arc::from("class"), RObject::Character(class));
+
+        attrs
+    }
+
+    /// Build a factor object with additional attributes (e.g., names, contrasts).
+    /// Base factor attributes (levels, class) are included automatically and can be
+    /// overridden by the provided attributes if needed.
+    pub fn with_attributes(self, attributes: Attributes) -> RObject {
+        let mut merged = self.base_attributes();
+
+        for (key, value) in attributes.attrs.into_iter() {
+            merged.insert(key, *value);
+        }
+
+        RObject::WithAttributes {
+            object: Box::new(RObject::Factor(Box::new(self))),
+            attributes: merged,
+        }
+    }
+}
+
 impl Default for Attributes {
     fn default() -> Self {
         Self::new()

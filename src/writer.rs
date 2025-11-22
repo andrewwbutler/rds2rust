@@ -2,7 +2,7 @@
 
 use crate::constants::*;
 use crate::error::{Error, Result};
-use crate::types::{Attributes, Complex, Logical, PairlistElement, RObject};
+use crate::types::{Attributes, Complex, FactorData, Logical, PairlistElement, RObject};
 use byteorder::{BigEndian, WriteBytesExt};
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -172,9 +172,7 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
         RObject::DataFrame(data) => {
             write_dataframe(writer, &data.columns, &data.row_names, ref_table)
         }
-        RObject::Factor(data) => {
-            write_factor(writer, &data.values, &data.levels, data.ordered, ref_table)
-        }
+        RObject::Factor(data) => write_factor(writer, data, ref_table),
         RObject::S3Object(data) => {
             write_s3_object(writer, &data.base, &data.class, &data.attributes, ref_table)
         }
@@ -724,33 +722,64 @@ fn write_dataframe(
     Ok(())
 }
 
+fn merge_factor_attributes(data: &FactorData, attributes: &Attributes) -> Attributes {
+    let mut merged = data.base_attributes();
+    for (key, value) in attributes.iter() {
+        merged.insert(key.clone(), value.clone());
+    }
+    merged
+}
+
+fn validate_factor_attributes(attributes: &Attributes, value_len: usize) -> Result<()> {
+    if let Some(names_attr) = attributes.get("names") {
+        match names_attr {
+            RObject::Character(names) => {
+                if names.len() != value_len {
+                    return Err(Error::InvalidFormat(format!(
+                        "names attribute length ({}) does not match factor values ({})",
+                        names.len(),
+                        value_len
+                    )));
+                }
+            }
+            _ => {
+                return Err(Error::Unsupported(
+                    "Factor names attribute must be a character vector".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Write a factor.
 fn write_factor(
     writer: &mut Vec<u8>,
-    values: &[i32],
-    levels: &[Arc<str>],
-    ordered: bool,
+    data: &FactorData,
     ref_table: &mut RefTable,
 ) -> Result<()> {
+    let empty = Attributes::new();
+    write_factor_with_attributes(writer, data, &empty, ref_table)
+}
+
+fn write_factor_with_attributes(
+    writer: &mut Vec<u8>,
+    data: &FactorData,
+    attributes: &Attributes,
+    ref_table: &mut RefTable,
+) -> Result<()> {
+    let merged_attrs = merge_factor_attributes(data, attributes);
+
+    validate_factor_attributes(&merged_attrs, data.values.len())?;
+
     // Write the integer vector with attributes
     write_flags(writer, INTSXP, true, false, false)?;
-    writer.write_u32::<BigEndian>(values.len() as u32)?;
-    for &val in values {
+    writer.write_u32::<BigEndian>(data.values.len() as u32)?;
+    for &val in &data.values {
         writer.write_i32::<BigEndian>(val)?;
     }
 
-    // Write attributes (levels and class)
-    let mut attrs = Attributes::new();
-    attrs.insert(Arc::from("levels"), RObject::Character(levels.to_vec()));
-
-    let class = if ordered {
-        vec![Arc::from("ordered"), Arc::from("factor")]
-    } else {
-        vec![Arc::from("factor")]
-    };
-    attrs.insert(Arc::from("class"), RObject::Character(class));
-
-    write_attributes(writer, &attrs, ref_table)?;
+    write_attributes(writer, &merged_attrs, ref_table)?;
 
     Ok(())
 }
@@ -884,6 +913,10 @@ fn write_object_with_attributes(
 
     // Write the base object with HAS_ATTR flag set (and OBJ flag if S3 object)
     match object {
+        RObject::Factor(data) => {
+            write_factor_with_attributes(writer, data, attributes, ref_table)?;
+            return Ok(());
+        }
         RObject::Integer(vec) => {
             write_flags_with_object(writer, INTSXP, true, false, false, is_s3_object)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
