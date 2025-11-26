@@ -17,6 +17,13 @@ pub enum Error {
     #[error("Unexpected end of file")]
     UnexpectedEof,
 
+    #[error("Unexpected EOF at position {position}: needed {needed} bytes, {available} available")]
+    UnexpectedEofDetail {
+        position: usize,
+        needed: usize,
+        available: usize,
+    },
+
     #[error("Unknown SEXP type: {0}")]
     UnknownSexpType(u32),
 

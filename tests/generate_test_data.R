@@ -47,6 +47,19 @@ saveRDS(list(), file.path(output_dir, "list_empty.rds"))
 saveRDS(list(x=1:5, y=c("a", "b"), z=list(nested=TRUE)),
         file.path(output_dir, "list_nested.rds"))
 
+# List with attributes at end-of-stream to exercise EOF-tolerant parsing
+attr_eof_list <- structure(
+  list(
+    info = list(id = 1L),
+    payload = list(values = as.numeric(1:3)),
+    meta = list(package = "examplepkg")
+  ),
+  names = c("info", "payload", "meta"),
+  class = c("attr_eof_test"),
+  tools = list(source = "generator")
+)
+saveRDS(attr_eof_list, file.path(output_dir, "attr_at_eof.rds"))
+
 # Named vectors (vectors with names attribute)
 x <- c(1L, 2L, 3L)
 names(x) <- c("a", "b", "c")

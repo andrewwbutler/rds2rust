@@ -322,11 +322,7 @@ fn test_complex_pseudo_types() {
             // pairlists, or null references).
 
             // Just verify we successfully parsed all 5 elements
-            for (i, elem) in elements.iter().enumerate() {
-                if std::env::var("RDS_DEBUG").is_ok() {
-                    eprintln!("Element {} type: {:?}", i, std::mem::discriminant(elem));
-                }
-            }
+            assert_eq!(elements.len(), 5);
         }
         _ => panic!("Expected List"),
     }

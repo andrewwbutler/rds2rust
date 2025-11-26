@@ -282,3 +282,25 @@ fn test_symbol_table_attribute_names() {
         panic!("Expected outer object to be a List");
     }
 }
+
+// Regression: tolerate attribute parsing when attributes consume the final bytes.
+#[test]
+fn test_attr_at_eof_fixture() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+    let path = Path::new("tests/data/attr_at_eof.rds");
+    if !path.exists() {
+        eprintln!("Skipping test: attr_at_eof.rds not generated");
+        return;
+    }
+
+    let data = read_test_file("attr_at_eof.rds");
+    let result = read_rds(&data);
+    assert!(
+        result.is_ok(),
+        "Expected attr_at_eof.rds to parse successfully, got {:?}",
+        result.err()
+    );
+}

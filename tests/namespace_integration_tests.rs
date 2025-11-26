@@ -32,7 +32,9 @@ fn run_r_code(code: &str) -> Result<String, String> {
 
 /// Check if R and Matrix package are available
 fn r_and_matrix_available() -> bool {
-    run_r_code("library(Matrix); cat('ok')").map(|s| s.contains("ok")).unwrap_or(false)
+    run_r_code("library(Matrix); cat('ok')")
+        .map(|s| s.contains("ok"))
+        .unwrap_or(false)
 }
 
 #[test]
@@ -248,11 +250,7 @@ fn test_s4_object_method_dispatch() {
     // Check all tests passed (the output may contain "Loading required package" which is fine)
     let pass_count = output.matches("PASS:").count();
     let fail_count = output.matches("FAIL:").count();
-    assert_eq!(
-        fail_count, 0,
-        "Some S4 tests failed. Output:\n{}",
-        output
-    );
+    assert_eq!(fail_count, 0, "Some S4 tests failed. Output:\n{}", output);
     assert!(
         pass_count >= 6,
         "Not all S4 tests passed (expected 6, got {}). Output:\n{}",

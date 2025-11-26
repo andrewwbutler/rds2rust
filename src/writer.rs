@@ -521,11 +521,7 @@ fn write_pairlist_as_args(
 }
 
 /// Write a symbol (SYMSXP) with reference tracking.
-fn write_symbol_with_ref(
-    writer: &mut Vec<u8>,
-    name: &str,
-    ref_table: &mut RefTable,
-) -> Result<()> {
+fn write_symbol_with_ref(writer: &mut Vec<u8>, name: &str, ref_table: &mut RefTable) -> Result<()> {
     // Check if this symbol was already written
     if let Some(ref_idx) = ref_table.check_symbol(name) {
         // Write a reference to the previous occurrence
@@ -537,7 +533,6 @@ fn write_symbol_with_ref(
     }
     Ok(())
 }
-
 
 /// Write a closure (CLOSXP).
 fn write_closure(
@@ -753,11 +748,7 @@ fn validate_factor_attributes(attributes: &Attributes, value_len: usize) -> Resu
 }
 
 /// Write a factor.
-fn write_factor(
-    writer: &mut Vec<u8>,
-    data: &FactorData,
-    ref_table: &mut RefTable,
-) -> Result<()> {
+fn write_factor(writer: &mut Vec<u8>, data: &FactorData, ref_table: &mut RefTable) -> Result<()> {
     let empty = Attributes::new();
     write_factor_with_attributes(writer, data, &empty, ref_table)
 }
@@ -907,8 +898,7 @@ fn write_object_with_attributes(
 ) -> Result<()> {
     // Check if this has a class attribute that makes it an S3 object
     let is_s3_object = attributes.attrs.iter().any(|(k, v)| {
-        k.as_ref() == "class"
-            && matches!(**v, RObject::Character(ref vec) if !vec.is_empty())
+        k.as_ref() == "class" && matches!(**v, RObject::Character(ref vec) if !vec.is_empty())
     });
 
     // Write the base object with HAS_ATTR flag set (and OBJ flag if S3 object)
@@ -977,10 +967,10 @@ fn write_attributes(
     });
 
     // Check if this is an S4 object - they should preserve slot order
-    let is_s4_object = attributes.attrs.iter().any(|(k, v)| {
-        k.as_ref() == "class"
-            && matches!(**v, RObject::WithAttributes { .. })
-    });
+    let is_s4_object = attributes
+        .attrs
+        .iter()
+        .any(|(k, v)| k.as_ref() == "class" && matches!(**v, RObject::WithAttributes { .. }));
 
     let attrs_iter: Vec<_> = if is_dataframe || is_s4_object {
         // For data.frames and S4 objects, preserve insertion order

@@ -18,14 +18,26 @@ fn test_dataframe_column_order_preservation() {
     // Create a DataFrame with specific column order
     let mut columns = IndexMap::new();
     columns.insert(Arc::from("vst.mean"), RObject::Real(vec![1.0, 2.0, 3.0]));
-    columns.insert(Arc::from("vst.variance"), RObject::Real(vec![0.5, 1.5, 2.5]));
-    columns.insert(Arc::from("vst.variance.expected"), RObject::Real(vec![0.3, 1.3, 2.3]));
-    columns.insert(Arc::from("vst.variance.standardized"), RObject::Real(vec![0.8, 1.8, 2.8]));
-    columns.insert(Arc::from("vst.variable"), RObject::Logical(vec![
-        rds2rust::Logical::True,
-        rds2rust::Logical::False,
-        rds2rust::Logical::True,
-    ]));
+    columns.insert(
+        Arc::from("vst.variance"),
+        RObject::Real(vec![0.5, 1.5, 2.5]),
+    );
+    columns.insert(
+        Arc::from("vst.variance.expected"),
+        RObject::Real(vec![0.3, 1.3, 2.3]),
+    );
+    columns.insert(
+        Arc::from("vst.variance.standardized"),
+        RObject::Real(vec![0.8, 1.8, 2.8]),
+    );
+    columns.insert(
+        Arc::from("vst.variable"),
+        RObject::Logical(vec![
+            rds2rust::Logical::True,
+            rds2rust::Logical::False,
+            rds2rust::Logical::True,
+        ]),
+    );
 
     let row_names = vec![Arc::from("1"), Arc::from("2"), Arc::from("3")];
 
@@ -60,8 +72,7 @@ fn test_dataframe_column_order_with_many_columns() {
 
     // Create columns in specific alphabetically-scrambled order
     let column_names = vec![
-        "zebra", "alpha", "mike", "charlie", "delta", "echo",
-        "foxtrot", "bravo", "hotel", "golf"
+        "zebra", "alpha", "mike", "charlie", "delta", "echo", "foxtrot", "bravo", "hotel", "golf",
     ];
 
     for name in &column_names {
@@ -85,9 +96,11 @@ fn test_dataframe_column_order_with_many_columns() {
             let col_names: Vec<_> = data.columns.keys().map(|k| k.as_ref()).collect();
             assert_eq!(col_names.len(), column_names.len());
             for (i, expected_name) in column_names.iter().enumerate() {
-                assert_eq!(col_names[i], *expected_name,
+                assert_eq!(
+                    col_names[i], *expected_name,
                     "Column order mismatch at index {}: expected '{}', got '{}'",
-                    i, expected_name, col_names[i]);
+                    i, expected_name, col_names[i]
+                );
             }
         }
         _ => panic!("Expected DataFrame after deserialization"),
@@ -105,7 +118,10 @@ fn test_s4_slot_order_preservation() {
     slots.insert(Arc::from("counts"), RObject::Integer(vec![1, 2, 3]));
     slots.insert(Arc::from("data"), RObject::Real(vec![1.0, 2.0, 3.0]));
     slots.insert(Arc::from("scale.data"), RObject::List(vec![]));
-    slots.insert(Arc::from("assay.orig"), RObject::Character(vec![Arc::from("RNA")]));
+    slots.insert(
+        Arc::from("assay.orig"),
+        RObject::Character(vec![Arc::from("RNA")]),
+    );
     slots.insert(Arc::from("meta.features"), RObject::List(vec![]));
     slots.insert(Arc::from("misc"), RObject::List(vec![]));
 
@@ -153,7 +169,10 @@ fn test_symbol_null_marker() {
         RObject::Symbol(name) => {
             assert_eq!(name.as_ref(), "\x01NULL\x01");
         }
-        _ => panic!("Expected Symbol after deserialization, got {:?}", deserialized),
+        _ => panic!(
+            "Expected Symbol after deserialization, got {:?}",
+            deserialized
+        ),
     }
 }
 
@@ -161,7 +180,10 @@ fn test_symbol_null_marker() {
 fn test_symbol_in_s4_slot() {
     // Test Symbol variant in an S4 object slot (like assay.orig)
     let mut slots = IndexMap::new();
-    slots.insert(Arc::from("assay.orig"), RObject::Symbol(Arc::from("\x01NULL\x01")));
+    slots.insert(
+        Arc::from("assay.orig"),
+        RObject::Symbol(Arc::from("\x01NULL\x01")),
+    );
     slots.insert(Arc::from("data"), RObject::Integer(vec![1, 2, 3]));
 
     let s4 = RObject::S4Object(Box::new(S4ObjectData {
@@ -172,19 +194,18 @@ fn test_symbol_in_s4_slot() {
 
     // Write and read back
     let serialized = rds2rust::write_rds(&s4).expect("Failed to write S4 object with Symbol");
-    let deserialized = rds2rust::read_rds(&serialized).expect("Failed to read S4 object with Symbol");
+    let deserialized =
+        rds2rust::read_rds(&serialized).expect("Failed to read S4 object with Symbol");
 
     // Verify Symbol is preserved in slot
     match deserialized {
-        RObject::S4Object(data) => {
-            match data.slots.get(&Arc::from("assay.orig")) {
-                Some(RObject::Symbol(name)) => {
-                    assert_eq!(name.as_ref(), "\x01NULL\x01");
-                }
-                Some(other) => panic!("Expected Symbol in assay.orig slot, got {:?}", other),
-                None => panic!("Missing assay.orig slot"),
+        RObject::S4Object(data) => match data.slots.get(&Arc::from("assay.orig")) {
+            Some(RObject::Symbol(name)) => {
+                assert_eq!(name.as_ref(), "\x01NULL\x01");
             }
-        }
+            Some(other) => panic!("Expected Symbol in assay.orig slot, got {:?}", other),
+            None => panic!("Missing assay.orig slot"),
+        },
         _ => panic!("Expected S4Object after deserialization"),
     }
 }
@@ -200,7 +221,8 @@ fn test_symbol_vs_character_distinction() {
     let serialized_symbol = rds2rust::write_rds(&symbol).expect("Failed to write Symbol");
 
     let deserialized_char = rds2rust::read_rds(&serialized_char).expect("Failed to read Character");
-    let deserialized_symbol = rds2rust::read_rds(&serialized_symbol).expect("Failed to read Symbol");
+    let deserialized_symbol =
+        rds2rust::read_rds(&serialized_symbol).expect("Failed to read Symbol");
 
     // Verify types are correct
     match deserialized_char {
@@ -227,10 +249,10 @@ fn test_symbol_vs_character_distinction() {
 fn test_dataframe_with_ordered_columns_as_s4_slot() {
     // Test a realistic scenario: data.frame as S4 slot with preserved column order
     let mut df_columns = IndexMap::new();
-    df_columns.insert(Arc::from("gene_name"), RObject::Character(vec![
-        Arc::from("GENE1"),
-        Arc::from("GENE2"),
-    ]));
+    df_columns.insert(
+        Arc::from("gene_name"),
+        RObject::Character(vec![Arc::from("GENE1"), Arc::from("GENE2")]),
+    );
     df_columns.insert(Arc::from("mean_expr"), RObject::Real(vec![5.2, 3.1]));
     df_columns.insert(Arc::from("variance"), RObject::Real(vec![1.5, 0.8]));
 
@@ -242,7 +264,10 @@ fn test_dataframe_with_ordered_columns_as_s4_slot() {
     // Wrap DataFrame in S4 object
     let mut slots = IndexMap::new();
     slots.insert(Arc::from("meta.features"), df);
-    slots.insert(Arc::from("assay.orig"), RObject::Symbol(Arc::from("\x01NULL\x01")));
+    slots.insert(
+        Arc::from("assay.orig"),
+        RObject::Symbol(Arc::from("\x01NULL\x01")),
+    );
 
     let s4 = RObject::S4Object(Box::new(S4ObjectData {
         class: vec![Arc::from("Assay")],

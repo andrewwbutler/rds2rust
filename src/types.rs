@@ -41,8 +41,8 @@ pub enum RObject {
     /// Language object (unevaluated call/expression)
     /// Contains the function being called and its arguments with optional names
     Language {
-        function: Box<RObject>,       // Function being called (symbol, closure, etc.)
-        args: Vec<PairlistElement>,   // Arguments with optional names (tags)
+        function: Box<RObject>,     // Function being called (symbol, closure, etc.)
+        args: Vec<PairlistElement>, // Arguments with optional names (tags)
     },
 
     /// Expression vector (vector of language objects)
@@ -166,9 +166,9 @@ pub struct S3ObjectData {
 /// S4 object structure (boxed to reduce RObject enum size)
 #[derive(Debug, Clone, PartialEq)]
 pub struct S4ObjectData {
-    pub class: Vec<Arc<str>>,                 // Class names (interned)
-    pub package: Option<Arc<str>>,            // Package attribute (e.g., "SeuratObject", "Matrix")
-    pub slots: IndexMap<Arc<str>, RObject>,   // Slot names (interned)
+    pub class: Vec<Arc<str>>,               // Class names (interned)
+    pub package: Option<Arc<str>>,          // Package attribute (e.g., "SeuratObject", "Matrix")
+    pub slots: IndexMap<Arc<str>, RObject>, // Slot names (interned)
 }
 
 /// An element in a pairlist, optionally tagged
