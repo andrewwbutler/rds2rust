@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "rds2rust"
-version = "0.1.21"
+version = "0.1.22"
 dependencies = [
  "byteorder",
  "bzip2",

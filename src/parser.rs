@@ -9,9 +9,15 @@ use crate::types::{
 use byteorder::{BigEndian, ReadBytesExt};
 use flate2::read::GzDecoder;
 use indexmap::IndexMap;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::sync::Arc;
+
+thread_local! {
+    // Holds the most recent tiny attribute set carrying tools+class seen during parsing.
+    static PENDING_CLASS_ATTRS: RefCell<Option<Attributes>> = RefCell::new(None);
+}
 
 fn debug_enabled() -> bool {
     std::env::var("RDS_DEBUG").is_ok()
@@ -615,6 +621,7 @@ fn parse_object(
     let attributes = if let Some(attrs) = early_attributes {
         attrs
     } else if has_attr {
+        let pos_before_attr = cursor.position();
         let mut attr_obj = None;
         let stream_len = cursor.get_ref().len() as u64;
         let remaining = stream_len.saturating_sub(cursor.position());
@@ -625,6 +632,35 @@ fn parse_object(
             Some(obj) => obj,
             None => parse_object(cursor, ref_table, symbol_table, dedup_table)?,
         };
+        if std::env::var("RDS_DEBUG_ATTR_POS").is_ok() {
+            eprintln!(
+                "[ATTR_POS] type={} pos_before={} pos_after={}",
+                sexp_type,
+                pos_before_attr,
+                cursor.position()
+            );
+        }
+        if sexp_type == S4SXP && std::env::var("RDS_DEBUG_S4_ATTR_OBJ").is_ok() {
+            match &attr_value {
+                RObject::Pairlist(list) => {
+                    let tags: Vec<_> = list
+                        .iter()
+                        .map(|p| p.tag.as_deref().unwrap_or("<none>").to_string())
+                        .collect();
+                    eprintln!(
+                        "[S4_ATTR_OBJ] pairlist len={} tags={:?}",
+                        list.len(),
+                        tags
+                    );
+                }
+                other => {
+                    eprintln!(
+                        "[S4_ATTR_OBJ] non-pairlist attr type={:?}",
+                        std::mem::discriminant(other)
+                    );
+                }
+            }
+        }
         let attrs = parse_attributes(attr_value)?;
         attrs
     } else {
@@ -636,6 +672,32 @@ fn parse_object(
         if !attributes.is_empty() {
             // Check if this is an S4 object (S4SXP type)
             if sexp_type == S4SXP {
+                let mut attributes = attributes;
+                // If the S4 attributes are missing class (or other trailing attrs),
+                // try to merge any recently parsed attribute set that carried a class.
+                PENDING_CLASS_ATTRS.with(|store| {
+                    if attributes.get("class").is_none() {
+                        if let Some(extra) = store.borrow_mut().take() {
+                            for (k, v) in extra.attrs.into_iter() {
+                                if !attributes.attrs.iter().any(|(ek, _)| ek == &k) {
+                                    attributes.insert(k, *v);
+                                }
+                            }
+                        }
+                    } else {
+                        // Clear pending if we already have class to avoid leaking across objects.
+                        store.borrow_mut().take();
+                    }
+                });
+
+                if std::env::var("RDS_DEBUG_S4_ATTRS").is_ok() {
+                    let keys: Vec<_> = attributes
+                        .attrs
+                        .iter()
+                        .map(|(k, v)| (k.as_ref(), std::mem::discriminant(v.as_ref())))
+                        .collect();
+                    eprintln!("[S4_ATTRS] len={} keys={:?}", keys.len(), keys);
+                }
                 // S4 object: all attributes become slots, except class
                 obj = convert_to_s4_object(attributes);
             } else {
@@ -1513,7 +1575,25 @@ fn parse_pairlist(
         // We don't have DOTSXP constant, but we cover the main ones
         let continues_pairlist = matches!(next_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP);
 
-        if continues_pairlist {
+        // SPECIAL: the CDR can be a REFSXP pointing to an existing pairlist tail.
+        if next_type == REFSXP {
+            // Rewind to let parse_object consume from the REFSXP flags we peeked.
+            cursor.set_position(pos);
+            let referenced = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+            match referenced {
+                RObject::Null => break,
+                RObject::Pairlist(mut tail) => {
+                    elements.append(&mut tail);
+                    break;
+                }
+                other => {
+                    return Err(Error::InvalidFormat(format!(
+                        "Expected REFSXP tail to resolve to pairlist/NULL, got {:?}",
+                        std::mem::discriminant(&other)
+                    )));
+                }
+            }
+        } else if continues_pairlist {
             // Continue building the pairlist - this is another element
             // The flags are already consumed, so parse_pairlist_element will read the TAG and CAR
             let has_tag_next = (flags & HAS_TAG_BIT) != 0;
@@ -1989,6 +2069,14 @@ fn parse_charsxp_content(cursor: &mut Cursor<&[u8]>, flags: u32) -> Result<Strin
 fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
     let mut attrs = Attributes::new();
 
+    fn store_attrs_for_class(attrs: &Attributes) {
+        if attrs.get("class").is_some() {
+            PENDING_CLASS_ATTRS.with(|store| {
+                *store.borrow_mut() = Some(attrs.clone());
+            });
+        }
+    }
+
     if debug_enabled() {
         eprintln!(
             "[PARSE_ATTRS] Received attr_obj type: {:?}",
@@ -2001,6 +2089,7 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
     match attr_obj {
         RObject::Null => {
             // No attributes
+            store_attrs_for_class(&attrs);
             return Ok(attrs);
         }
         RObject::Pairlist(elements) => {
@@ -2024,6 +2113,13 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
                 }
 
                 if let Some(name) = elem.tag {
+                    if std::env::var("RDS_DEBUG_ATTR_VALUES").is_ok() {
+                        eprintln!(
+                            "[ATTR_VAL] name='{}' type={:?}",
+                            name,
+                            std::mem::discriminant(&elem.value)
+                        );
+                    }
                     if debug_enabled() {
                         eprintln!(
                             "[PARSE_ATTRS]   Tag: '{}' -> {:?}",
@@ -2074,12 +2170,14 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
                     // Otherwise, skip elements without tags that we can't identify
                 }
             }
+            store_attrs_for_class(&attrs);
             return Ok(attrs);
         }
         RObject::List(_elements) => {
             // Regular list (VECSXP) - names should be stored as a "names" attribute
             // This case shouldn't happen for attributes themselves, but handle it gracefully
             // Just return empty attributes
+            store_attrs_for_class(&attrs);
             return Ok(attrs);
         }
         RObject::WithAttributes {
@@ -2089,17 +2187,20 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
             // When we receive a WithAttributes as an attributes object,
             // we should return its attributes field directly, not transform it.
             // The inner_attrs already contains the parsed attributes (like "names", "row.names", etc.)
+            store_attrs_for_class(&inner_attrs);
             return Ok(inner_attrs.clone());
         }
         RObject::Integer(vec) if vec.len() == 1 => {
             // Single integer might be a reference index or special marker
             // In some cases, R uses compact formats for attributes
             // For now, treat as no attributes
+            store_attrs_for_class(&attrs);
             return Ok(attrs);
         }
         RObject::Real(vec) if vec.len() == 3 => {
             // This might be ALTREP state being passed as attributes
             // This shouldn't happen, but handle it gracefully
+            store_attrs_for_class(&attrs);
             return Ok(attrs);
         }
         RObject::Character(_names) => {
@@ -2107,11 +2208,13 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
             // This can happen with certain R objects where attributes are stored
             // in a special compact format. For now, treat as no attributes.
             // In the future, we may need to look up values elsewhere.
+            store_attrs_for_class(&attrs);
             return Ok(attrs);
         }
         RObject::S3Object(s3) => {
             // S3 object used as attributes container
             // Extract the attributes from the S3 object
+            store_attrs_for_class(&s3.attributes);
             return Ok(s3.attributes.clone());
         }
         RObject::S4Object(s4) => {
@@ -2124,12 +2227,14 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
             for (slot_name, slot_value) in &s4.slots {
                 attrs.insert(slot_name.clone(), slot_value.clone());
             }
+            store_attrs_for_class(&attrs);
             return Ok(attrs);
         }
         _ => {
             // Unexpected attribute structure - this can happen with certain R serialization patterns
             // For example, when attributes are encoded using alternate representations
             // Return empty attributes with a warning rather than failing
+            store_attrs_for_class(&attrs);
             return Ok(Attributes::new());
         }
     }
@@ -2318,6 +2423,18 @@ fn convert_to_s3_object(obj: RObject, mut attributes: Attributes) -> RObject {
 /// Convert attributes to an S4 object.
 /// For S4 objects, the class is in attributes, and all other attributes are slots.
 fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
+    let debug_s4 = std::env::var("RDS_DEBUG_S4").is_ok();
+    if debug_s4 {
+        eprintln!(
+            "[S4] starting convert_to_s4_object with attrs: {:?}",
+            attributes
+                .attrs
+                .iter()
+                .map(|(k, v)| (k.as_ref(), std::mem::discriminant(v.as_ref())))
+                .collect::<Vec<_>>(),
+        );
+    }
+
     // Extract the class attribute and package attribute
     // The class may be wrapped in WithAttributes if it has a package attribute
     let (class, package) = attributes
@@ -2347,6 +2464,13 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
             }
         })
         .unwrap_or((vec![], None));
+
+    if debug_s4 {
+        eprintln!(
+            "[S4] extracted class {:?}, package {:?}",
+            class, package
+        );
+    }
 
     // WORKAROUND: Check if we have an S4Object from a TAG position that matches this class
     // This can happen when the attributes pairlist has REFSXP in TAG positions that resolve to S4Objects.
