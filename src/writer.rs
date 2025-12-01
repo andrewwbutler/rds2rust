@@ -10,26 +10,40 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
+use std::mem;
+use std::cell::RefCell;
+use std::cell::Cell;
 
+thread_local! {
+    static WRITE_STACK: RefCell<Vec<usize>> = RefCell::new(Vec::new());
+    static WRITE_DEPTH: Cell<usize> = Cell::new(0);
+    static WRITE_CALLS: Cell<u64> = Cell::new(0);
+}
 /// Reference table for tracking objects during serialization.
 /// R's serialization uses reference tracking to avoid duplicating shared objects.
 /// When the same object appears multiple times, the first occurrence is written normally,
 /// and subsequent occurrences are written as REFSXP with an index pointing to the first.
 struct RefTable {
-    /// Next reference index to assign
+    /// Next reference index to assign for objects
     next_index: u32,
+    /// Next symbol index to assign (separate from object index space)
+    next_symbol_index: u32,
     /// Map from namespace name to reference index
     namespace_refs: HashMap<String, u32>,
-    /// Map from symbol name to reference index
+    /// Map from symbol name to symbol index
     symbol_refs: HashMap<String, u32>,
+    /// Map from object identity (pointer) to reference index for Shared handling
+    object_refs: HashMap<usize, u32>,
 }
 
 impl RefTable {
     fn new() -> Self {
         RefTable {
             next_index: 1, // R uses 1-based indexing for references
+            next_symbol_index: 1, // Symbols have separate 1-based indexing
             namespace_refs: HashMap::new(),
             symbol_refs: HashMap::new(),
+            object_refs: HashMap::new(),
         }
     }
 
@@ -51,17 +65,34 @@ impl RefTable {
         }
     }
 
-    /// Check if a symbol has been written before, returning its reference index if so.
+    /// Check if a symbol has been written before, returning its symbol index if so.
     /// Otherwise, register it and return None.
+    /// Note: Symbols use a separate index space from objects.
     fn check_symbol(&mut self, name: &str) -> Option<u32> {
-        if let Some(&ref_idx) = self.symbol_refs.get(name) {
-            Some(ref_idx)
+        if let Some(&symbol_idx) = self.symbol_refs.get(name) {
+            Some(symbol_idx)
         } else {
-            let idx = self.next_index;
-            self.next_index += 1;
+            let idx = self.next_symbol_index;
+            self.next_symbol_index += 1;
             self.symbol_refs.insert(name.to_string(), idx);
             None
         }
+    }
+
+    /// Check if an object pointer has been written before.
+    fn check_object_ptr(&self, ptr: usize) -> Option<u32> {
+        self.object_refs.get(&ptr).cloned()
+    }
+
+    /// Register an object pointer and return its reference index.
+    fn register_object_ptr(&mut self, ptr: usize) -> u32 {
+        if let Some(&idx) = self.object_refs.get(&ptr) {
+            return idx;
+        }
+        let idx = self.next_index;
+        self.next_index += 1;
+        self.object_refs.insert(ptr, idx);
+        idx
     }
 }
 
@@ -69,15 +100,55 @@ impl RefTable {
 /// This matches the same logic used in the parser.
 #[allow(dead_code)]
 fn should_track_reference_type(obj: &RObject) -> bool {
-    matches!(
-        obj,
-        RObject::List(_)
-            | RObject::Expression(_)
-            | RObject::Language { .. }
-            | RObject::Pairlist(_)
-            | RObject::S4Object { .. }
-            | RObject::WithAttributes { .. }
-    )
+    match obj {
+        // Plain primitives without attributes are not reference-tracked.
+        RObject::Null
+        | RObject::Integer(_)
+        | RObject::Real(_)
+        | RObject::Logical(_)
+        | RObject::Character(_)
+        | RObject::Raw(_)
+        | RObject::Complex(_)
+        | RObject::Special { .. }
+        | RObject::Builtin { .. } => false,
+
+        // Attribute-wrapped primitives should be tracked.
+        RObject::WithAttributes { .. } => true,
+
+        // Shared is ALWAYS tracked by its Arc pointer, regardless of inner content.
+        // Don't unwrap it here to avoid infinite recursion on cycles!
+        RObject::Shared(_) => true,
+
+        // Symbols and structured objects participate in ref graphs.
+        RObject::Symbol(_)
+        | RObject::List(_)
+        | RObject::Expression(_)
+        | RObject::Language { .. }
+        | RObject::Pairlist(_)
+        | RObject::Closure { .. }
+        | RObject::Environment { .. }
+        | RObject::Promise { .. }
+        | RObject::Bytecode { .. }
+        | RObject::DataFrame(_)
+        | RObject::Factor(_)
+        | RObject::S3Object(_)
+        | RObject::S4Object(_)
+        | RObject::Namespace(_)
+        | RObject::MissingArg
+        | RObject::UnboundValue => true,
+
+        // Environment markers and singleton namespaces are not tracked.
+        RObject::GlobalEnv | RObject::BaseEnv | RObject::EmptyEnv => false,
+    }
+}
+
+/// Compute a stable key for reference-tracking an object.
+fn ref_key(obj: &RObject) -> Option<usize> {
+    match obj {
+        RObject::Shared(inner) => Some(Arc::as_ptr(inner) as usize),
+        other if should_track_reference_type(other) => Some(other as *const RObject as usize),
+        _ => None,
+    }
 }
 
 /// Write an RObject to RDS format.
@@ -126,6 +197,153 @@ fn write_header(writer: &mut Vec<u8>) -> Result<()> {
 
 /// Write an R object to the stream.
 fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -> Result<()> {
+    write_object_inner(writer, obj, ref_table, true)
+}
+
+/// Internal helper with toggle to skip ref tracking (used when descending into Shared inner).
+fn write_object_inner(
+    writer: &mut Vec<u8>,
+    obj: &RObject,
+    ref_table: &mut RefTable,
+    allow_ref_tracking: bool,
+) -> Result<()> {
+    // Lightweight call counter for debugging.
+    WRITE_CALLS.with(|c| {
+        let next = c.get().wrapping_add(1);
+        c.set(next);
+        if std::env::var("RDS_DEBUG_CLOSURE").is_ok() && next % 10_000 == 0 {
+            eprintln!("[WRITE_DBG] calls={} depth={}", next, WRITE_DEPTH.with(|d| d.get()));
+        }
+        if next > 200_000 {
+            panic!(
+                "Writer call cap exceeded at type {:?}",
+                mem::discriminant(obj)
+            );
+        }
+    });
+
+    // Depth guard for debugging runaway recursion.
+    struct DepthGuard;
+    impl Drop for DepthGuard {
+        fn drop(&mut self) {
+            WRITE_DEPTH.with(|d| {
+                let current = d.get();
+                d.set(current.saturating_sub(1));
+            });
+        }
+    }
+    let depth = WRITE_DEPTH.with(|d| {
+        let current = d.get() + 1;
+        d.set(current);
+        current
+    });
+    if depth > 50 {
+        return Err(Error::InvalidFormat(format!(
+            "Writer recursion depth exceeded (>50) at type {:?}",
+            mem::discriminant(obj)
+        )));
+    }
+    let _depth_guard = DepthGuard;
+
+    // Track referenceable objects (including Shared) to avoid infinite recursion and emit REFSXP.
+    if allow_ref_tracking {
+        if let Some(ptr) = ref_key(obj) {
+            // Detect recursion cycles in the current write call stack.
+            let in_stack = WRITE_STACK.with(|stack| stack.borrow().contains(&ptr));
+            if in_stack {
+                let idx = ref_table
+                    .check_object_ptr(ptr)
+                    .unwrap_or_else(|| ref_table.register_object_ptr(ptr));
+                if std::env::var("RDS_DEBUG").is_ok() {
+                    eprintln!("[WRITE] REFSXP emit (cycle) idx={} key={:p}", idx, ptr as *const ());
+                }
+                if std::env::var("RDS_DEBUG_CLOSURE").is_ok() {
+                    eprintln!(
+                        "[WRITE_DBG] cycle hit type={:?} depth={} key={:p} discr={:?}",
+                        mem::discriminant(obj),
+                        depth,
+                        ptr as *const (),
+                        obj.variant_name()
+                    );
+                }
+                write_refsxp(writer, idx)?;
+                return Ok(());
+            }
+
+            // Already written? emit REFSXP.
+            if let Some(idx) = ref_table.check_object_ptr(ptr) {
+                if std::env::var("RDS_DEBUG").is_ok() {
+                    eprintln!("[WRITE] REFSXP emit idx={} key={:p}", idx, ptr as *const ());
+                }
+                if std::env::var("RDS_DEBUG_CLOSURE").is_ok() {
+                    eprintln!(
+                        "[WRITE_DBG] reuse type={:?} depth={} key={:p} discr={:?}",
+                        mem::discriminant(obj),
+                        depth,
+                        ptr as *const (),
+                        obj.variant_name()
+                    );
+                }
+                write_refsxp(writer, idx)?;
+                return Ok(());
+            }
+
+            // First time: reserve index and descend.
+            let idx = ref_table.register_object_ptr(ptr);
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!(
+                    "[WRITE] DEFINE idx={} key={:p} type={:?}",
+                    idx,
+                    ptr as *const (),
+                    mem::discriminant(obj)
+                );
+            }
+            if std::env::var("RDS_DEBUG_CLOSURE").is_ok() {
+                eprintln!(
+                    "[WRITE_DBG] define idx={} key={:p} depth={} discr={:?}",
+                    idx,
+                    ptr as *const (),
+                    depth,
+                    obj.variant_name()
+                );
+            }
+
+            // Push on stack for cycle detection BEFORE descending (important for Shared objects too!)
+            struct StackGuard;
+            impl Drop for StackGuard {
+                fn drop(&mut self) {
+                    WRITE_STACK.with(|stack| {
+                        stack.borrow_mut().pop();
+                    });
+                }
+            }
+            WRITE_STACK.with(|stack| stack.borrow_mut().push(ptr));
+            let _guard = StackGuard;
+
+            // For Shared, we've registered the index. Now emit the inner object AS the definition.
+            // Don't descend into Shared's structure - unwrap it immediately and write the contents.
+            if let RObject::Shared(inner) = obj {
+                if std::env::var("RDS_DEBUG").is_ok() {
+                    eprintln!("[WRITE] Unwrapping Shared at idx={}, arc_ptr={:p}", idx, Arc::as_ptr(inner));
+                }
+                let guard = inner.read().unwrap();
+                // Write the inner object WITHOUT ref tracking (it's already tracked via the Shared wrapper)
+                return write_object_inner(writer, &*guard, ref_table, false);
+            }
+
+            // fallthrough to write body with tracking already registered
+        }
+    }
+
+    // If tracking is disabled (because a Shared wrapper already assigned a ref) and we see another
+    // Shared, we need to handle it with tracking enabled so it gets properly registered.
+    if !allow_ref_tracking {
+        if let RObject::Shared(_) = obj {
+            // Re-enable tracking for nested Shared objects
+            return write_object_inner(writer, obj, ref_table, true);
+        }
+    }
+
     match obj {
         RObject::Null => write_null(writer),
         RObject::Integer(vec) => write_integer_vector(writer, vec),
@@ -191,6 +409,13 @@ fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -
         RObject::UnboundValue => write_unbound_value(writer),
         RObject::WithAttributes { object, attributes } => {
             write_object_with_attributes(writer, object, attributes, ref_table)
+        }
+        RObject::Shared(_) => {
+            // Shared should have been handled in the ref tracking block above.
+            // If we reach here, something went wrong.
+            Err(Error::InvalidFormat(
+                "Unexpected Shared object in match - should have been handled earlier".to_string()
+            ))
         }
     }
 }

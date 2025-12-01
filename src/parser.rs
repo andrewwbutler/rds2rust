@@ -9,14 +9,15 @@ use crate::types::{
 use byteorder::{BigEndian, ReadBytesExt};
 use flate2::read::GzDecoder;
 use indexmap::IndexMap;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 thread_local! {
     // Holds the most recent tiny attribute set carrying tools+class seen during parsing.
     static PENDING_CLASS_ATTRS: RefCell<Option<Attributes>> = RefCell::new(None);
+    static PARSING_ATTRIBUTES: Cell<bool> = Cell::new(false);
 }
 
 fn debug_enabled() -> bool {
@@ -43,13 +44,56 @@ fn ensure_bytes_available(cursor: &Cursor<&[u8]>, needed: usize, context: &str) 
     Ok(())
 }
 
+const MAX_VECTOR_LENGTH: usize = 50_000_000;
+const MAX_ALLOCATION_BYTES: usize = 128 * 1024 * 1024;
+
+fn guard_allocation(length: usize, elem_size: usize, cursor: &Cursor<&[u8]>, context: &str) -> Result<()> {
+    guard_allocation_common(length, elem_size, context)?;
+
+    let needed = length * elem_size;
+    let remaining = cursor
+        .get_ref()
+        .len()
+        .saturating_sub(cursor.position() as usize);
+    if needed > remaining.saturating_add(16) {
+        return Err(Error::InvalidFormat(format!(
+            "Length {} ({} bytes) exceeds remaining {} bytes while parsing {}",
+            length, needed, remaining, context
+        )));
+    }
+
+    Ok(())
+}
+
+fn guard_allocation_common(length: usize, elem_size: usize, context: &str) -> Result<()> {
+    if length > MAX_VECTOR_LENGTH {
+        return Err(Error::InvalidFormat(format!(
+            "Length {} exceeds safe limit {} while parsing {}",
+            length, MAX_VECTOR_LENGTH, context
+        )));
+    }
+
+    let needed = length
+        .checked_mul(elem_size)
+        .ok_or_else(|| Error::InvalidFormat(format!("Length overflow while parsing {}", context)))?;
+
+    if needed > MAX_ALLOCATION_BYTES {
+        return Err(Error::InvalidFormat(format!(
+            "Allocation of {} bytes exceeds cap while parsing {}",
+            needed, context
+        )));
+    }
+
+    Ok(())
+}
+
 /// Reference table for tracking objects during deserialization.
 /// R's serialization uses reference tracking to handle shared and circular references.
 /// Each object that might be referenced later gets assigned a sequential index (1, 2, 3, ...).
 /// When a REFSXP is encountered, it contains an index to retrieve the previously seen object.
 struct RefTable {
-    /// Map from reference index to the actual object
-    objects: HashMap<u32, RObject>,
+    /// Map from reference index to the actual object (Arc to allow cheap sharing)
+    objects: HashMap<u32, Arc<RwLock<RObject>>>,
     /// Next reference index to assign
     next_index: u32,
 }
@@ -65,19 +109,25 @@ impl RefTable {
     /// Add an object to the reference table and return its index
     fn add(&mut self, obj: RObject) -> u32 {
         let index = self.next_index;
-        self.objects.insert(index, obj);
+        self.objects.insert(index, Arc::new(RwLock::new(obj)));
         self.next_index += 1;
         index
     }
 
     /// Update an existing reference with a new object
     fn update(&mut self, index: u32, obj: RObject) {
-        self.objects.insert(index, obj);
+        if let Some(existing) = self.objects.get(&index) {
+            if let Ok(mut guard) = existing.write() {
+                *guard = obj;
+                return;
+            }
+        }
+        self.objects.insert(index, Arc::new(RwLock::new(obj)));
     }
 
     /// Get an object by its reference index
-    fn get(&self, index: u32) -> Option<&RObject> {
-        self.objects.get(&index)
+    fn get(&self, index: u32) -> Option<Arc<RwLock<RObject>>> {
+        self.objects.get(&index).cloned()
     }
 }
 
@@ -101,6 +151,18 @@ impl SymbolTable {
     fn add(&mut self, symbol: RObject) -> u32 {
         self.symbols.push(symbol);
         self.symbols.len() as u32 // 1-based index
+    }
+
+    /// Retrieve a symbol by its 1-based index (used for TAG REFSXP lookups).
+    fn get(&self, index: u32) -> Option<&RObject> {
+        if index == 0 {
+            return None;
+        }
+        self.symbols.get((index - 1) as usize)
+    }
+
+    fn len(&self) -> usize {
+        self.symbols.len()
     }
 }
 
@@ -130,9 +192,10 @@ impl DedupTable {
     /// Returns Some(existing) if an identical object exists in the cache,
     /// otherwise adds the object to the cache and returns None.
     fn deduplicate(&mut self, obj: &RObject) -> Option<RObject> {
+        let obj_concrete = obj.as_concrete();
         // Check if we've seen this object before
         for cached in &self.cache {
-            if cached.as_ref() == obj {
+            if cached.as_ref().as_concrete() == obj_concrete {
                 // Found a match! Return a clone (cheap Arc clone for strings, actual clone for others)
                 self.hits += 1;
                 return Some((**cached).clone());
@@ -143,8 +206,8 @@ impl DedupTable {
         self.misses += 1;
 
         // Only cache if it's likely to be repeated and not too large
-        if should_cache_for_dedup(obj) {
-            self.cache.push(Arc::new(obj.clone()));
+        if should_cache_for_dedup(&obj_concrete) {
+            self.cache.push(Arc::new(obj_concrete.clone()));
         }
 
         None
@@ -191,19 +254,36 @@ fn should_cache_for_dedup(obj: &RObject) -> bool {
 }
 
 /// Determine if an object should be tracked in the reference table.
-/// Based on R's serialization logic in serialize.c, only specific types are tracked
-/// for deduplication via REFSXP.
-fn should_track_reference(sexp_type: u32, _has_attr: bool) -> bool {
-    // R only tracks these types in the reference table (from serialize.c MakeRefIndex):
-    // - SYMSXP (symbols) - for deduplication of repeated symbols
-    // - ENVSXP (environments) - for handling circular references
-    // - EXTPTRSXP (external pointers)
-    // - WEAKREFSXP (weak references)
-    // - NAMESPACESXP and NAMESPACESXP_SERIAL (namespace environments)
-    // Other types like CLOSXP, LANGSXP, LISTSXP are NOT tracked
+///
+/// R's serializer assigns reference indices to most heap objects. Track the
+/// same set R does: structured objects always, atomic vectors only when they
+/// carry attributes, and skip singleton markers that never receive reference
+/// indices.
+fn should_track_reference(sexp_type: u32, has_attr: bool) -> bool {
     match sexp_type {
-        SYMSXP | ENVSXP | EXTPTRSXP | WEAKREFSXP | NAMESPACESXP | NAMESPACESXP_SERIAL => true,
-        _ => false,
+        // Singletons that never receive reference indices
+        NILSXP | GLOBALENV_SXP | BASEENV_SXP | EMPTYENV_SXP => false,
+
+        // Symbols, environments, promises, language objects, lists, S4, etc.
+        // are always reference-tracked.
+        SYMSXP | ENVSXP | NAMESPACESXP | NAMESPACESXP_SERIAL => true,
+        PROMSXP | LANGSXP | LISTSXP | VECSXP | EXPRSXP => true,
+        CLOSXP | BCODESXP | EXTPTRSXP | WEAKREFSXP | S4SXP => true,
+        GENERICREFSXP | CLASSREFSXP => true,
+
+        // Atomic vectors: track when they have attributes (e.g., factors,
+        // classed vectors) so reference indices stay aligned with R.
+        LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP => has_attr,
+
+        // CHARSXP uses per-vector string caches, not the global reference table.
+        CHARSXP => false,
+
+        // Builtins/specials and other values default to non-tracked unless
+        // they carry attributes.
+        SPECIALSXP | BUILTINSXP => has_attr,
+
+        // Fallback: track other/unknown types to avoid dropping reference slots.
+        _ => true,
     }
 }
 
@@ -230,6 +310,7 @@ pub fn parse_rds(data: &[u8]) -> Result<RObject> {
         // Read the encoding string length and the encoding string itself
         ensure_bytes_available(&cursor, 4, "parse_rds:enc_len")?;
         let enc_len = cursor.read_u32::<BigEndian>()? as usize;
+        guard_allocation(enc_len, 1, &cursor, "header encoding")?;
         let mut enc_bytes = vec![0u8; enc_len];
         ensure_bytes_available(&cursor, enc_len, "parse_rds:enc_bytes")?;
         cursor.read_exact(&mut enc_bytes)?;
@@ -247,7 +328,10 @@ pub fn parse_rds(data: &[u8]) -> Result<RObject> {
 
     // Parse the actual object
     if debug_enabled() {
-        eprintln!("[PARSE_RDS] About to parse root object at pos={}", cursor.position());
+        eprintln!(
+            "[PARSE_RDS] About to parse root object at pos={}",
+            cursor.position()
+        );
     }
     let result = parse_object(
         &mut cursor,
@@ -418,7 +502,12 @@ fn parse_object(
     // Note: For CLOSXP, R uses HAS_TAG_BIT to indicate attributes (not HAS_ATTR_BIT)
     let early_attributes =
         if has_attr && (sexp_type == LISTSXP || sexp_type == LANGSXP || sexp_type == CLOSXP) {
-            let attr_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+            let attr_obj = PARSING_ATTRIBUTES.with(|flag| {
+                let prev = flag.replace(true);
+                let obj = parse_object(cursor, ref_table, symbol_table, dedup_table);
+                flag.set(prev);
+                obj
+            })?;
             Some(parse_attributes(attr_obj)?)
         } else {
             None
@@ -430,6 +519,12 @@ fn parse_object(
     let ref_index = if should_track_reference(sexp_type, has_attr) {
         // Add a NULL placeholder for now
         let idx = ref_table.add(RObject::Null);
+        if std::env::var("RDS_DEBUG_REF").is_ok() {
+            eprintln!(
+                "[REF_ADD] idx={} type={} has_attr={}",
+                idx, sexp_type, has_attr
+            );
+        }
         Some(idx)
     } else {
         None
@@ -457,13 +552,17 @@ fn parse_object(
             // External pointer - typically cannot be serialized meaningfully
             // R usually replaces these with NULL on deserialization
             // Skip the external pointer data and return NULL
-            eprintln!("Warning: External pointer (EXTPTRSXP) encountered - returning NULL");
+            if std::env::var("RDS_WARN_EXTPTR").is_ok() || debug_enabled() {
+                eprintln!("Warning: External pointer (EXTPTRSXP) encountered - returning NULL");
+            }
             RObject::Null
         }
         WEAKREFSXP => {
             // Weak reference - similar to external pointers
             // These typically cannot be meaningfully deserialized
-            eprintln!("Warning: Weak reference (WEAKREFSXP) encountered - returning NULL");
+            if std::env::var("RDS_WARN_EXTPTR").is_ok() || debug_enabled() {
+                eprintln!("Warning: Weak reference (WEAKREFSXP) encountered - returning NULL");
+            }
             RObject::Null
         }
         LISTSXP => parse_pairlist(cursor, has_tag, ref_table, symbol_table, dedup_table)?,
@@ -481,15 +580,23 @@ fn parse_object(
         BUILTINSXP => parse_builtin(cursor, ref_table, symbol_table, dedup_table)?,
         REFSXP => {
             // Reference to a previously seen object
-            // The reference index is encoded in bits 8-15 of the flags
-            let ref_index_val = ((flags >> 8) & 0xFF) as u32;
+            // The reference index occupies the upper 24 bits (bits 8-31)
+            // of the flags word; use the full width to support large graphs.
+            let ref_index_val = flags >> 8;
 
             // Look up the object in the reference table and return it immediately
             // REFSXP just references another object - it doesn't have its own attributes
             // The has_attr flag, if set, is inherited from the original object
             match ref_table.get(ref_index_val) {
                 Some(obj) => {
-                    return Ok(obj.clone());
+                    if std::env::var("RDS_DEBUG_REF").is_ok() {
+                        eprintln!(
+                            "[REF_LOOKUP] idx={} -> {:?}",
+                            ref_index_val,
+                            std::mem::discriminant(&*obj.read().unwrap())
+                        );
+                    }
+                    return Ok(RObject::Shared(obj));
                 }
                 None => {
                     return Err(Error::InvalidFormat(format!(
@@ -552,10 +659,10 @@ fn parse_object(
             // Bytecode representation reference/definition
             // These are used for circular references in bytecode serialization
             // Treat as references similar to REFSXP
-            let ref_index_val = ((flags >> 8) & 0xFF) as u32;
+            let ref_index_val = flags >> 8;
 
             match ref_table.get(ref_index_val) {
-                Some(obj) => return Ok(obj.clone()),
+                Some(obj) => return Ok(RObject::Shared(obj)),
                 None => {
                     // If not found in ref table, this might be a definition, return NULL for now
                     RObject::Null
@@ -586,10 +693,10 @@ fn parse_object(
         GENERICREFSXP | CLASSREFSXP => {
             // Generic function or class reference
             // These reference metadata in the serialization stream
-            let ref_index_val = ((flags >> 8) & 0xFF) as u32;
+            let ref_index_val = flags >> 8;
 
             match ref_table.get(ref_index_val) {
-                Some(obj) => return Ok(obj.clone()),
+                Some(obj) => return Ok(RObject::Shared(obj)),
                 None => RObject::Null,
             }
         }
@@ -630,7 +737,12 @@ fn parse_object(
         }
         let attr_value = match attr_obj {
             Some(obj) => obj,
-            None => parse_object(cursor, ref_table, symbol_table, dedup_table)?,
+            None => PARSING_ATTRIBUTES.with(|flag| {
+                let prev = flag.replace(true);
+                let obj = parse_object(cursor, ref_table, symbol_table, dedup_table);
+                flag.set(prev);
+                obj
+            })?,
         };
         if std::env::var("RDS_DEBUG_ATTR_POS").is_ok() {
             eprintln!(
@@ -647,11 +759,7 @@ fn parse_object(
                         .iter()
                         .map(|p| p.tag.as_deref().unwrap_or("<none>").to_string())
                         .collect();
-                    eprintln!(
-                        "[S4_ATTR_OBJ] pairlist len={} tags={:?}",
-                        list.len(),
-                        tags
-                    );
+                    eprintln!("[S4_ATTR_OBJ] pairlist len={} tags={:?}", list.len(), tags);
                 }
                 other => {
                     eprintln!(
@@ -736,6 +844,13 @@ fn parse_object(
     // This is used for resolving REFSXP in TAG positions (e.g., pairlist attribute names)
     if sexp_type == SYMSXP {
         symbol_table.add(obj.clone());
+        if std::env::var("RDS_DEBUG_SYM").is_ok() {
+            if let RObject::Character(names) = &obj {
+                if let Some(name) = names.first() {
+                    eprintln!("[SYMBOL_ADD] {}", name);
+                }
+            }
+        }
     }
 
     // Try to deduplicate the object before returning
@@ -750,6 +865,7 @@ fn parse_object(
 /// Parse an integer vector.
 fn parse_integer_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
+    guard_allocation(length, std::mem::size_of::<i32>(), cursor, "integer vector")?;
     let mut vec = Vec::with_capacity(length);
 
     for _ in 0..length {
@@ -763,6 +879,7 @@ fn parse_integer_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
 /// Parse a real (double) vector.
 fn parse_real_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
+    guard_allocation(length, std::mem::size_of::<f64>(), cursor, "real vector")?;
     let mut vec = Vec::with_capacity(length);
 
     for _ in 0..length {
@@ -776,6 +893,7 @@ fn parse_real_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
 /// Parse a logical vector.
 fn parse_logical_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
+    guard_allocation(length, std::mem::size_of::<Logical>(), cursor, "logical vector")?;
     let mut vec = Vec::with_capacity(length);
 
     for _ in 0..length {
@@ -809,6 +927,7 @@ fn parse_character_vector(
     let pos_before_length = cursor.position();
     ensure_bytes_available(cursor, 4, "parse_character_vector:length")?;
     let length = cursor.read_u32::<BigEndian>()? as usize;
+    guard_allocation(length, 1, cursor, "character vector")?;
 
     if debug_enabled() {
         let remaining = cursor.get_ref().len() as u64 - cursor.position();
@@ -834,7 +953,7 @@ fn parse_character_vector(
         // Check if this is a REFSXP (string deduplication)
         if type_from_0_7 == REFSXP {
             // It's a reference to a previously seen string in this vector
-            let ref_index = ((flags >> 8) & 0xFF) as usize;
+            let ref_index = (flags >> 8) as usize;
 
             // Look up in local string cache (1-based indexing)
             if ref_index > 0 && ref_index <= string_cache.len() {
@@ -952,6 +1071,7 @@ fn parse_character_vector(
 /// Parse a raw vector (RAWSXP - a vector of bytes).
 fn parse_raw_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
+    guard_allocation(length, 1, cursor, "raw vector")?;
     let mut vec = vec![0u8; length];
 
     // Read the raw bytes directly
@@ -965,6 +1085,7 @@ fn parse_complex_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     use crate::types::Complex;
 
     let length = cursor.read_u32::<BigEndian>()? as usize;
+    guard_allocation(length, std::mem::size_of::<Complex>(), cursor, "complex vector")?;
     let mut vec = Vec::with_capacity(length);
 
     for _ in 0..length {
@@ -1032,6 +1153,7 @@ fn parse_list(
 ) -> Result<RObject> {
     let pos_before_length = cursor.position();
     let length = cursor.read_u32::<BigEndian>()? as usize;
+    guard_allocation(length, 1, cursor, "VECSXP/list")?;
     let mut elements = Vec::with_capacity(length);
 
     if debug_enabled() {
@@ -1065,7 +1187,7 @@ fn parse_list(
 
         // Check if this is a Real vector that looks like an ALTREP compact_intseq state
         // R sometimes serializes repeated ALTREP sequences as bare state vectors
-        let converted_element = match &element {
+        let converted_element = match element.as_concrete() {
             RObject::Real(vec) if vec.len() == 3 => {
                 let n = vec[0];
                 let start = vec[1];
@@ -1112,6 +1234,7 @@ fn parse_expression(
     dedup_table: &mut DedupTable,
 ) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
+    guard_allocation(length, 1, cursor, "expression vector")?;
     let mut elements = Vec::with_capacity(length);
 
     for _ in 0..length {
@@ -1130,6 +1253,12 @@ fn parse_bytecode(
     dedup_table: &mut DedupTable,
 ) -> Result<RObject> {
     let reps_len = cursor.read_u32::<BigEndian>()? as usize;
+    guard_allocation(
+        reps_len,
+        std::mem::size_of::<Option<RObject>>(),
+        cursor,
+        "bytecode reps",
+    )?;
     let mut reps = vec![None; reps_len];
     parse_bytecode_body(cursor, ref_table, symbol_table, dedup_table, &mut reps)
 }
@@ -1159,6 +1288,7 @@ fn parse_bc_constants(
     reps: &mut [Option<RObject>],
 ) -> Result<Vec<RObject>> {
     let count = cursor.read_u32::<BigEndian>()? as usize;
+    guard_allocation(count, 1, cursor, "bytecode constants")?;
     let mut constants = Vec::with_capacity(count);
 
     for _ in 0..count {
@@ -1425,6 +1555,7 @@ fn parse_namespace(
     // a length, then that many CHARSXP entries.
     let _names_flag = cursor.read_u32::<BigEndian>()?;
     let length = cursor.read_u32::<BigEndian>()? as usize;
+    guard_allocation(length, 1, cursor, "namespace names")?;
 
     let mut names = Vec::with_capacity(length);
     for _ in 0..length {
@@ -1464,7 +1595,7 @@ fn parse_language(
     let cdr = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
     // Extract arguments with their names (tags) from the CDR
-    let args = match cdr {
+    let args = match cdr.into_concrete() {
         RObject::Null => {
             // No arguments
             Vec::new()
@@ -1501,9 +1632,94 @@ fn parse_pairlist_element(
 ) -> Result<(Option<Arc<str>>, Option<Box<RObject>>, RObject)> {
     // Parse the TAG if present (comes before CAR)
     let (tag, tag_object) = if has_tag {
-        // Parse the TAG using normal object parsing
-        // REFSXP references in TAGs use the main ref_table, same as everywhere else
-        let tag_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+        // In attribute/tag positions, REFSXP indices point into the symbol table,
+        // not the main reference table. Peek the next flags to handle this path.
+        let pos = cursor.position();
+        ensure_bytes_available(cursor, 4, "parse_pairlist_element:tag_flags")?;
+        let flags = cursor.read_u32::<BigEndian>()?;
+        let tag_type = flags & 0xFF;
+
+        let tag_obj = if tag_type == REFSXP {
+            let sym_index = flags >> 8;
+            let prefer_symbol_table = PARSING_ATTRIBUTES.with(|flag| flag.get());
+
+            // If parsing attributes, prefer symbol table for tag resolution to avoid
+            // clashes with ref_table object indices. Otherwise, try ref_table first.
+            if prefer_symbol_table {
+                if let Some(sym) = symbol_table.get(sym_index) {
+                    if std::env::var("RDS_DEBUG_TAG").is_ok() {
+                        let name = extract_tag_name(sym.clone())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "<unknown>".to_string());
+                        eprintln!(
+                            "[TAG_REF] flags=0x{:08x} idx={} name={}",
+                            flags, sym_index, name
+                        );
+                    }
+                    sym.clone()
+                } else if let Some(obj) = ref_table.get(sym_index) {
+                    obj.read().unwrap().clone()
+                } else {
+                    return Err(Error::InvalidFormat(format!(
+                        "Invalid TAG REFSXP index {} (symbol table size={}, ref_table size={})",
+                        sym_index,
+                        symbol_table.len(),
+                        ref_table.next_index - 1
+                    )));
+                }
+            } else if let Some(obj) = ref_table.get(sym_index) {
+                let obj_val = obj.read().unwrap().clone();
+                if let Some(name) = extract_tag_name(obj_val.clone()) {
+                    if std::env::var("RDS_DEBUG_TAG").is_ok() {
+                        eprintln!(
+                            "[TAG_REF] flags=0x{:08x} idx={} name={}",
+                            flags, sym_index, name
+                        );
+                    }
+                    obj_val
+                } else if let Some(sym) = symbol_table.get(sym_index) {
+                    if std::env::var("RDS_DEBUG_TAG").is_ok() {
+                        let name = extract_tag_name(sym.clone())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "<unknown>".to_string());
+                        eprintln!(
+                            "[TAG_REF] flags=0x{:08x} idx={} name={}",
+                            flags, sym_index, name
+                        );
+                    }
+                    sym.clone()
+                } else {
+                    return Err(Error::InvalidFormat(format!(
+                        "Invalid TAG REFSXP index {} (symbol table size={}, ref_table size={})",
+                        sym_index,
+                        symbol_table.len(),
+                        ref_table.next_index - 1
+                    )));
+                }
+            } else if let Some(sym) = symbol_table.get(sym_index) {
+                if std::env::var("RDS_DEBUG_TAG").is_ok() {
+                    let name = extract_tag_name(sym.clone())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "<unknown>".to_string());
+                    eprintln!(
+                        "[TAG_REF] flags=0x{:08x} idx={} name={}",
+                        flags, sym_index, name
+                    );
+                }
+                sym.clone()
+            } else {
+                return Err(Error::InvalidFormat(format!(
+                    "Invalid TAG REFSXP index {} (symbol table size={}, ref_table size={})",
+                    sym_index,
+                    symbol_table.len(),
+                    ref_table.next_index - 1
+                )));
+            }
+        } else {
+            // Reset and parse normally for non-REFSXP tags.
+            cursor.set_position(pos);
+            parse_object(cursor, ref_table, symbol_table, dedup_table)?
+        };
 
         // Extract the tag name from the symbol or character object
         let tag_name = extract_tag_name(tag_obj.clone());
@@ -1531,9 +1747,14 @@ fn parse_pairlist(
     dedup_table: &mut DedupTable,
 ) -> Result<RObject> {
     let mut elements = Vec::new();
+    let mut iterations: usize = 0;
 
     if debug_enabled() {
-        eprintln!("[PAIRLIST] Start parse, has_tag={}, pos={}", has_tag, cursor.position());
+        eprintln!(
+            "[PAIRLIST] Start parse, has_tag={}, pos={}",
+            has_tag,
+            cursor.position()
+        );
     }
 
     // Parse the first element (TAG if has_tag, then CAR)
@@ -1551,6 +1772,12 @@ fn parse_pairlist(
         // Peek at next flags to determine if we continue or terminate
         let pos = cursor.position();
         let remaining = cursor.get_ref().len() as u64 - pos;
+        iterations += 1;
+        if iterations > MAX_VECTOR_LENGTH {
+            return Err(Error::InvalidFormat(
+                "Pairlist exceeded maximum element cap".to_string(),
+            ));
+        }
         if remaining == 0 {
             if debug_enabled() {
                 eprintln!(
@@ -1560,6 +1787,7 @@ fn parse_pairlist(
             }
             break;
         }
+        let loop_start = pos;
         ensure_bytes_available(cursor, 4, "parse_pairlist:next_flags")?;
         let flags = cursor.read_u32::<BigEndian>()?;
         let next_type = flags & 0xFF;
@@ -1580,7 +1808,7 @@ fn parse_pairlist(
             // Rewind to let parse_object consume from the REFSXP flags we peeked.
             cursor.set_position(pos);
             let referenced = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-            match referenced {
+            match referenced.into_concrete() {
                 RObject::Null => break,
                 RObject::Pairlist(mut tail) => {
                     elements.append(&mut tail);
@@ -1598,7 +1826,10 @@ fn parse_pairlist(
             // The flags are already consumed, so parse_pairlist_element will read the TAG and CAR
             let has_tag_next = (flags & HAS_TAG_BIT) != 0;
             if debug_enabled() {
-                eprintln!("[PAIRLIST_LOOP] Continuing pairlist, has_tag={}", has_tag_next);
+                eprintln!(
+                    "[PAIRLIST_LOOP] Continuing pairlist, has_tag={}",
+                    has_tag_next
+                );
             }
 
             let (tag, tag_object, car) =
@@ -1634,6 +1865,14 @@ fn parse_pairlist(
                     break;
                 }
             }
+        }
+
+        // Ensure forward progress to avoid infinite loops that allocate unboundedly.
+        if cursor.position() <= loop_start {
+            return Err(Error::InvalidFormat(format!(
+                "Pairlist parser made no progress at pos {}",
+                loop_start
+            )));
         }
     }
 
@@ -1687,8 +1926,12 @@ fn parse_special(
         ));
     }
 
+    let length = length as usize;
+    guard_allocation(length, 1, cursor, "special function name")?;
+    ensure_bytes_available(cursor, length, "special:name_bytes")?;
+
     // Read the string bytes
-    let mut bytes = vec![0u8; length as usize];
+    let mut bytes = vec![0u8; length];
     cursor.read_exact(&mut bytes)?;
 
     // Convert to UTF-8 string and intern it
@@ -1716,8 +1959,12 @@ fn parse_builtin(
         ));
     }
 
+    let length = length as usize;
+    guard_allocation(length, 1, cursor, "builtin function name")?;
+    ensure_bytes_available(cursor, length, "builtin:name_bytes")?;
+
     // Read the string bytes
-    let mut bytes = vec![0u8; length as usize];
+    let mut bytes = vec![0u8; length];
     cursor.read_exact(&mut bytes)?;
 
     // Convert to UTF-8 string and intern it
@@ -1730,6 +1977,8 @@ fn parse_builtin(
 /// Convert an ALTREP object to its native representation.
 fn convert_altrep_to_native(class_info: RObject, state: RObject) -> Result<RObject> {
     // Debug logging to understand ALTREP structure
+    let class_info = class_info.into_concrete();
+    let state = state.into_concrete();
 
     // Try to extract ALTREP class name from class_info
     let altrep_class_name = extract_altrep_class_name(&class_info);
@@ -1793,6 +2042,7 @@ fn convert_altrep_to_native(class_info: RObject, state: RObject) -> Result<RObje
 /// Extract the ALTREP class name from class_info.
 /// Returns the simple class name (e.g., "wrap_real", "compact_intseq").
 fn extract_altrep_class_name(class_info: &RObject) -> Option<String> {
+    let class_info = class_info.as_concrete();
     // class_info can be:
     // 1. Character vector with [package, class]
     // 2. Pairlist with class information
@@ -1851,7 +2101,7 @@ fn extract_altrep_class_name(class_info: &RObject) -> Option<String> {
         }
         RObject::WithAttributes { object, .. } => {
             // Class info might be wrapped with attributes
-            extract_altrep_class_name(object)
+            extract_altrep_class_name(&object)
         }
         _ => None,
     }
@@ -1859,6 +2109,7 @@ fn extract_altrep_class_name(class_info: &RObject) -> Option<String> {
 
 /// Convert a wrap_real ALTREP object to a native real vector.
 fn convert_wrap_real(state: RObject) -> Result<RObject> {
+    let state = state.into_concrete();
     // For wrap_real, the state contains the actual real vector
     match state {
         RObject::Real(_) => {
@@ -1883,6 +2134,7 @@ fn convert_wrap_real(state: RObject) -> Result<RObject> {
 
 /// Convert a wrap_int ALTREP object to a native integer vector.
 fn convert_wrap_int(state: RObject) -> Result<RObject> {
+    let state = state.into_concrete();
     // For wrap_int, the state contains the actual integer vector
     match state {
         RObject::Integer(_) => {
@@ -1908,7 +2160,7 @@ fn convert_wrap_int(state: RObject) -> Result<RObject> {
 /// Convert an ALTREP object with pairlist state to a native object.
 /// This handles generic ALTREP wrappers where the data is in a pairlist.
 fn convert_altrep_pairlist_state(state: RObject) -> Result<RObject> {
-    match state {
+    match state.into_concrete() {
         RObject::Pairlist(elements) if !elements.is_empty() => {
             // The actual data is typically in the first element
             Ok(elements[0].value.clone())
@@ -1919,6 +2171,7 @@ fn convert_altrep_pairlist_state(state: RObject) -> Result<RObject> {
 
 /// Convert a compact integer sequence to a regular integer vector.
 fn convert_compact_intseq(state: RObject) -> Result<RObject> {
+    let state = state.into_concrete();
     // compact_intseq state is a Real vector: [length, first, stride]
     let (length, first, stride) = match state {
         RObject::Real(params) if params.len() == 3 => {
@@ -1935,8 +2188,17 @@ fn convert_compact_intseq(state: RObject) -> Result<RObject> {
     };
 
     // Generate the sequence
-    let mut vec = Vec::with_capacity(length as usize);
-    for i in 0..length {
+    if length < 0 {
+        return Err(Error::InvalidFormat(format!(
+            "Negative compact_intseq length {}",
+            length
+        )));
+    }
+    let length_usize = length as usize;
+    // Each element is an i32
+    guard_allocation_common(length_usize, std::mem::size_of::<i32>(), "compact_intseq")?;
+    let mut vec = Vec::with_capacity(length_usize);
+    for i in 0..length_usize {
         vec.push(first + (i as i32) * stride);
     }
 
@@ -1981,7 +2243,7 @@ fn parse_charsxp(cursor: &mut Cursor<&[u8]>) -> Result<String> {
     // This is a limitation: we can't look up the reference here without access to caches/tables.
     // For now, return a placeholder. In the future, parse_charsxp should accept cache parameters.
     if type_from_0_7 == REFSXP {
-        let ref_index = ((flags >> 8) & 0xFF) as usize;
+        let ref_index = (flags >> 8) as usize;
         // Return a placeholder indicating this is a reference
         // The caller (parse_character_vector or parse_symbol) should handle this
         return Err(Error::InvalidFormat(format!(
@@ -2045,9 +2307,19 @@ fn parse_charsxp_content(cursor: &mut Cursor<&[u8]>, flags: u32) -> Result<Strin
         return Ok(String::from("NA"));
     }
 
+    if length < 0 {
+        return Err(Error::InvalidFormat(format!(
+            "Negative CHARSXP length {}",
+            length
+        )));
+    }
+
+    let length = length as usize;
+    guard_allocation(length, 1, cursor, "charsxp content")?;
+
     // Read the string bytes
-    let mut bytes = vec![0u8; length as usize];
-    ensure_bytes_available(cursor, length as usize, "charsxp:string_bytes")?;
+    let mut bytes = vec![0u8; length];
+    ensure_bytes_available(cursor, length, "charsxp:string_bytes")?;
     cursor.read_exact(&mut bytes)?;
 
     // Try to convert to UTF-8 string
@@ -2067,6 +2339,7 @@ fn parse_charsxp_content(cursor: &mut Cursor<&[u8]>, flags: u32) -> Result<Strin
 /// Parse attributes from a pairlist object.
 /// Attributes are stored as pairlists where TAG = attribute name, CAR = attribute value.
 fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
+    let attr_obj = attr_obj.into_concrete();
     let mut attrs = Attributes::new();
 
     fn store_attrs_for_class(attrs: &Attributes) {
@@ -2466,10 +2739,7 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
         .unwrap_or((vec![], None));
 
     if debug_s4 {
-        eprintln!(
-            "[S4] extracted class {:?}, package {:?}",
-            class, package
-        );
+        eprintln!("[S4] extracted class {:?}, package {:?}", class, package);
     }
 
     // WORKAROUND: Check if we have an S4Object from a TAG position that matches this class

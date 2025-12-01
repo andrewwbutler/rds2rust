@@ -270,8 +270,8 @@ fn test_dataframe_with_ordered_columns_as_s4_slot() {
     );
 
     let s4 = RObject::S4Object(Box::new(S4ObjectData {
-        class: vec![Arc::from("Assay")],
-        package: Some(Arc::from("SeuratObject")),
+        class: vec![Arc::from("TestClass")],
+        package: Some(Arc::from("TestPackage")),
         slots,
     }));
 

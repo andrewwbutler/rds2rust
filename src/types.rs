@@ -2,10 +2,10 @@
 
 use indexmap::IndexMap;
 use smallvec::SmallVec;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 /// Represents any R object that can be stored in an RDS file.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum RObject {
     /// NULL object
     Null,
@@ -133,11 +133,173 @@ pub enum RObject {
     /// Used to indicate an unbound variable
     UnboundValue,
 
+    /// Shared reference to an existing object (used for REFSXP backreferences)
+    /// to avoid deep cloning large structures during parsing.
+    Shared(Arc<RwLock<RObject>>),
+
     /// Object with attributes (no class)
     WithAttributes {
         object: Box<RObject>,
         attributes: Attributes,
     },
+}
+
+impl RObject {
+    /// If this object is a Shared wrapper, return the underlying object reference.
+    /// Otherwise return self.
+    pub fn as_concrete(&self) -> RObject {
+        match self {
+            RObject::Shared(inner) => inner.read().unwrap().clone(),
+            other => other.clone(),
+        }
+    }
+
+    /// Consume the object, unwrapping Shared by cloning the underlying object.
+    pub fn into_concrete(self) -> RObject {
+        match self {
+            RObject::Shared(inner) => inner.read().unwrap().clone(),
+            other => other,
+        }
+    }
+
+    /// Human-friendly variant name for debugging.
+    pub fn variant_name(&self) -> &'static str {
+        use RObject::*;
+        match self {
+            Null => "Null",
+            Integer(_) => "Integer",
+            Real(_) => "Real",
+            Logical(_) => "Logical",
+            Character(_) => "Character",
+            Symbol(_) => "Symbol",
+            Raw(_) => "Raw",
+            Complex(_) => "Complex",
+            List(_) => "List",
+            Pairlist(_) => "Pairlist",
+            Language { .. } => "Language",
+            Expression(_) => "Expression",
+            Closure { .. } => "Closure",
+            Environment { .. } => "Environment",
+            Promise { .. } => "Promise",
+            Special { .. } => "Special",
+            Builtin { .. } => "Builtin",
+            Bytecode { .. } => "Bytecode",
+            DataFrame(_) => "DataFrame",
+            Factor(_) => "Factor",
+            S3Object(_) => "S3Object",
+            S4Object(_) => "S4Object",
+            Namespace(_) => "Namespace",
+            GlobalEnv => "GlobalEnv",
+            BaseEnv => "BaseEnv",
+            EmptyEnv => "EmptyEnv",
+            MissingArg => "MissingArg",
+            UnboundValue => "UnboundValue",
+            WithAttributes { .. } => "WithAttributes",
+            Shared(_) => "Shared",
+        }
+    }
+}
+
+impl PartialEq for RObject {
+    fn eq(&self, other: &Self) -> bool {
+        use RObject::*;
+        let a = self.as_concrete();
+        let b = other.as_concrete();
+        match (a, b) {
+            (Null, Null) => true,
+            (Integer(x), Integer(y)) => x == y,
+            (Real(x), Real(y)) => x == y,
+            (Logical(x), Logical(y)) => x == y,
+            (Character(x), Character(y)) => x == y,
+            (Symbol(x), Symbol(y)) => x == y,
+            (Raw(x), Raw(y)) => x == y,
+            (Complex(x), Complex(y)) => x == y,
+            (List(x), List(y)) => x == y,
+            (Pairlist(x), Pairlist(y)) => x == y,
+            (
+                Language {
+                    function: fx,
+                    args: ax,
+                },
+                Language {
+                    function: fy,
+                    args: ay,
+                },
+            ) => fx == fy && ax == ay,
+            (Expression(x), Expression(y)) => x == y,
+            (
+                Closure {
+                    formals: fx,
+                    body: bx,
+                    environment: ex,
+                },
+                Closure {
+                    formals: fy,
+                    body: by,
+                    environment: ey,
+                },
+            ) => fx == fy && bx == by && ex == ey,
+            (
+                Environment {
+                    enclosing: ex1,
+                    frame: frx,
+                    hashtab: hx,
+                },
+                Environment {
+                    enclosing: ex2,
+                    frame: fry,
+                    hashtab: hy,
+                },
+            ) => ex1 == ex2 && frx == fry && hx == hy,
+            (
+                Promise {
+                    value: vx,
+                    expression: px,
+                    environment: ex,
+                },
+                Promise {
+                    value: vy,
+                    expression: py,
+                    environment: ey,
+                },
+            ) => vx == vy && px == py && ex == ey,
+            (Special { name: nx }, Special { name: ny }) => nx == ny,
+            (Builtin { name: nx }, Builtin { name: ny }) => nx == ny,
+            (
+                Bytecode {
+                    code: cx,
+                    constants: kx,
+                    expr: ex,
+                },
+                Bytecode {
+                    code: cy,
+                    constants: ky,
+                    expr: ey,
+                },
+            ) => cx == cy && kx == ky && ex == ey,
+            (DataFrame(x), DataFrame(y)) => x == y,
+            (Factor(x), Factor(y)) => x == y,
+            (S3Object(x), S3Object(y)) => x == y,
+            (S4Object(x), S4Object(y)) => x == y,
+            (Namespace(x), Namespace(y)) => x == y,
+            (GlobalEnv, GlobalEnv) => true,
+            (BaseEnv, BaseEnv) => true,
+            (EmptyEnv, EmptyEnv) => true,
+            (MissingArg, MissingArg) => true,
+            (UnboundValue, UnboundValue) => true,
+            (
+                WithAttributes {
+                    object: ox,
+                    attributes: ax,
+                },
+                WithAttributes {
+                    object: oy,
+                    attributes: ay,
+                },
+            ) => ox == oy && ax == ay,
+            _ => false,
+        }
+    }
 }
 
 /// Data frame structure (boxed to reduce RObject enum size)
@@ -167,7 +329,7 @@ pub struct S3ObjectData {
 #[derive(Debug, Clone, PartialEq)]
 pub struct S4ObjectData {
     pub class: Vec<Arc<str>>,               // Class names (interned)
-    pub package: Option<Arc<str>>,          // Package attribute (e.g., "SeuratObject", "Matrix")
+    pub package: Option<Arc<str>>,          // Package attribute for S4 objects
     pub slots: IndexMap<Arc<str>, RObject>, // Slot names (interned)
 }
 
