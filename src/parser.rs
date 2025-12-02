@@ -109,7 +109,11 @@ impl RefTable {
     /// Add an object to the reference table and return its index
     fn add(&mut self, obj: RObject) -> u32 {
         let index = self.next_index;
-        self.objects.insert(index, Arc::new(RwLock::new(obj)));
+        let arc = Arc::new(RwLock::new(obj));
+        if std::env::var("RDS_DEBUG_REF").is_ok() {
+            eprintln!("[REF_TABLE_ADD] idx={} arc_ptr={:p}", index, Arc::as_ptr(&arc));
+        }
+        self.objects.insert(index, arc);
         self.next_index += 1;
         index
     }
@@ -127,7 +131,18 @@ impl RefTable {
 
     /// Get an object by its reference index
     fn get(&self, index: u32) -> Option<Arc<RwLock<RObject>>> {
-        self.objects.get(&index).cloned()
+        let result = self.objects.get(&index).cloned();
+        if let Some(ref arc) = result {
+            if std::env::var("RDS_DEBUG_REF").is_ok() {
+                eprintln!(
+                    "[REF_LOOKUP] idx={} -> {:?}, arc_ptr={:p}",
+                    index,
+                    std::mem::discriminant(&*arc.read().unwrap()),
+                    Arc::as_ptr(arc)
+                );
+            }
+        }
+        result
     }
 }
 
@@ -281,6 +296,9 @@ fn should_track_reference(sexp_type: u32, has_attr: bool) -> bool {
         // Builtins/specials and other values default to non-tracked unless
         // they carry attributes.
         SPECIALSXP | BUILTINSXP => has_attr,
+
+        // REFSXP is a reference to an existing object, not a new object, so it shouldn't be tracked
+        REFSXP => false,
 
         // Fallback: track other/unknown types to avoid dropping reference slots.
         _ => true,
@@ -634,7 +652,8 @@ fn parse_object(
 
             // Update reference table and return early to prevent double attribute parsing
             if let Some(idx) = ref_index {
-                ref_table.update(idx, final_obj.clone());
+                ref_table.update(idx, final_obj);
+                return Ok(RObject::Shared(ref_table.get(idx).expect("Just updated")));
             }
             return Ok(final_obj);
         }
@@ -650,7 +669,8 @@ fn parse_object(
 
             // Update ref table if needed
             if let Some(idx) = ref_index {
-                ref_table.update(idx, namespace_result.clone());
+                ref_table.update(idx, namespace_result);
+                return Ok(RObject::Shared(ref_table.get(idx).expect("Just updated")));
             }
 
             return Ok(namespace_result);
@@ -835,9 +855,20 @@ fn parse_object(
     }
 
     // Update the reference table with the final object if we added a placeholder earlier
+    // IMPORTANT: Don't double-wrap Shared objects
     if let Some(idx) = ref_index {
-        // Replace the NULL placeholder with the actual object
-        ref_table.update(idx, obj.clone());
+        // If the object is already Shared, use it directly (it's already an Arc)
+        // Otherwise, wrap it in Shared for storage
+        let arc_to_store = match obj {
+            RObject::Shared(ref arc) => arc.clone(),
+            other => Arc::new(RwLock::new(other)),
+        };
+
+        // Store in ref_table
+        ref_table.objects.insert(idx, arc_to_store.clone());
+
+        // Return as Shared wrapper
+        obj = RObject::Shared(arc_to_store);
     }
 
     // If this is a symbol (SYMSXP), add it to the symbol table in parse order
@@ -855,8 +886,12 @@ fn parse_object(
 
     // Try to deduplicate the object before returning
     // If we've seen an identical object before, return that instead
-    if let Some(deduped_obj) = dedup_table.deduplicate(&obj) {
-        return Ok(deduped_obj);
+    // IMPORTANT: Don't deduplicate Shared objects - they're already deduplicated by design
+    // (multiple Shared wrappers point to the same Arc, dedup would break this by cloning)
+    if !matches!(obj, RObject::Shared(_)) {
+        if let Some(deduped_obj) = dedup_table.deduplicate(&obj) {
+            return Ok(deduped_obj);
+        }
     }
 
     Ok(obj)
@@ -1844,8 +1879,11 @@ fn parse_pairlist(
             cursor.set_position(pos);
             let cdr = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
+            // Unwrap Shared if present to check the actual type
+            let cdr_concrete = cdr.into_concrete();
+
             // Handle the CDR based on its type
-            match cdr {
+            match cdr_concrete {
                 RObject::Null => {
                     // Normal list termination
                     break;
@@ -1881,6 +1919,9 @@ fn parse_pairlist(
 
 /// Extract a tag name from a tag object (usually a symbol or character).
 fn extract_tag_name(tag_obj: RObject) -> Option<Arc<str>> {
+    // Unwrap Shared wrappers first
+    let tag_obj = tag_obj.into_concrete();
+
     match tag_obj {
         RObject::Character(vec) if !vec.is_empty() => Some(vec[0].clone()),
         RObject::Null => None,
@@ -2710,12 +2751,16 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
 
     // Extract the class attribute and package attribute
     // The class may be wrapped in WithAttributes if it has a package attribute
+    // It may also be wrapped in Shared due to reference tracking
     let (class, package) = attributes
         .attrs
         .iter()
         .position(|(k, _)| k.as_ref() == "class")
         .map(|idx| {
-            match attributes.attrs[idx].1.as_ref() {
+            // Unwrap any Shared wrapper first
+            let class_obj = attributes.attrs[idx].1.as_concrete();
+
+            match class_obj {
                 RObject::Character(classes) => (classes.clone(), None),
                 RObject::WithAttributes {
                     object,

@@ -63,7 +63,9 @@ fn test_simple_function() {
             environment,
         } => {
             // Check formals - should be a pairlist with x and y (y=10)
-            match formals.as_ref() {
+            // Unwrap any Shared wrapper first
+            let formals_concrete = formals.as_concrete();
+            match &formals_concrete {
                 RObject::Pairlist(elements) => {
                     assert_eq!(elements.len(), 2, "Should have 2 parameters");
 
@@ -160,7 +162,9 @@ fn test_closure_with_environment() {
             }
 
             // Check environment - should be an Environment (not global)
-            match environment.as_ref() {
+            // Unwrap any Shared wrapper first
+            let environment_concrete = environment.as_concrete();
+            match &environment_concrete {
                 RObject::Environment {
                     enclosing: _,
                     frame,

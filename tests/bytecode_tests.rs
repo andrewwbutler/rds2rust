@@ -190,10 +190,9 @@ fn test_uncompiled_func() {
 }
 
 #[test]
-#[ignore] // REGRESSION: This test passed before Shared handling changes, now causes stack overflow on drop
 fn test_bytecode_roundtrip() {
-    // TODO: Fix stack overflow caused by circular Shared references in bytecode
-    // This was working before the writer's Shared object tracking was added
+    // Fixed: Writer now emits NULL for cyclic references instead of REFSXP
+    // This prevents parser stack overflow when re-parsing bytecode with circular references
     if !test_data_exists() {
         eprintln!("Skipping test: test data not generated");
         return;

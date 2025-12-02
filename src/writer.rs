@@ -251,23 +251,22 @@ fn write_object_inner(
             // Detect recursion cycles in the current write call stack.
             let in_stack = WRITE_STACK.with(|stack| stack.borrow().contains(&ptr));
             if in_stack {
-                let idx = ref_table
-                    .check_object_ptr(ptr)
-                    .unwrap_or_else(|| ref_table.register_object_ptr(ptr));
+                // Object is currently being written (self-reference/cycle).
+                // We CANNOT emit REFSXP because the object isn't fully defined yet,
+                // and the parser would stack overflow trying to resolve it.
+                // Instead, write NULL to break the cycle.
                 if std::env::var("RDS_DEBUG").is_ok() {
-                    eprintln!("[WRITE] REFSXP emit (cycle) idx={} key={:p}", idx, ptr as *const ());
+                    eprintln!("[WRITE] Cycle detected for key={:p}, writing NULL to break cycle", ptr as *const ());
                 }
                 if std::env::var("RDS_DEBUG_CLOSURE").is_ok() {
                     eprintln!(
-                        "[WRITE_DBG] cycle hit type={:?} depth={} key={:p} discr={:?}",
+                        "[WRITE_DBG] cycle hit type={:?} depth={} key={:p}, writing NULL",
                         mem::discriminant(obj),
                         depth,
-                        ptr as *const (),
-                        obj.variant_name()
+                        ptr as *const ()
                     );
                 }
-                write_refsxp(writer, idx)?;
-                return Ok(());
+                return write_null(writer);
             }
 
             // Already written? emit REFSXP.
@@ -320,14 +319,18 @@ fn write_object_inner(
             WRITE_STACK.with(|stack| stack.borrow_mut().push(ptr));
             let _guard = StackGuard;
 
-            // For Shared, we've registered the index. Now emit the inner object AS the definition.
-            // Don't descend into Shared's structure - unwrap it immediately and write the contents.
+            // For Shared, we've registered the Shared wrapper's Arc pointer.
+            // Now write the inner object WITHOUT giving it its own index (skip ref tracking for immediate inner),
+            // but WITH ref tracking for nested contents.
+            // This avoids double-tracking the immediate inner object while still allowing
+            // nested objects to be tracked properly.
             if let RObject::Shared(inner) = obj {
                 if std::env::var("RDS_DEBUG").is_ok() {
-                    eprintln!("[WRITE] Unwrapping Shared at idx={}, arc_ptr={:p}", idx, Arc::as_ptr(inner));
+                    eprintln!("[WRITE] Unwrapping Shared at idx={}, arc_ptr={:p}, skipping inner's own tracking", idx, Arc::as_ptr(inner));
                 }
                 let guard = inner.read().unwrap();
-                // Write the inner object WITHOUT ref tracking (it's already tracked via the Shared wrapper)
+                // Write the inner object WITHOUT ref tracking for the inner object itself,
+                // but nested contents will be tracked normally through the match branches below
                 return write_object_inner(writer, &*guard, ref_table, false);
             }
 
