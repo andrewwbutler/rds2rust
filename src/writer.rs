@@ -96,6 +96,210 @@ impl RefTable {
     }
 }
 
+/// Shared object context for tracking identity across unwrapping.
+#[derive(Copy, Clone, Debug)]
+struct SharedInfo {
+    arc_ptr: usize,  // Arc::as_ptr() value for identity tracking
+}
+
+/// Context for symbol writing - determines which index space to use for REFSXP
+#[derive(Copy, Clone, Debug)]
+enum SymbolContext {
+    Tag,     // TAG position (formals, attributes) - use symbol REFSXP
+    NonTag,  // Non-TAG position (Language func, closure body) - use object REFSXP
+}
+
+/// Coordinates symbol tracking across both index spaces (object and symbol).
+/// This enables proper REFSXP emission for symbols that appear in both TAG and non-TAG positions.
+struct SymbolTracker {
+    /// Map from Shared(Symbol) Arc pointer → (object_idx, symbol_idx)
+    /// Preferred path when Shared wrapper is available
+    pointer_symbols: HashMap<usize, (u32, u32)>,
+
+    /// Map from symbol value (string) → (object_idx, symbol_idx)
+    /// Fallback for plain Symbol (non-Shared) to enable REFSXP reuse
+    value_symbols: HashMap<Arc<str>, (u32, u32)>,
+}
+
+impl SymbolTracker {
+    fn new() -> Self {
+        Self {
+            pointer_symbols: HashMap::new(),
+            value_symbols: HashMap::new(),
+        }
+    }
+
+    /// Check if a symbol was already written (pointer-based first, then value-based)
+    fn lookup(&self, ptr_opt: Option<usize>, name: &str) -> Option<(u32, u32)> {
+        // Try pointer-based lookup first (more precise)
+        if let Some(ptr) = ptr_opt {
+            if let Some(indices) = self.pointer_symbols.get(&ptr) {
+                return Some(*indices);
+            }
+        }
+        // Fall back to value-based lookup for plain Symbols
+        self.value_symbols.get(name).copied()
+    }
+
+    /// Register a newly written symbol
+    ///
+    /// Policy: Value map is ALWAYS populated, even when pointer is present.
+    /// This enables REFSXP reuse across:
+    /// - Plain Symbol instances (no Shared wrapper) via value lookup
+    /// - Shared(Symbol) instances via pointer lookup (preferred) or value fallback
+    ///
+    /// Rationale for dual registration:
+    /// R symbols are semantically interned by name - Symbol("x") from one Arc instance
+    /// is identical to Symbol("x") from another. Value-based tracking ensures correctness
+    /// even when Arc pointer identity is unavailable (plain Symbol in Language.function,
+    /// TAG without Shared wrapper). This is INTENTIONAL, not a bug.
+    ///
+    /// Pointer tracking is preferred when available for precision, but value fallback
+    /// ensures we never miss REFSXP opportunities.
+    fn register(&mut self, ptr_opt: Option<usize>, name: Arc<str>, indices: (u32, u32)) {
+        if let Some(ptr) = ptr_opt {
+            // Shared(Symbol) - register by pointer (preferred path)
+            self.pointer_symbols.insert(ptr, indices);
+
+            // Debug assertion: pointer and value mappings must agree
+            // If value map already has this name, indices should match
+            debug_assert!(
+                self.value_symbols.get(&name).map_or(true, |v| v == &indices),
+                "Pointer and value mappings disagree for symbol '{}': ptr={:?}, value={:?}",
+                name, Some(indices), self.value_symbols.get(&name)
+            );
+        }
+
+        // Always register by value to enable REFSXP reuse for plain Symbols
+        // (Language function, TAG without Shared wrapper, etc.)
+        self.value_symbols.insert(name, indices);
+    }
+}
+
+/// Atomically register a symbol in both index spaces
+///
+/// This is the ONLY function that should allocate indices for symbols.
+/// Returns: (object_idx, symbol_idx) for the written symbol
+///
+/// CRITICAL: Never manipulate next_index or table entries directly elsewhere!
+/// - Pointer path: MUST use `register_object_ptr()` (no direct next_index manipulation)
+/// - Value-only path: This function is the SOLE exception for direct next_index access
+///
+/// Policy: Always allocates BOTH indices when writing SYMSXP, even for TAG-only symbols.
+/// Rationale: Parser assigns both indices to SYMSXP (ref_table + symbol_table), so writer
+/// must mirror this. If we deferred object_idx for TAG-only symbols, we'd create index
+/// misalignment when those symbols later appear in non-TAG positions.
+fn register_symbol_atomic(
+    name: Arc<str>,
+    ptr_opt: Option<usize>,
+    ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
+) -> (u32, u32) {
+    // Allocate symbol index via RefTable's check_symbol method
+    // API behavior: registers if not found, returns None for first write, Some(idx) for reuse
+    let symbol_idx = match ref_table.check_symbol(name.as_ref()) {
+        Some(existing_idx) => existing_idx,
+        None => {
+            // Just registered - retrieve the index that was assigned
+            // check_symbol has side effect of inserting into symbol_refs
+            ref_table.symbol_refs.get(name.as_ref()).copied()
+                .expect("check_symbol just registered this symbol")
+        }
+    };
+
+    // Allocate object index
+    // Two paths: pointer-based (Shared wrapper) vs value-only (plain Symbol)
+    let object_idx = if let Some(ptr) = ptr_opt {
+        // POINTER PATH: Use RefTable's existing registration method
+        // This is the ONLY allowed way to allocate object indices for pointers
+        ref_table.register_object_ptr(ptr)
+    } else {
+        // VALUE-ONLY PATH: Allocate object index without pointer
+        // This is the ONLY place outside register_object_ptr that may touch next_index
+        // Enables REFSXP reuse by value for plain Symbol (Language function, TAG without Shared)
+        //
+        // IMPORTANT: We allocate an index but don't insert into object_refs (no pointer).
+        // SymbolTracker will track this mapping. When REFSXP(object_idx) is emitted,
+        // parser will assign this index to the symbol in ref_table.
+        let idx = ref_table.next_index;
+        ref_table.next_index += 1;
+        idx
+    };
+
+    // Record in SymbolTracker for future lookups
+    // This is the canonical mapping for REFSXP emission
+    symbol_tracker.register(ptr_opt, name.clone(), (object_idx, symbol_idx));
+
+    // Debug assertion: both indices must be valid
+    debug_assert!(symbol_idx < ref_table.next_symbol_index);
+    debug_assert!(object_idx < ref_table.next_index);
+
+    (object_idx, symbol_idx)
+}
+
+/// Write a symbol with full tracking support
+///
+/// Returns: (object_idx, symbol_idx) for the written symbol
+fn write_symbol_with_tracking(
+    writer: &mut Vec<u8>,
+    name: Arc<str>,
+    shared_ptr: Option<usize>,  // Arc pointer if from Shared(Symbol)
+    context: SymbolContext,
+    ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
+) -> Result<(u32, u32)> {
+    // Check if this symbol was already written
+    if let Some((obj_idx, sym_idx)) = symbol_tracker.lookup(shared_ptr, name.as_ref()) {
+        // Already written - emit appropriate REFSXP based on context
+        let refsxp_idx = match context {
+            SymbolContext::Tag => sym_idx,
+            SymbolContext::NonTag => obj_idx,
+        };
+
+        // Debug logging
+        if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
+            eprintln!(
+                "[SYMBOL] REFSXP '{}' ptr={:?} obj={} sym={} ctx={:?} emit_idx={}",
+                name, shared_ptr.map(|p| format!("{:#x}", p)), obj_idx, sym_idx, context, refsxp_idx
+            );
+        }
+
+        // Debug assertion: enforce context rules
+        debug_assert!(
+            (matches!(context, SymbolContext::Tag) && refsxp_idx == sym_idx) ||
+            (matches!(context, SymbolContext::NonTag) && refsxp_idx == obj_idx),
+            "REFSXP index mismatch for context {:?}: emitting {}, expected {} for TAG or {} for non-TAG",
+            context, refsxp_idx, sym_idx, obj_idx
+        );
+
+        write_refsxp(writer, refsxp_idx)?;
+        return Ok((obj_idx, sym_idx));
+    }
+
+    // First time writing this symbol - write SYMSXP
+    write_flags(writer, SYMSXP, false, false, false)?;
+    write_charsxp(writer, name.as_ref())?;
+
+    // Atomically register in both index spaces - NO manual next_index manipulation!
+    let indices = register_symbol_atomic(name.clone(), shared_ptr, ref_table, symbol_tracker);
+
+    // Debug logging
+    if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
+        eprintln!(
+            "[SYMBOL] SYMSXP '{}' ptr={:?} obj={} sym={} ctx={:?}",
+            name, shared_ptr.map(|p| format!("{:#x}", p)), indices.0, indices.1, context
+        );
+    }
+
+    // Debug assertion: verify registration
+    debug_assert!(
+        symbol_tracker.lookup(shared_ptr, name.as_ref()).is_some(),
+        "Symbol '{}' not properly registered after writing SYMSXP", name
+    );
+
+    Ok(indices)
+}
+
 /// Determine if an object type should be tracked for references.
 /// This matches the same logic used in the parser.
 #[allow(dead_code)]
@@ -162,8 +366,11 @@ pub fn write_rds(obj: &RObject) -> Result<Vec<u8>> {
     // Create reference table for tracking shared objects
     let mut ref_table = RefTable::new();
 
+    // Create symbol tracker for dual-index symbol tracking
+    let mut symbol_tracker = SymbolTracker::new();
+
     // Write the object
-    write_object(&mut buffer, obj, &mut ref_table)?;
+    write_object(&mut buffer, obj, &mut ref_table, &mut symbol_tracker)?;
 
     // Compress with gzip
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
@@ -196,8 +403,8 @@ fn write_header(writer: &mut Vec<u8>) -> Result<()> {
 }
 
 /// Write an R object to the stream.
-fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable) -> Result<()> {
-    write_object_inner(writer, obj, ref_table, true)
+fn write_object(writer: &mut Vec<u8>, obj: &RObject, ref_table: &mut RefTable, symbol_tracker: &mut SymbolTracker) -> Result<()> {
+    write_object_inner(writer, obj, ref_table, symbol_tracker, true, None)
 }
 
 /// Internal helper with toggle to skip ref tracking (used when descending into Shared inner).
@@ -205,7 +412,9 @@ fn write_object_inner(
     writer: &mut Vec<u8>,
     obj: &RObject,
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
     allow_ref_tracking: bool,
+    shared_info: Option<SharedInfo>,
 ) -> Result<()> {
     // Lightweight call counter for debugging.
     WRITE_CALLS.with(|c| {
@@ -325,13 +534,32 @@ fn write_object_inner(
             // This avoids double-tracking the immediate inner object while still allowing
             // nested objects to be tracked properly.
             if let RObject::Shared(inner) = obj {
+                // Extract Arc pointer for identity tracking
+                let shared_info = SharedInfo { arc_ptr: Arc::as_ptr(inner) as usize };
+
                 if std::env::var("RDS_DEBUG").is_ok() {
                     eprintln!("[WRITE] Unwrapping Shared at idx={}, arc_ptr={:p}, skipping inner's own tracking", idx, Arc::as_ptr(inner));
                 }
                 let guard = inner.read().unwrap();
+
+                if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
+                    eprintln!(
+                        "[SHARED] Unwrapping Shared at idx={} inner_type={:?}",
+                        idx,
+                        std::mem::discriminant(&*guard)
+                    );
+                    if let RObject::Symbol(name) = &*guard {
+                        eprintln!("[SHARED] Inner is Symbol('{}')", name);
+                    }
+                }
+
                 // Write the inner object WITHOUT ref tracking for the inner object itself,
-                // but nested contents will be tracked normally through the match branches below
-                return write_object_inner(writer, &*guard, ref_table, false);
+                // but WITH SharedInfo propagated for symbol tracking.
+                // CRITICAL: Symbol tracking is orthogonal to allow_ref_tracking.
+                // Even when allow_ref_tracking=false (for the Shared wrapper),
+                // symbol registration MUST still occur for the inner Symbol.
+                // The SharedInfo propagation ensures this.
+                return write_object_inner(writer, &*guard, ref_table, symbol_tracker, false, Some(shared_info));
             }
 
             // fallthrough to write body with tracking already registered
@@ -343,7 +571,7 @@ fn write_object_inner(
     if !allow_ref_tracking {
         if let RObject::Shared(_) = obj {
             // Re-enable tracking for nested Shared objects
-            return write_object_inner(writer, obj, ref_table, true);
+            return write_object_inner(writer, obj, ref_table, symbol_tracker, true, None);
         }
     }
 
@@ -360,42 +588,61 @@ fn write_object_inner(
         }
         RObject::Symbol(name) => {
             // Write as SYMSXP - used for R's symbol table and special markers
-            write_symbol_with_ref(writer, name.as_ref(), ref_table)
+            // Phase 5: Use write_symbol_with_tracking for non-TAG symbols
+            let ptr_opt = shared_info.map(|si| si.arc_ptr);
+
+            if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
+                eprintln!(
+                    "[SYMBOL ARM] Reached Symbol arm for '{}' ptr={:?}",
+                    name,
+                    ptr_opt.map(|p| format!("{:#x}", p))
+                );
+            }
+
+            write_symbol_with_tracking(
+                writer,
+                name.clone(),
+                ptr_opt,
+                SymbolContext::NonTag,
+                ref_table,
+                symbol_tracker,
+            )?;
+            Ok(())
         }
         RObject::Raw(vec) => write_raw_vector(writer, vec),
         RObject::Complex(vec) => write_complex_vector(writer, vec),
-        RObject::List(elements) => write_list(writer, elements, ref_table),
-        RObject::Expression(elements) => write_expression(writer, elements, ref_table),
-        RObject::Pairlist(elements) => write_pairlist(writer, elements, ref_table),
-        RObject::Language { function, args } => write_language(writer, function, args, ref_table),
+        RObject::List(elements) => write_list(writer, elements, ref_table, symbol_tracker),
+        RObject::Expression(elements) => write_expression(writer, elements, ref_table, symbol_tracker),
+        RObject::Pairlist(elements) => write_pairlist(writer, elements, ref_table, symbol_tracker),
+        RObject::Language { function, args } => write_language(writer, function, args, ref_table, symbol_tracker),
         RObject::Closure {
             formals,
             body,
             environment,
-        } => write_closure(writer, formals, body, environment, ref_table),
+        } => write_closure(writer, formals, body, environment, ref_table, symbol_tracker),
         RObject::Environment {
             enclosing,
             frame,
             hashtab,
-        } => write_environment(writer, enclosing, frame, hashtab, ref_table),
+        } => write_environment(writer, enclosing, frame, hashtab, ref_table, symbol_tracker),
         RObject::Promise {
             value,
             expression,
             environment,
-        } => write_promise(writer, value, expression, environment, ref_table),
+        } => write_promise(writer, value, expression, environment, ref_table, symbol_tracker),
         RObject::Special { name } => write_special(writer, name.as_ref()),
         RObject::Builtin { name } => write_builtin(writer, name.as_ref()),
         RObject::Bytecode {
             code,
             constants,
             expr,
-        } => write_bytecode(writer, code, constants, expr, ref_table),
+        } => write_bytecode(writer, code, constants, expr, ref_table, symbol_tracker),
         RObject::DataFrame(data) => {
-            write_dataframe(writer, &data.columns, &data.row_names, ref_table)
+            write_dataframe(writer, &data.columns, &data.row_names, ref_table, symbol_tracker)
         }
-        RObject::Factor(data) => write_factor(writer, data, ref_table),
+        RObject::Factor(data) => write_factor(writer, data, ref_table, symbol_tracker),
         RObject::S3Object(data) => {
-            write_s3_object(writer, &data.base, &data.class, &data.attributes, ref_table)
+            write_s3_object(writer, &data.base, &data.class, &data.attributes, ref_table, symbol_tracker)
         }
         RObject::S4Object(data) => write_s4_object(
             writer,
@@ -403,6 +650,7 @@ fn write_object_inner(
             data.package.as_ref(),
             &data.slots,
             ref_table,
+            symbol_tracker,
         ),
         RObject::Namespace(names) => write_namespace(writer, names, ref_table),
         RObject::GlobalEnv => write_global_env(writer),
@@ -411,7 +659,7 @@ fn write_object_inner(
         RObject::MissingArg => write_missing_arg(writer),
         RObject::UnboundValue => write_unbound_value(writer),
         RObject::WithAttributes { object, attributes } => {
-            write_object_with_attributes(writer, object, attributes, ref_table)
+            write_object_with_attributes(writer, object, attributes, ref_table, symbol_tracker)
         }
         RObject::Shared(_) => {
             // Shared should have been handled in the ref tracking block above.
@@ -617,11 +865,11 @@ fn write_complex_vector(writer: &mut Vec<u8>, vec: &[Complex]) -> Result<()> {
 }
 
 /// Write a list (VECSXP).
-fn write_list(writer: &mut Vec<u8>, elements: &[RObject], ref_table: &mut RefTable) -> Result<()> {
+fn write_list(writer: &mut Vec<u8>, elements: &[RObject], ref_table: &mut RefTable, symbol_tracker: &mut SymbolTracker) -> Result<()> {
     write_flags(writer, VECSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(elements.len() as u32)?;
     for element in elements {
-        write_object(writer, element, ref_table)?;
+        write_object(writer, element, ref_table, symbol_tracker)?;
     }
     Ok(())
 }
@@ -633,11 +881,12 @@ fn write_expression(
     writer: &mut Vec<u8>,
     elements: &[RObject],
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
     write_flags(writer, EXPRSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(elements.len() as u32)?;
     for element in elements {
-        write_object(writer, element, ref_table)?;
+        write_object(writer, element, ref_table, symbol_tracker)?;
     }
     Ok(())
 }
@@ -649,9 +898,14 @@ fn write_language(
     function: &RObject,
     args: &[PairlistElement],
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
     // Language objects are structured as: CAR (function) + CDR (argument list)
     let has_tag = false; // Language objects typically don't have tags
+
+    if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
+        eprintln!("[LANGUAGE] function type: {:?}", std::mem::discriminant(function));
+    }
 
     write_flags(writer, LANGSXP, false, has_tag, false)?;
 
@@ -659,16 +913,30 @@ fn write_language(
     // If it's a single-element Character, write it as a symbol (function name)
     match function {
         RObject::Character(vec) if vec.len() == 1 => {
-            write_symbol_with_ref(writer, &vec[0], ref_table)?;
+            if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
+                eprintln!("[LANGUAGE] Writing function as symbol: '{}'", vec[0]);
+            }
+            write_symbol_with_tracking(
+                writer,
+                Arc::from(vec[0].as_ref()),
+                None,  // Plain string, not Shared
+                SymbolContext::NonTag,
+                ref_table,
+                symbol_tracker,
+            )?;
         }
         _ => {
-            write_object(writer, function, ref_table)?;
+            if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
+                eprintln!("[LANGUAGE] Writing function via write_object: {:?}", std::mem::discriminant(function));
+            }
+            // For Shared(Symbol), SharedInfo will be propagated via write_object_inner
+            write_object(writer, function, ref_table, symbol_tracker)?;
         }
     }
 
     // Write the arguments (CDR) as a pairlist or NULL
     if !args.is_empty() {
-        write_pairlist_as_args(writer, args, ref_table)?;
+        write_pairlist_as_args(writer, args, ref_table, symbol_tracker)?;
     } else {
         // No arguments
         write_null(writer)?;
@@ -684,6 +952,7 @@ fn write_pairlist_internal(
     writer: &mut Vec<u8>,
     elements: &[PairlistElement],
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
     values_are_symbols: bool,
 ) -> Result<()> {
     for (i, element) in elements.iter().enumerate() {
@@ -694,7 +963,25 @@ fn write_pairlist_internal(
 
         // Write the tag if present
         if let Some(ref tag) = element.tag {
-            write_symbol_with_ref(writer, tag, ref_table)?;
+            // Extract SharedInfo from tag_object if it's Shared(Symbol)
+            let shared_ptr = element.tag_object.as_ref().and_then(|obj| {
+                if let RObject::Shared(arc) = obj.as_ref() {
+                    let inner = arc.read().unwrap();
+                    if matches!(&*inner, RObject::Symbol(_)) {
+                        return Some(Arc::as_ptr(arc) as usize);
+                    }
+                }
+                None
+            });
+
+            write_symbol_with_tracking(
+                writer,
+                tag.clone(),
+                shared_ptr,
+                SymbolContext::Tag,
+                ref_table,
+                symbol_tracker,
+            )?;
         }
 
         // Write the value
@@ -702,14 +989,21 @@ fn write_pairlist_internal(
         if values_are_symbols {
             match &element.value {
                 RObject::Character(vec) if vec.len() == 1 => {
-                    write_symbol_with_ref(writer, &vec[0], ref_table)?;
+                    write_symbol_with_tracking(
+                        writer,
+                        Arc::from(vec[0].as_ref()),
+                        None,  // Plain string, not Shared
+                        SymbolContext::NonTag,
+                        ref_table,
+                        symbol_tracker,
+                    )?;
                 }
                 _ => {
-                    write_object(writer, &element.value, ref_table)?;
+                    write_object(writer, &element.value, ref_table, symbol_tracker)?;
                 }
             }
         } else {
-            write_object(writer, &element.value, ref_table)?;
+            write_object(writer, &element.value, ref_table, symbol_tracker)?;
         }
 
         // Write the CDR (tail)
@@ -733,9 +1027,10 @@ fn write_pairlist(
     writer: &mut Vec<u8>,
     elements: &[PairlistElement],
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
     // For general pairlists (like formals), don't convert values to symbols
-    write_pairlist_internal(writer, elements, ref_table, false)
+    write_pairlist_internal(writer, elements, ref_table, symbol_tracker, false)
 }
 
 /// Write a pairlist for Language arguments where single-element Characters are symbols.
@@ -743,12 +1038,15 @@ fn write_pairlist_as_args(
     writer: &mut Vec<u8>,
     elements: &[PairlistElement],
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
     // For Language arguments, convert single-element Character values to symbols
-    write_pairlist_internal(writer, elements, ref_table, true)
+    write_pairlist_internal(writer, elements, ref_table, symbol_tracker, true)
 }
 
-/// Write a symbol (SYMSXP) with reference tracking.
+// Deprecated: Old symbol writing function replaced by write_symbol_with_tracking
+// Kept for reference but no longer used
+#[allow(dead_code)]
 fn write_symbol_with_ref(writer: &mut Vec<u8>, name: &str, ref_table: &mut RefTable) -> Result<()> {
     // Check if this symbol was already written
     if let Some(ref_idx) = ref_table.check_symbol(name) {
@@ -769,19 +1067,20 @@ fn write_closure(
     body: &RObject,
     environment: &RObject,
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
     // R sets HAS_TAG for CLOSXP in most cases (for srcref tracking)
     // We match R's behavior by always setting has_tag=true
     write_flags(writer, CLOSXP, false, true, false)?;
 
     // Write environment (closure environment)
-    write_object(writer, environment, ref_table)?;
+    write_object(writer, environment, ref_table, symbol_tracker)?;
 
     // Write formals (parameter list)
-    write_object(writer, formals, ref_table)?;
+    write_object(writer, formals, ref_table, symbol_tracker)?;
 
     // Write body (function body)
-    write_object(writer, body, ref_table)?;
+    write_object(writer, body, ref_table, symbol_tracker)?;
 
     Ok(())
 }
@@ -793,6 +1092,7 @@ fn write_environment(
     frame: &RObject,
     hashtab: &RObject,
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
     write_flags(writer, ENVSXP, false, false, false)?;
 
@@ -800,16 +1100,16 @@ fn write_environment(
     write_integer_vector(writer, &[0])?;
 
     // Write enclosing environment
-    write_object(writer, enclosing, ref_table)?;
+    write_object(writer, enclosing, ref_table, symbol_tracker)?;
 
     // Write frame (bindings pairlist)
-    write_object(writer, frame, ref_table)?;
+    write_object(writer, frame, ref_table, symbol_tracker)?;
 
     // Write hashtab
-    write_object(writer, hashtab, ref_table)?;
+    write_object(writer, hashtab, ref_table, symbol_tracker)?;
 
     // Write attributes (environments always serialize an attribute field)
-    write_object(writer, &RObject::Null, ref_table)?;
+    write_object(writer, &RObject::Null, ref_table, symbol_tracker)?;
 
     Ok(())
 }
@@ -821,13 +1121,14 @@ fn write_promise(
     expression: &RObject,
     environment: &RObject,
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
     write_flags(writer, PROMSXP, false, false, false)?;
 
     // Write the three components: value, expression, environment
-    write_object(writer, value, ref_table)?;
-    write_object(writer, expression, ref_table)?;
-    write_object(writer, environment, ref_table)?;
+    write_object(writer, value, ref_table, symbol_tracker)?;
+    write_object(writer, expression, ref_table, symbol_tracker)?;
+    write_object(writer, environment, ref_table, symbol_tracker)?;
 
     Ok(())
 }
@@ -863,11 +1164,12 @@ fn write_bytecode(
     constants: &RObject,
     _expr: &RObject,
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
     write_flags(writer, BCODESXP, false, false, false)?;
     // For now, we don't emit any bytecode-specific reference table entries.
     writer.write_u32::<BigEndian>(0)?;
-    write_bytecode_body(writer, code, constants, ref_table)
+    write_bytecode_body(writer, code, constants, ref_table, symbol_tracker)
 }
 
 fn write_bytecode_body(
@@ -875,8 +1177,9 @@ fn write_bytecode_body(
     code: &RObject,
     constants: &RObject,
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
-    write_object(writer, code, ref_table)?;
+    write_object(writer, code, ref_table, symbol_tracker)?;
 
     let const_list = match constants {
         RObject::List(elements) => elements,
@@ -894,11 +1197,11 @@ fn write_bytecode_body(
                 code, constants, ..
             } => {
                 writer.write_i32::<BigEndian>(BCODESXP as i32)?;
-                write_bytecode_body(writer, code, constants, ref_table)?;
+                write_bytecode_body(writer, code, constants, ref_table, symbol_tracker)?;
             }
             _ => {
                 writer.write_i32::<BigEndian>(0)?;
-                write_object(writer, value, ref_table)?;
+                write_object(writer, value, ref_table, symbol_tracker)?;
             }
         }
     }
@@ -912,6 +1215,7 @@ fn write_dataframe(
     columns: &IndexMap<Arc<str>, RObject>,
     row_names: &[Arc<str>],
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
     // IndexMap preserves insertion order, so we can iterate directly
     let cols_vec: Vec<_> = columns.iter().collect();
@@ -925,7 +1229,7 @@ fn write_dataframe(
 
     // Write each column
     for col in &column_values {
-        write_object(writer, col, ref_table)?;
+        write_object(writer, col, ref_table, symbol_tracker)?;
     }
 
     // Write attributes (names, row.names, class)
@@ -940,7 +1244,7 @@ fn write_dataframe(
         RObject::Character(vec![Arc::from("data.frame")]),
     );
 
-    write_attributes(writer, &attrs, ref_table)?;
+    write_attributes(writer, &attrs, ref_table, symbol_tracker)?;
 
     Ok(())
 }
@@ -976,9 +1280,9 @@ fn validate_factor_attributes(attributes: &Attributes, value_len: usize) -> Resu
 }
 
 /// Write a factor.
-fn write_factor(writer: &mut Vec<u8>, data: &FactorData, ref_table: &mut RefTable) -> Result<()> {
+fn write_factor(writer: &mut Vec<u8>, data: &FactorData, ref_table: &mut RefTable, symbol_tracker: &mut SymbolTracker) -> Result<()> {
     let empty = Attributes::new();
-    write_factor_with_attributes(writer, data, &empty, ref_table)
+    write_factor_with_attributes(writer, data, &empty, ref_table, symbol_tracker)
 }
 
 fn write_factor_with_attributes(
@@ -986,6 +1290,7 @@ fn write_factor_with_attributes(
     data: &FactorData,
     attributes: &Attributes,
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
     let merged_attrs = merge_factor_attributes(data, attributes);
 
@@ -998,7 +1303,7 @@ fn write_factor_with_attributes(
         writer.write_i32::<BigEndian>(val)?;
     }
 
-    write_attributes(writer, &merged_attrs, ref_table)?;
+    write_attributes(writer, &merged_attrs, ref_table, symbol_tracker)?;
 
     Ok(())
 }
@@ -1010,6 +1315,7 @@ fn write_s3_object(
     class: &[Arc<str>],
     attributes: &Attributes,
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
     // Write the base object with attributes
     match base {
@@ -1017,7 +1323,7 @@ fn write_s3_object(
             write_flags(writer, VECSXP, true, false, false)?;
             writer.write_u32::<BigEndian>(elements.len() as u32)?;
             for element in elements {
-                write_object(writer, element, ref_table)?;
+                write_object(writer, element, ref_table, symbol_tracker)?;
             }
         }
         RObject::Integer(vec) => {
@@ -1043,22 +1349,88 @@ fn write_s3_object(
             // Write attributes FIRST (before CAR/CDR)
             let mut attrs = attributes.clone();
             attrs.insert(Arc::from("class"), RObject::Character(class.to_vec()));
-            write_attributes(writer, &attrs, ref_table)?;
+            write_attributes(writer, &attrs, ref_table, symbol_tracker)?;
 
             // Write the function (CAR)
-            // If it's a single-element Character, write it as a symbol (function name)
+            // Need to unwrap Shared to check if inner is single-element Character
+            // Extract SharedInfo if function is Shared
             match function.as_ref() {
+                RObject::Shared(arc) => {
+                    let guard = arc.read().unwrap();
+                    let ptr = Arc::as_ptr(arc) as usize;
+                    // Check inner type
+                    let func_written = match &*guard {
+                        RObject::Character(vec) if vec.len() == 1 => {
+                            // Inner is single-element Character - write as symbol
+                            if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
+                                eprintln!("[S3/LANGUAGE] Shared(Character(['{}'])) -> writing as symbol", vec[0]);
+                            }
+                            write_symbol_with_tracking(
+                                writer,
+                                vec[0].clone(),
+                                Some(ptr),  // Track by Shared pointer
+                                SymbolContext::NonTag,
+                                ref_table,
+                                symbol_tracker,
+                            )?;
+                            true
+                        }
+                        RObject::Symbol(name) => {
+                            // Inner is Symbol - write as symbol
+                            if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
+                                eprintln!("[S3/LANGUAGE] Shared(Symbol('{}')) -> writing as symbol", name);
+                            }
+                            write_symbol_with_tracking(
+                                writer,
+                                name.clone(),
+                                Some(ptr),  // Track by Shared pointer
+                                SymbolContext::NonTag,
+                                ref_table,
+                                symbol_tracker,
+                            )?;
+                            true
+                        }
+                        _ => {
+                            // Other type - delegate to write_object (below)
+                            false
+                        }
+                    };
+                    drop(guard); // Release lock
+
+                    if !func_written {
+                        // Fallback: write via write_object
+                        if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
+                            eprintln!("[S3/LANGUAGE] Writing Shared function via write_object: {:?}", std::mem::discriminant(function.as_ref()));
+                        }
+                        write_object(writer, function, ref_table, symbol_tracker)?;
+                    }
+                }
                 RObject::Character(vec) if vec.len() == 1 => {
-                    write_symbol_with_ref(writer, &vec[0], ref_table)?;
+                    // Plain single-element Character - write as symbol
+                    if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
+                        eprintln!("[S3/LANGUAGE] Character(['{}']) -> writing as symbol", vec[0]);
+                    }
+                    write_symbol_with_tracking(
+                        writer,
+                        vec[0].clone(),
+                        None,  // Plain, not Shared
+                        SymbolContext::NonTag,
+                        ref_table,
+                        symbol_tracker,
+                    )?;
                 }
                 _ => {
-                    write_object(writer, function, ref_table)?;
+                    // Fallback: write via write_object
+                    if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
+                        eprintln!("[S3/LANGUAGE] Writing function via write_object: {:?}", std::mem::discriminant(function.as_ref()));
+                    }
+                    write_object(writer, function, ref_table, symbol_tracker)?;
                 }
             }
 
             // Write the arguments (CDR) as a pairlist or NULL
             if !args.is_empty() {
-                write_pairlist_as_args(writer, args, ref_table)?;
+                write_pairlist_as_args(writer, args, ref_table, symbol_tracker)?;
             } else {
                 write_null(writer)?;
             }
@@ -1074,7 +1446,7 @@ fn write_s3_object(
     // Write attributes with class added
     let mut attrs = attributes.clone();
     attrs.insert(Arc::from("class"), RObject::Character(class.to_vec()));
-    write_attributes(writer, &attrs, ref_table)?;
+    write_attributes(writer, &attrs, ref_table, symbol_tracker)?;
 
     Ok(())
 }
@@ -1086,6 +1458,7 @@ fn write_s4_object(
     package: Option<&Arc<str>>,
     slots: &IndexMap<Arc<str>, RObject>,
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
     // S4 objects are written as S4SXP with attributes and IS_S4_BIT set
     write_flags(writer, S4SXP, true, false, true)?;
@@ -1112,7 +1485,7 @@ fn write_s4_object(
         attrs.insert(name.clone(), value.clone());
     }
 
-    write_attributes(writer, &attrs, ref_table)?;
+    write_attributes(writer, &attrs, ref_table, symbol_tracker)?;
 
     Ok(())
 }
@@ -1123,6 +1496,7 @@ fn write_object_with_attributes(
     object: &RObject,
     attributes: &Attributes,
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
     // Check if this has a class attribute that makes it an S3 object
     let is_s3_object = attributes.attrs.iter().any(|(k, v)| {
@@ -1132,7 +1506,7 @@ fn write_object_with_attributes(
     // Write the base object with HAS_ATTR flag set (and OBJ flag if S3 object)
     match object {
         RObject::Factor(data) => {
-            write_factor_with_attributes(writer, data, attributes, ref_table)?;
+            write_factor_with_attributes(writer, data, attributes, ref_table, symbol_tracker)?;
             return Ok(());
         }
         RObject::Integer(vec) => {
@@ -1160,7 +1534,7 @@ fn write_object_with_attributes(
             write_flags_with_object(writer, VECSXP, true, false, false, is_s3_object)?;
             writer.write_u32::<BigEndian>(elements.len() as u32)?;
             for element in elements {
-                write_object(writer, element, ref_table)?;
+                write_object(writer, element, ref_table, symbol_tracker)?;
             }
         }
         _ => {
@@ -1170,7 +1544,7 @@ fn write_object_with_attributes(
         }
     }
 
-    write_attributes(writer, attributes, ref_table)?;
+    write_attributes(writer, attributes, ref_table, symbol_tracker)?;
 
     Ok(())
 }
@@ -1180,6 +1554,7 @@ fn write_attributes(
     writer: &mut Vec<u8>,
     attributes: &Attributes,
     ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
     if attributes.is_empty() {
         return Ok(());
@@ -1219,7 +1594,7 @@ fn write_attributes(
     }
 
     // Write the pairlist
-    write_pairlist(writer, &elements, ref_table)?;
+    write_pairlist(writer, &elements, ref_table, symbol_tracker)?;
 
     Ok(())
 }
