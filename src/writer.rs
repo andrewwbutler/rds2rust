@@ -48,21 +48,14 @@ impl RefTable {
     }
 
     /// Check if a namespace has been written before, returning its reference index if so.
-    /// Otherwise, register it and return None.
+    /// Otherwise, return None (caller decides whether/how to allocate).
     fn check_namespace(&mut self, names: &[Arc<str>]) -> Option<u32> {
         let key = names
             .iter()
             .map(|s| s.as_ref())
             .collect::<Vec<_>>()
             .join("::");
-        if let Some(&ref_idx) = self.namespace_refs.get(&key) {
-            Some(ref_idx)
-        } else {
-            let idx = self.next_index;
-            self.next_index += 1;
-            self.namespace_refs.insert(key, idx);
-            None
-        }
+        self.namespace_refs.get(&key).copied()
     }
 
     /// Check if a symbol has been written before, returning its symbol index if so.
@@ -457,6 +450,7 @@ fn write_object_inner(
     let _depth_guard = DepthGuard;
 
     // Track referenceable objects (including Shared) to avoid infinite recursion and emit REFSXP.
+    let mut current_ref_idx: Option<u32> = None;
     if allow_ref_tracking {
         if let Some(ptr) = ref_key(obj) {
             // Detect recursion cycles in the current write call stack.
@@ -500,6 +494,7 @@ fn write_object_inner(
 
             // First time: reserve index and descend.
             let idx = ref_table.register_object_ptr(ptr);
+            current_ref_idx = Some(idx);
             if std::env::var("RDS_DEBUG").is_ok() {
                 eprintln!(
                     "[WRITE] DEFINE idx={} key={:p} type={:?}",
@@ -654,7 +649,9 @@ fn write_object_inner(
             ref_table,
             symbol_tracker,
         ),
-        RObject::Namespace(names) => write_namespace(writer, names, ref_table),
+        RObject::Namespace(names) => {
+            write_namespace(writer, names, ref_table, current_ref_idx)
+        }
         RObject::GlobalEnv => write_global_env(writer),
         RObject::BaseEnv => write_base_env(writer),
         RObject::EmptyEnv => write_empty_env(writer),
@@ -716,6 +713,7 @@ fn write_namespace(
     writer: &mut Vec<u8>,
     names: &[Arc<str>],
     ref_table: &mut RefTable,
+    reserved_idx: Option<u32>,
 ) -> Result<()> {
     // Check if this namespace was already written
     if let Some(ref_idx) = ref_table.check_namespace(names) {
@@ -726,6 +724,25 @@ fn write_namespace(
 
     // First occurrence - write the full namespace
     // Use NAMESPACESXP_SERIAL (249) not NAMESPACESXP (123) for serialization
+    // Align the reference index with any reserved object slot (from ref tracking).
+    let _idx = if let Some(idx) = reserved_idx {
+        // Ensure the namespace_refs map records the existing index without bumping next_index again.
+        ref_table.namespace_refs.insert(
+            names.iter().map(|s| s.as_ref()).collect::<Vec<_>>().join("::"),
+            idx,
+        );
+        idx
+    } else {
+        // No reserved index; allocate a new one.
+        let idx = ref_table.next_index;
+        ref_table.next_index += 1;
+        ref_table.namespace_refs.insert(
+            names.iter().map(|s| s.as_ref()).collect::<Vec<_>>().join("::"),
+            idx,
+        );
+        idx
+    };
+
     write_flags(writer, NAMESPACESXP_SERIAL, false, false, false)?;
 
     // Write as OutStringVec format: flags, length, then CHARSXP entries

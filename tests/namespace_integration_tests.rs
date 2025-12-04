@@ -89,7 +89,6 @@ fn test_namespace_triggers_package_loading() {
 }
 
 #[test]
-#[ignore] // Skip: R execution fails with "gTMatrix is not a defined class" - namespace/environment serialization issue
 fn test_closure_with_namespace_env_loads_package() {
     if !r_and_matrix_available() {
         eprintln!("Skipping test: R or Matrix package not available");
