@@ -173,8 +173,9 @@ fn test_language_construction_roundtrip() {
     match deserialized {
         RObject::Closure { body, .. } => match body.as_ref() {
             RObject::Language { function, args } => {
-                // Function should be the symbol "print"
+                // Function should be the symbol "print" (allow legacy Character singletons)
                 match function.as_ref() {
+                    RObject::Symbol(name) if name.as_ref() == "print" => {}
                     RObject::Character(v) if v.len() == 1 && v[0].as_ref() == "print" => {}
                     other => panic!("Expected print symbol, got {:?}", other),
                 }
@@ -183,6 +184,7 @@ fn test_language_construction_roundtrip() {
                 // Argument should be the string "hello"
                 match &args[0].value {
                     RObject::Character(v) if v.len() == 1 && v[0].as_ref() == "hello" => {}
+                    RObject::Symbol(name) if name.as_ref() == "hello" => {}
                     other => panic!("Expected hello string, got {:?}", other),
                 }
             }

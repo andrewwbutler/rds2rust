@@ -18,6 +18,7 @@ thread_local! {
     // Holds the most recent tiny attribute set carrying tools+class seen during parsing.
     static PENDING_CLASS_ATTRS: RefCell<Option<Attributes>> = RefCell::new(None);
     static PARSING_ATTRIBUTES: Cell<bool> = Cell::new(false);
+    static PARSING_CLOSURE_BODY: Cell<bool> = Cell::new(false);
 }
 
 fn debug_enabled() -> bool {
@@ -122,9 +123,23 @@ impl RefTable {
     fn update(&mut self, index: u32, obj: RObject) {
         if let Some(existing) = self.objects.get(&index) {
             if let Ok(mut guard) = existing.write() {
+                if std::env::var("RDS_DEBUG_REF").is_ok() {
+                    eprintln!(
+                        "[REF_UPDATE] idx={} -> {:?}",
+                        index,
+                        std::mem::discriminant(&obj)
+                    );
+                }
                 *guard = obj;
                 return;
             }
+        }
+        if std::env::var("RDS_DEBUG_REF").is_ok() {
+            eprintln!(
+                "[REF_UPDATE] idx={} (new arc) -> {:?}",
+                index,
+                std::mem::discriminant(&obj)
+            );
         }
         self.objects.insert(index, Arc::new(RwLock::new(obj)));
     }
@@ -534,7 +549,8 @@ fn parse_object(
     // Add a placeholder to the reference table early for objects that should be tracked
     // This is crucial for circular references - the object must be in the table
     // before we parse its contents/attributes
-    let ref_index = if should_track_reference(sexp_type, has_attr) {
+    let track_reference = should_track_reference(sexp_type, has_attr);
+    let ref_index = if track_reference && sexp_type != CLOSXP {
         // Add a NULL placeholder for now
         let idx = ref_table.add(RObject::Null);
         if std::env::var("RDS_DEBUG_REF").is_ok() {
@@ -591,7 +607,14 @@ fn parse_object(
             // Return as a single-element character vector for now
             RObject::Character(vec![Arc::from(string.as_str())])
         }
-        CLOSXP => parse_closure(cursor, has_tag, ref_table, symbol_table, dedup_table)?,
+        CLOSXP => parse_closure(
+            cursor,
+            has_tag,
+            track_reference,
+            ref_table,
+            symbol_table,
+            dedup_table,
+        )?,
         ENVSXP => parse_environment(cursor, ref_table, symbol_table, dedup_table)?,
         PROMSXP => parse_promise(cursor, ref_table, symbol_table, dedup_table)?,
         SPECIALSXP => parse_special(cursor, ref_table, symbol_table, dedup_table)?,
@@ -602,27 +625,63 @@ fn parse_object(
             // of the flags word; use the full width to support large graphs.
             let ref_index_val = flags >> 8;
 
-            // Look up the object in the reference table and return it immediately
-            // REFSXP just references another object - it doesn't have its own attributes
-            // The has_attr flag, if set, is inherited from the original object
-            match ref_table.get(ref_index_val) {
-                Some(obj) => {
+            let in_closure_body = PARSING_CLOSURE_BODY.with(|flag| flag.get());
+
+            // Prefer the symbol table for closure bodies so parameter references resolve
+            // to symbols even when ref_table indices clash with earlier placeholders.
+            let mut resolved = if in_closure_body {
+                if let Some(sym) = symbol_table.get(ref_index_val) {
                     if std::env::var("RDS_DEBUG_REF").is_ok() {
+                        let name = extract_tag_name(sym.clone())
+                            .unwrap_or_else(|| Arc::from("<unknown>"));
                         eprintln!(
-                            "[REF_LOOKUP] idx={} -> {:?}",
-                            ref_index_val,
-                            std::mem::discriminant(&*obj.read().unwrap())
+                            "[REF_LOOKUP] closure body symbol idx={} -> {}",
+                            ref_index_val, name
                         );
                     }
-                    return Ok(RObject::Shared(obj));
-                }
-                None => {
+                    sym.clone()
+                } else if let Some(obj) = ref_table.get(ref_index_val) {
+                    RObject::Shared(obj)
+                } else {
                     return Err(Error::InvalidFormat(format!(
                         "Invalid reference index: {}",
                         ref_index_val
                     )));
                 }
+            } else {
+                match ref_table.get(ref_index_val) {
+                    Some(obj) => {
+                        if std::env::var("RDS_DEBUG_REF").is_ok() {
+                            eprintln!(
+                                "[REF_LOOKUP] idx={} -> {:?}",
+                                ref_index_val,
+                                std::mem::discriminant(&*obj.read().unwrap())
+                            );
+                        }
+                        RObject::Shared(obj)
+                    }
+                    None => {
+                        return Err(Error::InvalidFormat(format!(
+                            "Invalid reference index: {}",
+                            ref_index_val
+                        )));
+                    }
+                }
+            };
+
+            // Normalize closure-body references to concrete symbols/characters.
+            if in_closure_body {
+                let concrete = resolved.as_concrete();
+                resolved = match concrete {
+                    RObject::Symbol(name) => RObject::Symbol(name),
+                    RObject::Character(names) if !names.is_empty() => {
+                        RObject::Symbol(names[0].clone())
+                    }
+                    other => other,
+                };
             }
+
+            return Ok(resolved);
         }
         ALTREP_SXP => {
             // ALTREP object (version 3 feature)
@@ -857,15 +916,24 @@ fn parse_object(
     // Update the reference table with the final object if we added a placeholder earlier
     // IMPORTANT: Don't double-wrap Shared objects
     if let Some(idx) = ref_index {
-        // If the object is already Shared, use it directly (it's already an Arc)
-        // Otherwise, wrap it in Shared for storage
+        // If the object is already Shared, ensure the ref table points at the same Arc.
+        // Otherwise, update the existing placeholder in place to preserve any earlier lookups.
         let arc_to_store = match obj {
-            RObject::Shared(ref arc) => arc.clone(),
-            other => Arc::new(RwLock::new(other)),
+            RObject::Shared(ref arc) => {
+                // Avoid storing a Shared wrapper inside the ref table (would create self-cycles).
+                let inner = arc.read().unwrap().clone();
+                ref_table.update(idx, inner);
+                ref_table
+                    .get(idx)
+                    .ok_or_else(|| Error::InvalidFormat(format!("Missing ref idx {}", idx)))?
+            }
+            other => {
+                ref_table.update(idx, other);
+                ref_table
+                    .get(idx)
+                    .ok_or_else(|| Error::InvalidFormat(format!("Missing ref idx {}", idx)))?
+            }
         };
-
-        // Store in ref_table
-        ref_table.objects.insert(idx, arc_to_store.clone());
 
         // Return as Shared wrapper
         obj = RObject::Shared(arc_to_store);
@@ -1166,8 +1234,8 @@ fn parse_symbol(
             if name.as_ref() == "\x01NULL\x01" {
                 Ok(RObject::Symbol(names.into_iter().next().unwrap()))
             } else {
-                // Regular symbol - return as Character for backwards compatibility
-                Ok(RObject::Character(names))
+                // Regular symbol
+                Ok(RObject::Symbol(name.clone()))
             }
         }
         RObject::Character(names) => Ok(RObject::Character(names)),
@@ -1518,6 +1586,7 @@ fn build_pairlist_from_bc(tag_obj: RObject, car: RObject, cdr: RObject) -> RObje
 fn parse_closure(
     cursor: &mut Cursor<&[u8]>,
     _has_tag: bool,
+    track_reference: bool,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -1537,14 +1606,47 @@ fn parse_closure(
     let _form_start = cursor.position();
     let form = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
 
-    let _body_start = cursor.position();
-    let bod = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    // Delay registering the closure placeholder until after formals are parsed so that
+    // symbols introduced by formals occupy the earliest reference slots before the
+    // body is parsed.
+    let ref_index = if track_reference {
+        let idx = ref_table.add(RObject::Null);
+        if std::env::var("RDS_DEBUG_REF").is_ok() {
+            eprintln!("[REF_ADD] idx={} type=CLOSXP (delayed)", idx);
+        }
+        Some(idx)
+    } else {
+        None
+    };
 
-    Ok(RObject::Closure {
+    let _body_start = cursor.position();
+    let bod = PARSING_CLOSURE_BODY.with(|flag| {
+        let prev = flag.replace(true);
+        let result = parse_object(cursor, ref_table, symbol_table, dedup_table);
+        flag.set(prev);
+        result
+    })?;
+
+    let closure_obj = RObject::Closure {
         formals: Box::new(form),
         body: Box::new(bod),
         environment: Box::new(env),
-    })
+    };
+
+    if let Some(idx) = ref_index {
+        // Update the placeholder in place to preserve shared arcs for any earlier lookups.
+        ref_table.update(idx, closure_obj);
+        if let Some(arc) = ref_table.get(idx) {
+            return Ok(RObject::Shared(arc));
+        } else {
+            return Err(Error::InvalidFormat(format!(
+                "Failed to retrieve closure ref idx {} after update",
+                idx
+            )));
+        }
+    }
+
+    Ok(closure_obj)
 }
 
 /// Parse an environment (ENVSXP).
@@ -1923,6 +2025,7 @@ fn extract_tag_name(tag_obj: RObject) -> Option<Arc<str>> {
     let tag_obj = tag_obj.into_concrete();
 
     match tag_obj {
+        RObject::Symbol(name) => Some(name),
         RObject::Character(vec) if !vec.is_empty() => Some(vec[0].clone()),
         RObject::Null => None,
         _ => None,

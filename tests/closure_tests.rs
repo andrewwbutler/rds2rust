@@ -303,7 +303,6 @@ fn test_environment_roundtrip() {
 
 /// Test that closures with simple expressions roundtrip correctly.
 #[test]
-#[ignore] // Skip: R execution fails with "non-numeric argument to binary operator" - may be environment or bytecode issue
 fn test_closure_simple_expression_roundtrip() {
     if !r_available() {
         eprintln!("Skipping test: R not available");
@@ -326,6 +325,11 @@ fn test_closure_simple_expression_roundtrip() {
     // Roundtrip through Rust
     let data = fs::read("/tmp/rds2rust_closure_expr_regression.rds").expect("Failed to read");
     let obj = read_rds(&data).expect("Failed to parse");
+
+    if std::env::var("DEBUG_DUMP_CLOSURE").is_ok() {
+        println!("Parsed object: {:#?}", obj);
+    }
+
     let output = write_rds(&obj).expect("Failed to serialize");
     fs::write("/tmp/rds2rust_closure_expr_regression_out.rds", &output).expect("Failed to write");
 
@@ -368,7 +372,6 @@ fn test_closure_simple_expression_roundtrip() {
 
 /// Test that function calls with named arguments preserve the argument names.
 #[test]
-#[ignore] // Skip: R execution fails - closure parameter names or environment issue
 fn test_closure_named_arguments_preserved() {
     if !r_available() {
         eprintln!("Skipping test: R not available");

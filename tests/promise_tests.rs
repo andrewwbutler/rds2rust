@@ -30,11 +30,21 @@ fn test_promise_in_env() {
 
     // The environment should contain a promise
     // Promises are structured as: value, expression, environment
+    fn is_env_like(o: &rds2rust::RObject) -> bool {
+        matches!(o, rds2rust::RObject::Environment { .. })
+            || matches!(o, rds2rust::RObject::WithAttributes { object, .. } if matches!(object.as_ref(), rds2rust::RObject::Environment { .. }))
+    }
+
     match obj {
         rds2rust::RObject::Environment { .. } => {
-            // Environment parsed successfully
-            // Note: Don't use Debug print here - the circular reference causes infinite recursion
             println!("Parsed environment with promise (contains circular reference)");
+        }
+        rds2rust::RObject::WithAttributes { object, .. } if is_env_like(object.as_ref()) => {
+            println!("Parsed env wrapped in attributes");
+        }
+        rds2rust::RObject::Shared(inner) => {
+            let guard = inner.read().unwrap();
+            assert!(is_env_like(&*guard), "Shared wrapper should wrap Environment, got {:?}", std::mem::discriminant(&*guard));
         }
         _ => panic!("Expected Environment, got type: {:?}", std::mem::discriminant(&obj)),
     }
@@ -56,8 +66,20 @@ fn test_promise_in_env_roundtrip() {
 
     // Both should be Environment types
     // Note: Can't use Debug comparison due to circular reference causing infinite recursion
-    assert!(matches!(obj, rds2rust::RObject::Environment { .. }));
-    assert!(matches!(obj2, rds2rust::RObject::Environment { .. }));
+    fn env_like(o: &rds2rust::RObject) -> bool {
+        match o {
+            rds2rust::RObject::Environment { .. } => true,
+            rds2rust::RObject::WithAttributes { object, .. } => env_like(object.as_ref()),
+            rds2rust::RObject::Shared(inner) => {
+                let guard = inner.read().unwrap();
+                env_like(&*guard)
+            }
+            _ => false,
+        }
+    }
+
+    assert!(env_like(&obj));
+    assert!(env_like(&obj2));
 }
 
 // =============================================================================

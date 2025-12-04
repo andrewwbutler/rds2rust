@@ -251,10 +251,11 @@ fn write_symbol_with_tracking(
     // Check if this symbol was already written
     if let Some((obj_idx, sym_idx)) = symbol_tracker.lookup(shared_ptr, name.as_ref()) {
         // Already written - emit appropriate REFSXP based on context
-        let refsxp_idx = match context {
-            SymbolContext::Tag => sym_idx,
-            SymbolContext::NonTag => obj_idx,
-        };
+        // Use the symbol index for both TAG and non-TAG contexts. Symbols are
+        // interned by name, and R's serializer uses the symbol table ordering
+        // for REFSXP that point to symbols. Using the symbol index avoids
+        // drifting object indices when symbols are reused by value.
+        let refsxp_idx = sym_idx;
 
         // Debug logging
         if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
@@ -266,10 +267,11 @@ fn write_symbol_with_tracking(
 
         // Debug assertion: enforce context rules
         debug_assert!(
-            (matches!(context, SymbolContext::Tag) && refsxp_idx == sym_idx) ||
-            (matches!(context, SymbolContext::NonTag) && refsxp_idx == obj_idx),
-            "REFSXP index mismatch for context {:?}: emitting {}, expected {} for TAG or {} for non-TAG",
-            context, refsxp_idx, sym_idx, obj_idx
+            refsxp_idx == sym_idx,
+            "REFSXP index mismatch for context {:?}: emitting {}, expected sym_idx {}",
+            context,
+            refsxp_idx,
+            sym_idx
         );
 
         write_refsxp(writer, refsxp_idx)?;
@@ -311,6 +313,7 @@ fn should_track_reference_type(obj: &RObject) -> bool {
         | RObject::Real(_)
         | RObject::Logical(_)
         | RObject::Character(_)
+        | RObject::Symbol(_)
         | RObject::Raw(_)
         | RObject::Complex(_)
         | RObject::Special { .. }
@@ -323,9 +326,8 @@ fn should_track_reference_type(obj: &RObject) -> bool {
         // Don't unwrap it here to avoid infinite recursion on cycles!
         RObject::Shared(_) => true,
 
-        // Symbols and structured objects participate in ref graphs.
-        RObject::Symbol(_)
-        | RObject::List(_)
+        // Structured objects participate in ref graphs.
+        RObject::List(_)
         | RObject::Expression(_)
         | RObject::Language { .. }
         | RObject::Pairlist(_)
