@@ -19,6 +19,23 @@ thread_local! {
     static PENDING_CLASS_ATTRS: RefCell<Option<Attributes>> = RefCell::new(None);
     static PARSING_ATTRIBUTES: Cell<bool> = Cell::new(false);
     static PARSING_CLOSURE_BODY: Cell<bool> = Cell::new(false);
+    static PARSING_S4_TAG: Cell<bool> = Cell::new(false);
+}
+
+// Guard to ensure PARSING_S4_TAG flag is always reset
+struct S4TagGuard;
+
+impl S4TagGuard {
+    fn new() -> Self {
+        PARSING_S4_TAG.with(|flag| flag.set(true));
+        S4TagGuard
+    }
+}
+
+impl Drop for S4TagGuard {
+    fn drop(&mut self) {
+        PARSING_S4_TAG.with(|flag| flag.set(false));
+    }
 }
 
 fn debug_enabled() -> bool {
@@ -533,6 +550,7 @@ fn parse_object(
     //  CLOSXP has ATTRIB before CLOENV/FORMALS/BODY)
     // Parse them early if present
     // Note: For CLOSXP, R uses HAS_TAG_BIT to indicate attributes (not HAS_ATTR_BIT)
+    // IMPORTANT: For S4SXP, when HAS_TAG_BIT is set, the TAG contains the attributes pairlist!
     let early_attributes =
         if has_attr && (sexp_type == LISTSXP || sexp_type == LANGSXP || sexp_type == CLOSXP) {
             let attr_obj = PARSING_ATTRIBUTES.with(|flag| {
@@ -542,6 +560,22 @@ fn parse_object(
                 obj
             })?;
             Some(parse_attributes(attr_obj)?)
+
+        } else if sexp_type == S4SXP && has_tag {
+            // S4 objects with HAS_TAG_BIT store their attributes in the TAG
+            // The TAG is a pairlist where each element has a tag (slot name) and value (slot data).
+            // Parse with has_tag=true to extract the tag names correctly.
+
+            // Use guard to ensure PARSING_S4_TAG flag is always reset, even on error
+            let _guard = S4TagGuard::new();
+            let pairlist = parse_pairlist(cursor, true, ref_table, symbol_table, dedup_table)?;
+
+            let attrs = if let RObject::Pairlist(list) = pairlist {
+                parse_attributes(RObject::Pairlist(list))?
+            } else {
+                parse_attributes(pairlist)?
+            };
+            Some(attrs)
         } else {
             None
         };
@@ -825,10 +859,11 @@ fn parse_object(
         };
         if std::env::var("RDS_DEBUG_ATTR_POS").is_ok() {
             eprintln!(
-                "[ATTR_POS] type={} pos_before={} pos_after={}",
+                "[ATTR_POS] type={} pos_before={} pos_after={}, remaining={}",
                 sexp_type,
                 pos_before_attr,
-                cursor.position()
+                cursor.position(),
+                cursor.get_ref().len() as u64 - cursor.position()
             );
         }
         if sexp_type == S4SXP && std::env::var("RDS_DEBUG_S4_ATTR_OBJ").is_ok() {
@@ -855,9 +890,39 @@ fn parse_object(
     };
 
     // Apply attributes if non-empty
-    if has_attr {
+    // S4 objects can have attributes via HAS_ATTR_BIT or via HAS_TAG_BIT (early_attributes)
+    if sexp_type == S4SXP && !attributes.is_empty() {
+        let mut attributes = attributes;
+        // If the S4 attributes are missing class (or other trailing attrs),
+        // try to merge any recently parsed attribute set that carried a class.
+        PENDING_CLASS_ATTRS.with(|store| {
+            if attributes.get("class").is_none() {
+                if let Some(extra) = store.borrow_mut().take() {
+                    for (k, v) in extra.attrs.into_iter() {
+                        if !attributes.attrs.iter().any(|(ek, _)| ek == &k) {
+                            attributes.insert(k, *v);
+                        }
+                    }
+                }
+            } else {
+                // Clear pending if we already have class to avoid leaking across objects.
+                store.borrow_mut().take();
+            }
+        });
+
+        if std::env::var("RDS_DEBUG_S4_ATTRS").is_ok() {
+            let keys: Vec<_> = attributes
+                .attrs
+                .iter()
+                .map(|(k, v)| (k.as_ref(), std::mem::discriminant(v.as_ref())))
+                .collect();
+            eprintln!("[S4_ATTRS] len={} keys={:?}", keys.len(), keys);
+        }
+        // S4 object: all attributes become slots, except class
+        obj = convert_to_s4_object(attributes);
+    } else if has_attr {
         if !attributes.is_empty() {
-            // Check if this is an S4 object (S4SXP type)
+            // Check if this is an S4 object (S4SXP type) - shouldn't happen here now
             if sexp_type == S4SXP {
                 let mut attributes = attributes;
                 // If the S4 attributes are missing class (or other trailing attrs),
@@ -1937,8 +2002,17 @@ fn parse_pairlist(
 
         // Check if the next element continues the pairlist
         // R continues for: LISTSXP, LANGSXP, CLOSXP, PROMSXP, DOTSXP
-        // We don't have DOTSXP constant, but we cover the main ones
-        let continues_pairlist = matches!(next_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP);
+        // IMPORTANT: Elements with tags (HAS_TAG_BIT) are also pairlist continuations.
+        // This is critical for attribute pairlists where tagged elements of any type
+        // (e.g., VECSXP for "tools", STRSXP for "class") continue the pairlist.
+        let has_tag_next = (flags & HAS_TAG_BIT) != 0;
+        let continues_pairlist = has_tag_next || matches!(next_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP);
+
+        // INSTRUMENTATION: Log when we encounter types that don't continue pairlist
+        if std::env::var("RDS_DEBUG_PAIRLIST_TERM").is_ok() && !continues_pairlist && next_type != REFSXP {
+            eprintln!("[PAIRLIST_TERM] Terminating at {} elements, next_type={}, flags=0x{:08x}",
+                elements.len(), next_type, flags);
+        }
 
         // SPECIAL: the CDR can be a REFSXP pointing to an existing pairlist tail.
         if next_type == REFSXP {
@@ -1961,7 +2035,6 @@ fn parse_pairlist(
         } else if continues_pairlist {
             // Continue building the pairlist - this is another element
             // The flags are already consumed, so parse_pairlist_element will read the TAG and CAR
-            let has_tag_next = (flags & HAS_TAG_BIT) != 0;
             if debug_enabled() {
                 eprintln!(
                     "[PAIRLIST_LOOP] Continuing pairlist, has_tag={}",
@@ -1988,6 +2061,20 @@ fn parse_pairlist(
             match cdr_concrete {
                 RObject::Null => {
                     // Normal list termination
+                    // INSTRUMENTATION: Check if there's more data after NULL terminator
+                    if std::env::var("RDS_DEBUG_PAIRLIST_AFTER_NULL").is_ok() {
+                        let remaining = cursor.get_ref().len() as u64 - cursor.position();
+                        eprintln!("[PAIRLIST_AFTER_NULL] {} elements parsed, {} bytes remaining at pos={}",
+                            elements.len(), remaining, cursor.position());
+                        if remaining >= 4 {
+                            let pos_save = cursor.position();
+                            if let Ok(next_flags) = cursor.read_u32::<BigEndian>() {
+                                let next_type = next_flags & 0xFF;
+                                eprintln!("[PAIRLIST_AFTER_NULL] Next: flags=0x{:08x}, type={}", next_flags, next_type);
+                                cursor.set_position(pos_save);
+                            }
+                        }
+                    }
                     break;
                 }
                 RObject::Pairlist(mut rest) => {
@@ -2013,6 +2100,14 @@ fn parse_pairlist(
                 "Pairlist parser made no progress at pos {}",
                 loop_start
             )));
+        }
+    }
+
+    // INSTRUMENTATION: Log all tags in the final pairlist
+    if std::env::var("RDS_DEBUG_PAIRLIST_FINAL").is_ok() && !elements.is_empty() {
+        eprintln!("[PAIRLIST_FINAL] Returning {} elements:", elements.len());
+        for (i, elem) in elements.iter().enumerate() {
+            eprintln!("  [{}] tag={:?}", i, elem.tag.as_deref());
         }
     }
 
@@ -2483,6 +2578,37 @@ fn parse_charsxp_content(cursor: &mut Cursor<&[u8]>, flags: u32) -> Result<Strin
 /// Parse attributes from a pairlist object.
 /// Attributes are stored as pairlists where TAG = attribute name, CAR = attribute value.
 fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
+    // INSTRUMENTATION: Log BEFORE unwrapping Shared to see what we receive
+    if std::env::var("RDS_DEBUG_ATTR_UNWRAP").is_ok() {
+        thread_local! {
+            static CALL_COUNT: std::cell::Cell<usize> = std::cell::Cell::new(0);
+        }
+        let count = CALL_COUNT.with(|c| {
+            let n = c.get() + 1;
+            c.set(n);
+            n
+        });
+        eprintln!(
+            "[PARSE_ATTRS_PRE #{}] Received type: {:?}, is_shared={}",
+            count,
+            std::mem::discriminant(&attr_obj),
+            matches!(attr_obj, RObject::Shared(_))
+        );
+        if let RObject::Shared(ref inner) = attr_obj {
+            let inner_obj = inner.read().unwrap();
+            eprintln!(
+                "[PARSE_ATTRS_PRE #{}] Shared wraps: {:?}",
+                count,
+                std::mem::discriminant(&*inner_obj)
+            );
+            if let RObject::Pairlist(ref elems) = *inner_obj {
+                eprintln!("[PARSE_ATTRS_PRE #{}] Shared->Pairlist with {} elements", count, elems.len());
+            } else if let RObject::Symbol(ref name) = *inner_obj {
+                eprintln!("[PARSE_ATTRS_PRE #{}] Shared->Symbol: '{}'", count, name);
+            }
+        }
+    }
+
     let attr_obj = attr_obj.into_concrete();
     let mut attrs = Attributes::new();
 

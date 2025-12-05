@@ -470,6 +470,7 @@ fn test_custom_attributes() {
     let data = read_test_file("int_with_custom_attrs.rds");
     let obj = read_rds(&data).expect("Failed to parse int with custom attrs");
 
+    eprintln!("DEBUG: obj type = {:?}", std::mem::discriminant(&obj));
     match obj {
         RObject::WithAttributes { object, attributes } => {
             match object.as_ref() {
@@ -480,7 +481,7 @@ fn test_custom_attributes() {
             assert!(attributes.get("custom_attr").is_some());
             assert!(attributes.get("dimension_info").is_some());
         }
-        _ => panic!("Expected WithAttributes"),
+        _ => panic!("Expected WithAttributes, got {:?}", std::mem::discriminant(&obj)),
     }
 
     // Real with custom attributes
