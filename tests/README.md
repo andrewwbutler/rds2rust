@@ -39,5 +39,6 @@ The generated test files include:
 - **Raw vectors**: Byte arrays
 - **Complex vectors**: Complex numbers
 - **Lists**: Simple lists, named lists, nested lists
+- **Sparse matrices**: `sparse_dimnames.rds` (dgCMatrix with dimnames for regression on shared dimnames)
 
 Each test file is saved in RDS format version 2 (the most common format).

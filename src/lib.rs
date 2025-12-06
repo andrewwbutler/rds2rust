@@ -59,18 +59,18 @@ fn unwrap_shared_recursive(obj: RObject) -> RObject {
         RObject::List(elements) => {
             RObject::List(elements.into_iter().map(unwrap_shared_recursive).collect())
         }
-        RObject::Pairlist(elements) => {
-            RObject::Pairlist(
-                elements
-                    .into_iter()
-                    .map(|elem| PairlistElement {
-                        tag: elem.tag,
-                        value: unwrap_shared_recursive(elem.value),
-                        tag_object: elem.tag_object.map(|obj| Box::new(unwrap_shared_recursive(*obj))),
-                    })
-                    .collect(),
-            )
-        }
+        RObject::Pairlist(elements) => RObject::Pairlist(
+            elements
+                .into_iter()
+                .map(|elem| PairlistElement {
+                    tag: elem.tag,
+                    value: unwrap_shared_recursive(elem.value),
+                    tag_object: elem
+                        .tag_object
+                        .map(|obj| Box::new(unwrap_shared_recursive(*obj))),
+                })
+                .collect(),
+        ),
         RObject::Language { function, args } => RObject::Language {
             function: Box::new(unwrap_shared_recursive(*function)),
             args: args
@@ -78,7 +78,9 @@ fn unwrap_shared_recursive(obj: RObject) -> RObject {
                 .map(|elem| PairlistElement {
                     tag: elem.tag,
                     value: unwrap_shared_recursive(elem.value),
-                    tag_object: elem.tag_object.map(|obj| Box::new(unwrap_shared_recursive(*obj))),
+                    tag_object: elem
+                        .tag_object
+                        .map(|obj| Box::new(unwrap_shared_recursive(*obj))),
                 })
                 .collect(),
         },
@@ -140,12 +142,10 @@ fn unwrap_shared_recursive(obj: RObject) -> RObject {
             }
             RObject::S4Object(s4_data)
         }
-        RObject::WithAttributes { object, attributes } => {
-            RObject::WithAttributes {
-                object: Box::new(unwrap_shared_recursive(*object)),
-                attributes: unwrap_attributes(attributes),
-            }
-        }
+        RObject::WithAttributes { object, attributes } => RObject::WithAttributes {
+            object: Box::new(unwrap_shared_recursive(*object)),
+            attributes: unwrap_attributes(attributes),
+        },
         // Other types don't contain nested RObjects or don't need unwrapping
         other => other,
     }
@@ -154,7 +154,10 @@ fn unwrap_shared_recursive(obj: RObject) -> RObject {
 /// Helper to recursively unwrap Shared objects in attributes
 fn unwrap_attributes(mut attrs: Attributes) -> Attributes {
     for (_, value) in attrs.attrs.iter_mut() {
-        *value = Box::new(unwrap_shared_recursive(*std::mem::replace(value, Box::new(RObject::Null))));
+        *value = Box::new(unwrap_shared_recursive(*std::mem::replace(
+            value,
+            Box::new(RObject::Null),
+        )));
     }
     attrs
 }

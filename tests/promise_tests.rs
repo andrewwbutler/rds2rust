@@ -44,9 +44,16 @@ fn test_promise_in_env() {
         }
         rds2rust::RObject::Shared(inner) => {
             let guard = inner.read().unwrap();
-            assert!(is_env_like(&*guard), "Shared wrapper should wrap Environment, got {:?}", std::mem::discriminant(&*guard));
+            assert!(
+                is_env_like(&*guard),
+                "Shared wrapper should wrap Environment, got {:?}",
+                std::mem::discriminant(&*guard)
+            );
         }
-        _ => panic!("Expected Environment, got type: {:?}", std::mem::discriminant(&obj)),
+        _ => panic!(
+            "Expected Environment, got type: {:?}",
+            std::mem::discriminant(&obj)
+        ),
     }
 }
 

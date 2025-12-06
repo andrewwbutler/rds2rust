@@ -4,6 +4,9 @@
 output_dir <- "tests/data"
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
+# Packages used for sparse matrices and S4 classes
+suppressMessages(library(Matrix))
+
 # Integer vectors
 saveRDS(1L, file.path(output_dir, "int_single.rds"))
 saveRDS(1:10, file.path(output_dir, "int_vector.rds"))
@@ -84,6 +87,12 @@ saveRDS(mat2, file.path(output_dir, "matrix_real.rds"))
 mat3 <- matrix(1:4, nrow=2, ncol=2)
 dimnames(mat3) <- list(c("row1", "row2"), c("col1", "col2"))
 saveRDS(mat3, file.path(output_dir, "matrix_dimnames.rds"))
+
+# Sparse matrix (dgCMatrix) with dimnames
+set.seed(123)
+sparse_mat <- Matrix::rsparsematrix(4, 4, density = 0.35)
+dimnames(sparse_mat) <- list(paste0("r", 1:4), paste0("c", 1:4))
+saveRDS(sparse_mat, file.path(output_dir, "sparse_dimnames.rds"))
 
 # Data frames
 df1 <- data.frame(

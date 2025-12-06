@@ -65,7 +65,12 @@ fn ensure_bytes_available(cursor: &Cursor<&[u8]>, needed: usize, context: &str) 
 const MAX_VECTOR_LENGTH: usize = 50_000_000;
 const MAX_ALLOCATION_BYTES: usize = 128 * 1024 * 1024;
 
-fn guard_allocation(length: usize, elem_size: usize, cursor: &Cursor<&[u8]>, context: &str) -> Result<()> {
+fn guard_allocation(
+    length: usize,
+    elem_size: usize,
+    cursor: &Cursor<&[u8]>,
+    context: &str,
+) -> Result<()> {
     guard_allocation_common(length, elem_size, context)?;
 
     let needed = length * elem_size;
@@ -91,9 +96,9 @@ fn guard_allocation_common(length: usize, elem_size: usize, context: &str) -> Re
         )));
     }
 
-    let needed = length
-        .checked_mul(elem_size)
-        .ok_or_else(|| Error::InvalidFormat(format!("Length overflow while parsing {}", context)))?;
+    let needed = length.checked_mul(elem_size).ok_or_else(|| {
+        Error::InvalidFormat(format!("Length overflow while parsing {}", context))
+    })?;
 
     if needed > MAX_ALLOCATION_BYTES {
         return Err(Error::InvalidFormat(format!(
@@ -129,7 +134,11 @@ impl RefTable {
         let index = self.next_index;
         let arc = Arc::new(RwLock::new(obj));
         if std::env::var("RDS_DEBUG_REF").is_ok() {
-            eprintln!("[REF_TABLE_ADD] idx={} arc_ptr={:p}", index, Arc::as_ptr(&arc));
+            eprintln!(
+                "[REF_TABLE_ADD] idx={} arc_ptr={:p}",
+                index,
+                Arc::as_ptr(&arc)
+            );
         }
         self.objects.insert(index, arc);
         self.next_index += 1;
@@ -318,9 +327,10 @@ fn should_track_reference(sexp_type: u32, has_attr: bool) -> bool {
         CLOSXP | BCODESXP | EXTPTRSXP | WEAKREFSXP | S4SXP => true,
         GENERICREFSXP | CLASSREFSXP => true,
 
-        // Atomic vectors: track when they have attributes (e.g., factors,
-        // classed vectors) so reference indices stay aligned with R.
-        LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP => has_attr,
+        // Atomic vectors should be reference-tracked as well so REFSXP indices
+        // stay aligned with R's serializer (which can share even plain vectors
+        // like dimnames). Attributes are not required for tracking.
+        LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP => true,
 
         // CHARSXP uses per-vector string caches, not the global reference table.
         CHARSXP => false,
@@ -560,7 +570,6 @@ fn parse_object(
                 obj
             })?;
             Some(parse_attributes(attr_obj)?)
-
         } else if sexp_type == S4SXP && has_tag {
             // S4 objects with HAS_TAG_BIT store their attributes in the TAG
             // The TAG is a pairlist where each element has a tag (slot name) and value (slot data).
@@ -666,8 +675,8 @@ fn parse_object(
             let mut resolved = if in_closure_body {
                 if let Some(sym) = symbol_table.get(ref_index_val) {
                     if std::env::var("RDS_DEBUG_REF").is_ok() {
-                        let name = extract_tag_name(sym.clone())
-                            .unwrap_or_else(|| Arc::from("<unknown>"));
+                        let name =
+                            extract_tag_name(sym.clone()).unwrap_or_else(|| Arc::from("<unknown>"));
                         eprintln!(
                             "[REF_LOOKUP] closure body symbol idx={} -> {}",
                             ref_index_val, name
@@ -894,19 +903,18 @@ fn parse_object(
     if sexp_type == S4SXP && !attributes.is_empty() {
         let mut attributes = attributes;
         // If the S4 attributes are missing class (or other trailing attrs),
-        // try to merge any recently parsed attribute set that carried a class.
+        // try to merge any recently parsed attribute set that carried a class
+        // or package information.
         PENDING_CLASS_ATTRS.with(|store| {
-            if attributes.get("class").is_none() {
-                if let Some(extra) = store.borrow_mut().take() {
+            let mut pending = store.borrow_mut().take();
+            if let Some(extra) = pending.take() {
+                if attributes.get("class").is_none() || attributes.get("package").is_none() {
                     for (k, v) in extra.attrs.into_iter() {
                         if !attributes.attrs.iter().any(|(ek, _)| ek == &k) {
                             attributes.insert(k, *v);
                         }
                     }
                 }
-            } else {
-                // Clear pending if we already have class to avoid leaking across objects.
-                store.borrow_mut().take();
             }
         });
 
@@ -1061,7 +1069,12 @@ fn parse_real_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
 /// Parse a logical vector.
 fn parse_logical_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
-    guard_allocation(length, std::mem::size_of::<Logical>(), cursor, "logical vector")?;
+    guard_allocation(
+        length,
+        std::mem::size_of::<Logical>(),
+        cursor,
+        "logical vector",
+    )?;
     let mut vec = Vec::with_capacity(length);
 
     for _ in 0..length {
@@ -1253,7 +1266,12 @@ fn parse_complex_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     use crate::types::Complex;
 
     let length = cursor.read_u32::<BigEndian>()? as usize;
-    guard_allocation(length, std::mem::size_of::<Complex>(), cursor, "complex vector")?;
+    guard_allocation(
+        length,
+        std::mem::size_of::<Complex>(),
+        cursor,
+        "complex vector",
+    )?;
     let mut vec = Vec::with_capacity(length);
 
     for _ in 0..length {
@@ -2006,12 +2024,20 @@ fn parse_pairlist(
         // This is critical for attribute pairlists where tagged elements of any type
         // (e.g., VECSXP for "tools", STRSXP for "class") continue the pairlist.
         let has_tag_next = (flags & HAS_TAG_BIT) != 0;
-        let continues_pairlist = has_tag_next || matches!(next_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP);
+        let continues_pairlist =
+            has_tag_next || matches!(next_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP);
 
         // INSTRUMENTATION: Log when we encounter types that don't continue pairlist
-        if std::env::var("RDS_DEBUG_PAIRLIST_TERM").is_ok() && !continues_pairlist && next_type != REFSXP {
-            eprintln!("[PAIRLIST_TERM] Terminating at {} elements, next_type={}, flags=0x{:08x}",
-                elements.len(), next_type, flags);
+        if std::env::var("RDS_DEBUG_PAIRLIST_TERM").is_ok()
+            && !continues_pairlist
+            && next_type != REFSXP
+        {
+            eprintln!(
+                "[PAIRLIST_TERM] Terminating at {} elements, next_type={}, flags=0x{:08x}",
+                elements.len(),
+                next_type,
+                flags
+            );
         }
 
         // SPECIAL: the CDR can be a REFSXP pointing to an existing pairlist tail.
@@ -2070,7 +2096,10 @@ fn parse_pairlist(
                             let pos_save = cursor.position();
                             if let Ok(next_flags) = cursor.read_u32::<BigEndian>() {
                                 let next_type = next_flags & 0xFF;
-                                eprintln!("[PAIRLIST_AFTER_NULL] Next: flags=0x{:08x}, type={}", next_flags, next_type);
+                                eprintln!(
+                                    "[PAIRLIST_AFTER_NULL] Next: flags=0x{:08x}, type={}",
+                                    next_flags, next_type
+                                );
                                 cursor.set_position(pos_save);
                             }
                         }
@@ -2602,7 +2631,11 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
                 std::mem::discriminant(&*inner_obj)
             );
             if let RObject::Pairlist(ref elems) = *inner_obj {
-                eprintln!("[PARSE_ATTRS_PRE #{}] Shared->Pairlist with {} elements", count, elems.len());
+                eprintln!(
+                    "[PARSE_ATTRS_PRE #{}] Shared->Pairlist with {} elements",
+                    count,
+                    elems.len()
+                );
             } else if let RObject::Symbol(ref name) = *inner_obj {
                 eprintln!("[PARSE_ATTRS_PRE #{}] Shared->Symbol: '{}'", count, name);
             }
@@ -2613,9 +2646,20 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
     let mut attrs = Attributes::new();
 
     fn store_attrs_for_class(attrs: &Attributes) {
-        if attrs.get("class").is_some() {
+        if attrs.get("class").is_some() || attrs.get("package").is_some() {
             PENDING_CLASS_ATTRS.with(|store| {
-                *store.borrow_mut() = Some(attrs.clone());
+                let mut guard = store.borrow_mut();
+                if let Some(existing) = guard.take() {
+                    let mut merged = existing;
+                    for (k, v) in attrs.iter() {
+                        if !merged.attrs.iter().any(|(ek, _)| ek == k) {
+                            merged.insert(k.clone(), v.clone());
+                        }
+                    }
+                    *guard = Some(merged);
+                } else {
+                    *guard = Some(attrs.clone());
+                }
             });
         }
     }
@@ -2786,7 +2830,7 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
 /// Try to convert a list with attributes to a data.frame if it has the right structure.
 fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RObject> {
     // Check if this has class="data.frame"
-    let class_attr = attributes.get("class")?;
+    let class_attr = attributes.get("class")?.as_concrete();
     let is_dataframe = match class_attr {
         RObject::Character(classes) => classes.iter().any(|c| c.as_ref() == "data.frame"),
         _ => false,
@@ -2803,7 +2847,7 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
     };
 
     // Get the column names from the "names" attribute
-    let names_attr = attributes.get("names")?;
+    let names_attr = attributes.get("names")?.as_concrete();
     let column_names = match names_attr {
         RObject::Character(names) => names.clone(),
         _ => return None,
@@ -2822,7 +2866,7 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
 
     // Get row names from the "row.names" attribute
     let row_names = if let Some(row_names_attr) = attributes.get("row.names") {
-        match row_names_attr {
+        match row_names_attr.as_concrete() {
             RObject::Character(names) => names.clone(),
             RObject::Integer(indices) => {
                 // R uses a compact representation for default row names:
@@ -2881,7 +2925,7 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
 /// Returns Some(Factor) if it's a factor, None otherwise.
 fn try_convert_to_factor(obj: &RObject, attributes: &Attributes) -> Option<RObject> {
     // Check if the class attribute indicates this is a factor
-    let class_attr = attributes.get("class")?;
+    let class_attr = attributes.get("class")?.as_concrete();
     let classes = match class_attr {
         RObject::Character(classes) => classes,
         _ => return None,
@@ -2903,7 +2947,7 @@ fn try_convert_to_factor(obj: &RObject, attributes: &Attributes) -> Option<RObje
     };
 
     // Get the levels from the "levels" attribute
-    let levels_attr = attributes.get("levels")?;
+    let levels_attr = attributes.get("levels")?.as_concrete();
     let levels = match levels_attr {
         RObject::Character(levels) => levels.clone(),
         _ => return None,
@@ -2922,7 +2966,7 @@ fn try_convert_to_factor(obj: &RObject, attributes: &Attributes) -> Option<RObje
         if matches!(key.as_ref(), "levels" | "class") {
             continue;
         }
-        extra_attrs.insert(key.clone(), value.clone());
+        extra_attrs.insert(key.clone(), value.as_concrete());
     }
 
     if extra_attrs.is_empty() {
@@ -2943,23 +2987,26 @@ fn convert_to_s3_object(obj: RObject, mut attributes: Attributes) -> RObject {
         .attrs
         .iter()
         .position(|(k, _)| k.as_ref() == "class")
-        .and_then(|idx| {
-            if let RObject::Character(classes) = attributes.attrs[idx].1.as_ref() {
-                Some(classes.clone())
-            } else {
-                None
-            }
+        .and_then(|idx| match attributes.attrs[idx].1.as_concrete() {
+            RObject::Character(classes) => Some(classes.clone()),
+            _ => None,
         })
         .unwrap_or_default();
 
     // Remove class from attributes
     attributes.attrs.retain(|(k, _)| k.as_ref() != "class");
 
+    // Normalize attribute values to concrete objects (unwrap Shared) for user-facing API.
+    let mut normalized_attrs = Attributes::new();
+    for (k, v) in attributes.attrs.into_iter() {
+        normalized_attrs.insert(k, v.as_concrete());
+    }
+
     // Create the S3 object
     RObject::S3Object(Box::new(S3ObjectData {
         base: Box::new(obj),
         class,
-        attributes,
+        attributes: normalized_attrs,
     }))
 }
 
@@ -3011,6 +3058,18 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
             }
         })
         .unwrap_or((vec![], None));
+
+    // Fallback: package may also be stored as a separate attribute
+    let mut package = package;
+    if package.is_none() {
+        if let Some(pkg_attr) = attributes.get("package") {
+            if let RObject::Character(pkgs) = pkg_attr.as_concrete() {
+                if let Some(first) = pkgs.first() {
+                    package = Some(first.clone());
+                }
+            }
+        }
+    }
 
     if debug_s4 {
         eprintln!("[S4] extracted class {:?}, package {:?}", class, package);

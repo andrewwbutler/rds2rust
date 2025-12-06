@@ -208,7 +208,7 @@ fn test_bytecode_roundtrip() {
 
         // Verify it's a closure
         match &obj {
-            RObject::Closure { .. } => {},
+            RObject::Closure { .. } => {}
             _ => panic!("Expected Closure, got {:?}", std::mem::discriminant(&obj)),
         }
 
@@ -221,7 +221,7 @@ fn test_bytecode_roundtrip() {
 
         // Verify it's still a closure
         match &obj2 {
-            RObject::Closure { .. } => {},
+            RObject::Closure { .. } => {}
             _ => panic!("Roundtrip changed object type"),
         }
     }

@@ -481,7 +481,10 @@ fn test_custom_attributes() {
             assert!(attributes.get("custom_attr").is_some());
             assert!(attributes.get("dimension_info").is_some());
         }
-        _ => panic!("Expected WithAttributes, got {:?}", std::mem::discriminant(&obj)),
+        _ => panic!(
+            "Expected WithAttributes, got {:?}",
+            std::mem::discriminant(&obj)
+        ),
     }
 
     // Real with custom attributes
