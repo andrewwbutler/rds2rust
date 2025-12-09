@@ -540,3 +540,152 @@ fn test_s4_default_package_fallback() {
         _ => panic!("Expected S4Object"),
     }
 }
+
+/// Test that parsing multiple S4 objects in sequence doesn't leak state.
+/// This is a regression test for the PENDING_CLASS_ATTRS thread-local bug
+/// where attributes from one parse could contaminate subsequent parses.
+#[test]
+fn test_cross_parse_state_isolation() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    // Parse the same S4 file twice to ensure identical results
+    let data = read_test_file("s4_complex.rds");
+
+    let obj1 = read_rds(&data).expect("Failed to parse S4 object (first read)");
+    let obj2 = read_rds(&data).expect("Failed to parse S4 object (second read)");
+
+    // Extract slot values from both parses
+    let extract_slots = |obj: &RObject| -> IndexMap<Arc<str>, RObject> {
+        match obj {
+            RObject::S4Object(s4_data) => s4_data.slots.clone(),
+            _ => panic!("Expected S4Object"),
+        }
+    };
+
+    let slots1 = extract_slots(&obj1);
+    let slots2 = extract_slots(&obj2);
+
+    // Verify both parses have the same slot keys
+    assert_eq!(
+        slots1.len(),
+        slots2.len(),
+        "Slot count should be identical across parses"
+    );
+
+    for (key1, key2) in slots1.keys().zip(slots2.keys()) {
+        assert_eq!(key1, key2, "Slot keys should be in same order");
+    }
+
+    // Verify each slot has the same variant type (not corrupted)
+    for (key, value1) in &slots1 {
+        let value2 = slots2.get(key).expect("Slot should exist in second parse");
+
+        // Check that the variant type matches (discriminant comparison)
+        assert_eq!(
+            std::mem::discriminant(value1),
+            std::mem::discriminant(value2),
+            "Slot '{}' should have same type across parses (got {} vs {})",
+            key,
+            variant_name(value1),
+            variant_name(value2)
+        );
+    }
+}
+
+/// Test that parsing different S4 files in sequence doesn't cross-contaminate.
+/// This tests the more severe case where state from parse #1 leaks into parse #2.
+#[test]
+fn test_cross_file_parse_isolation() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    // Parse two different S4 files in sequence
+    let simple_data = read_test_file("s4_simple.rds");
+    let complex_data = read_test_file("s4_complex.rds");
+
+    // Parse simple, then complex
+    let simple_obj = read_rds(&simple_data).expect("Failed to parse simple S4");
+    let complex_obj = read_rds(&complex_data).expect("Failed to parse complex S4");
+
+    // Now parse complex again - it should be identical to the previous parse
+    let complex_obj2 = read_rds(&complex_data).expect("Failed to parse complex S4 (second time)");
+
+    // Extract slots
+    let extract_slots = |obj: &RObject| -> IndexMap<Arc<str>, RObject> {
+        match obj {
+            RObject::S4Object(s4_data) => s4_data.slots.clone(),
+            _ => panic!("Expected S4Object"),
+        }
+    };
+
+    let complex_slots1 = extract_slots(&complex_obj);
+    let complex_slots2 = extract_slots(&complex_obj2);
+
+    // Verify that parsing simple didn't contaminate complex
+    for (key, value1) in &complex_slots1 {
+        let value2 = complex_slots2
+            .get(key)
+            .expect("Slot should exist in second parse");
+
+        assert_eq!(
+            std::mem::discriminant(value1),
+            std::mem::discriminant(value2),
+            "Slot '{}' corrupted after parsing simple file (got {} vs {})",
+            key,
+            variant_name(value1),
+            variant_name(value2)
+        );
+    }
+
+    // Verify simple is still correct when parsed after complex
+    let simple_obj2 = read_rds(&simple_data).expect("Failed to parse simple S4 (second time)");
+    let simple_slots1 = extract_slots(&simple_obj);
+    let simple_slots2 = extract_slots(&simple_obj2);
+
+    assert_eq!(
+        simple_slots1.len(),
+        simple_slots2.len(),
+        "Simple S4 slots corrupted after parsing complex"
+    );
+}
+
+/// Helper function to get a human-readable variant name for debugging
+fn variant_name(obj: &RObject) -> &'static str {
+    match obj {
+        RObject::Null => "Null",
+        RObject::Integer(_) => "Integer",
+        RObject::Real(_) => "Real",
+        RObject::Logical(_) => "Logical",
+        RObject::Character(_) => "Character",
+        RObject::Symbol(_) => "Symbol",
+        RObject::Raw(_) => "Raw",
+        RObject::Complex(_) => "Complex",
+        RObject::List(_) => "List",
+        RObject::Pairlist(_) => "Pairlist",
+        RObject::Language { .. } => "Language",
+        RObject::Expression(_) => "Expression",
+        RObject::Closure { .. } => "Closure",
+        RObject::Environment { .. } => "Environment",
+        RObject::Promise { .. } => "Promise",
+        RObject::Special { .. } => "Special",
+        RObject::Builtin { .. } => "Builtin",
+        RObject::Bytecode { .. } => "Bytecode",
+        RObject::DataFrame(_) => "DataFrame",
+        RObject::Factor(_) => "Factor",
+        RObject::S3Object(_) => "S3Object",
+        RObject::S4Object(_) => "S4Object",
+        RObject::Namespace(_) => "Namespace",
+        RObject::GlobalEnv => "GlobalEnv",
+        RObject::BaseEnv => "BaseEnv",
+        RObject::EmptyEnv => "EmptyEnv",
+        RObject::MissingArg => "MissingArg",
+        RObject::UnboundValue => "UnboundValue",
+        RObject::WithAttributes { .. } => "WithAttributes",
+        RObject::Shared(_) => "Shared",
+    }
+}

@@ -15,7 +15,12 @@ use std::io::{Cursor, Read};
 use std::sync::{Arc, RwLock};
 
 thread_local! {
-    // Holds the most recent tiny attribute set carrying tools+class seen during parsing.
+    /// Holds pending class/package attributes during S4 object parsing.
+    /// This is used to handle R's serialization quirk where class attributes
+    /// may be stored separately from the object data.
+    ///
+    /// IMPORTANT: Must be cleared at the start of each parse_rds() call to
+    /// prevent state leakage between parses. See reset_parse_state().
     static PENDING_CLASS_ATTRS: RefCell<Option<Attributes>> = RefCell::new(None);
     static PARSING_ATTRIBUTES: Cell<bool> = Cell::new(false);
     static PARSING_CLOSURE_BODY: Cell<bool> = Cell::new(false);
@@ -40,6 +45,25 @@ impl Drop for S4TagGuard {
 
 fn debug_enabled() -> bool {
     std::env::var("RDS_DEBUG").is_ok()
+}
+
+/// Reset thread-local parse state to prevent leakage between parse_rds() calls.
+/// This ensures that data from one parse session doesn't contaminate subsequent parses.
+fn reset_parse_state() {
+    // Debug assertion to detect state leakage during development
+    #[cfg(debug_assertions)]
+    {
+        PENDING_CLASS_ATTRS.with(|store| {
+            if store.borrow().is_some() {
+                eprintln!("WARNING: PENDING_CLASS_ATTRS not empty at parse_rds() entry - clearing stale state");
+            }
+        });
+    }
+
+    // Clear any pending class attributes from previous parse
+    PENDING_CLASS_ATTRS.with(|store| {
+        store.borrow_mut().take();
+    });
 }
 
 fn ensure_bytes_available(cursor: &Cursor<&[u8]>, needed: usize, context: &str) -> Result<()> {
@@ -349,6 +373,12 @@ fn should_track_reference(sexp_type: u32, has_attr: bool) -> bool {
 
 /// Parse an RDS file from a byte slice.
 pub fn parse_rds(data: &[u8]) -> Result<RObject> {
+    // Clear thread-local state to prevent leakage from previous parses.
+    // This is critical because PENDING_CLASS_ATTRS can accumulate stale
+    // class/package attributes from prior parse sessions, causing corruption
+    // in S4 object slot values (e.g., graph Dimnames becoming Symbol instead of List).
+    reset_parse_state();
+
     // Check if the file is gzip compressed (starts with 0x1f 0x8b)
     let decompressed_data = if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
         // Decompress gzip
