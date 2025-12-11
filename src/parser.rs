@@ -3027,6 +3027,10 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
             // Unwrap any Shared wrapper first
             let class_obj = attributes.attrs[idx].1.as_concrete();
 
+            if debug_s4 {
+                eprintln!("[S4] class attribute variant: {}", class_obj.variant_name());
+            }
+
             match class_obj {
                 RObject::Character(classes) => (classes.clone(), None),
                 RObject::WithAttributes {
@@ -3045,7 +3049,18 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
                     });
                     (classes, pkg)
                 }
-                _ => (vec![], None),
+                RObject::Symbol(ref name) => {
+                    if debug_s4 {
+                        eprintln!("[S4] WARNING: class is Symbol: '{}'", name);
+                    }
+                    (vec![], None)
+                }
+                _ => {
+                    if debug_s4 {
+                        eprintln!("[S4] WARNING: Unexpected class attribute type: {}", class_obj.variant_name());
+                    }
+                    (vec![], None)
+                }
             }
         })
         .unwrap_or((vec![], None));

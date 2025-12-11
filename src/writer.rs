@@ -329,7 +329,8 @@ fn should_track_reference_type(obj: &RObject) -> bool {
         | RObject::Special { .. }
         | RObject::Builtin { .. } => false,
 
-        // Attribute-wrapped primitives should be tracked.
+        // WithAttributes must be tracked to maintain index alignment with parser.
+        // However, DO NOT deduplicate by pointer - see ref_key() below.
         RObject::WithAttributes { .. } => true,
 
         // Shared is ALWAYS tracked by its Arc pointer, regardless of inner content.
@@ -362,6 +363,10 @@ fn should_track_reference_type(obj: &RObject) -> bool {
 fn ref_key(obj: &RObject) -> Option<usize> {
     match obj {
         RObject::Shared(inner) => Some(Arc::as_ptr(inner) as usize),
+        // WithAttributes should NOT use pointer-based deduplication because
+        // stack-allocated instances can have the same address (see write_s4_object).
+        // Return None to prevent deduplication while still allowing index tracking.
+        RObject::WithAttributes { .. } => None,
         other if should_track_reference_type(other) => Some(other as *const RObject as usize),
         _ => None,
     }
@@ -517,6 +522,9 @@ fn write_object_inner(
                         obj.variant_name()
                     );
                 }
+                if std::env::var("RDS_DEBUG_WITHATTR").is_ok() && matches!(obj, RObject::WithAttributes { .. }) {
+                    eprintln!("[WITHATTR] REFSXP idx={} ptr={:p} type={}", idx, ptr as *const (), obj.variant_name());
+                }
                 write_refsxp(writer, idx)?;
                 return Ok(());
             }
@@ -540,6 +548,9 @@ fn write_object_inner(
                     depth,
                     obj.variant_name()
                 );
+            }
+            if std::env::var("RDS_DEBUG_WITHATTR").is_ok() && matches!(obj, RObject::WithAttributes { .. }) {
+                eprintln!("[WITHATTR] DEFINE idx={} ptr={:p} type={}", idx, ptr as *const (), obj.variant_name());
             }
 
             // Push on stack for cycle detection BEFORE descending (important for Shared objects too!)
@@ -1056,6 +1067,8 @@ fn write_pairlist_internal(
     symbol_tracker: &mut SymbolTracker,
     values_are_symbols: bool,
 ) -> Result<()> {
+    let debug_pairlist = std::env::var("RDS_DEBUG_PAIRLIST").is_ok();
+
     for (i, element) in elements.iter().enumerate() {
         let has_tag = element.tag.is_some();
         let is_last = i == elements.len() - 1;
@@ -1064,6 +1077,11 @@ fn write_pairlist_internal(
 
         // Write the tag if present
         if let Some(ref tag) = element.tag {
+            if debug_pairlist {
+                eprintln!("[PAIRLIST] elem[{}] TAG='{}' (before write: obj_idx={}, sym_idx={})",
+                    i, tag, ref_table.next_index, ref_table.next_symbol_index);
+            }
+
             // Extract SharedInfo from tag_object if it's Shared(Symbol)
             let shared_ptr = element.tag_object.as_ref().and_then(|obj| {
                 if let RObject::Shared(arc) = obj.as_ref() {
@@ -1083,9 +1101,19 @@ fn write_pairlist_internal(
                 ref_table,
                 symbol_tracker,
             )?;
+
+            if debug_pairlist {
+                eprintln!("[PAIRLIST] elem[{}] TAG='{}' (after write: obj_idx={}, sym_idx={})",
+                    i, tag, ref_table.next_index, ref_table.next_symbol_index);
+            }
         }
 
         // Write the value
+        if debug_pairlist {
+            eprintln!("[PAIRLIST] elem[{}] VALUE type={} (before write: obj_idx={}, sym_idx={})",
+                i, element.value.variant_name(), ref_table.next_index, ref_table.next_symbol_index);
+        }
+
         // If values_are_symbols and value is single-element Character, write as symbol
         if values_are_symbols {
             match &element.value {
@@ -1105,6 +1133,11 @@ fn write_pairlist_internal(
             }
         } else {
             write_object(writer, &element.value, ref_table, symbol_tracker)?;
+        }
+
+        if debug_pairlist {
+            eprintln!("[PAIRLIST] elem[{}] VALUE type={} (after write: obj_idx={}, sym_idx={})",
+                i, element.value.variant_name(), ref_table.next_index, ref_table.next_symbol_index);
         }
 
         // Write the CDR (tail)
@@ -1706,7 +1739,16 @@ fn write_attributes(
         sorted_attrs
     };
 
+    let debug_attrs = std::env::var("RDS_DEBUG_ATTRS").is_ok();
+    if debug_attrs {
+        eprintln!("[ATTRS] Writing {} attributes, is_s4={}", attrs_iter.len(), is_s4_object);
+    }
+
     for (key, value) in attrs_iter {
+        if debug_attrs {
+            eprintln!("[ATTRS]   tag='{}' value_type={} next_obj_idx={} next_sym_idx={}",
+                key, value.variant_name(), ref_table.next_index, ref_table.next_symbol_index);
+        }
         elements.push(PairlistElement {
             tag: Some(key.clone()),
             value: (**value).clone(), // Unbox the RObject

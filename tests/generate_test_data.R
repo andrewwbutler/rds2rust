@@ -748,5 +748,81 @@ all_types_attrs <- structure(
 )
 saveRDS(all_types_attrs, file.path(output_dir, "all_types_attributes.rds"))
 
+# S4 objects - multiple instances with same class (regression test for stack address bug)
+# Create a simple Container class
+setClass("Container",
+         slots = c(data = "integer",
+                   name = "character"))
+
+# Create three instances with identical class/package
+container1 <- new("Container", data = c(100L, 101L, 102L), name = "first")
+container2 <- new("Container", data = c(200L, 201L, 202L), name = "second")
+container3 <- new("Container", data = c(300L, 301L, 302L), name = "third")
+
+# Save as a list (reproduces the bug scenario)
+containers_list <- list(container1, container2, container3)
+saveRDS(containers_list, file.path(output_dir, "s4_multiple_same_class.rds"))
+
+# S4 objects - complex nested structure with matrices
+# Define classes for nested S4 structure
+setClass("NestedData",
+         slots = c(values = "numeric"))
+
+setClass("MatrixContainer",
+         slots = c(
+           primary_matrix = "matrix",
+           secondary_matrix = "matrix",
+           label = "character",
+           nested = "NestedData"
+         ))
+
+# Create instances with matrices having dimnames
+mat1 <- matrix(c(1.0, 2.0, 3.0, 4.0), nrow = 2, ncol = 2)
+dimnames(mat1) <- list(c("Row1", "Row2"), c("Col1", "Col2"))
+
+mat2 <- matrix(c(0.1, 0.2, 0.3, 0.4), nrow = 2, ncol = 2)
+dimnames(mat2) <- list(c("ItemA", "ItemB"), c("Col1", "Col2"))
+
+nested1 <- new("NestedData", values = c(0.01, 0.05))
+
+mc1 <- new("MatrixContainer",
+           primary_matrix = mat1,
+           secondary_matrix = mat2,
+           label = "alpha",
+           nested = nested1)
+
+# Create two more with same structure
+mat3 <- matrix(c(5.0, 6.0, 7.0, 8.0), nrow = 2, ncol = 2)
+dimnames(mat3) <- list(c("Row1", "Row2"), c("Col1", "Col2"))
+
+mat4 <- matrix(c(0.5, 0.6, 0.7, 0.8), nrow = 2, ncol = 2)
+dimnames(mat4) <- list(c("ItemA", "ItemB"), c("Col1", "Col2"))
+
+nested2 <- new("NestedData", values = c(0.02, 0.06))
+
+mc2 <- new("MatrixContainer",
+           primary_matrix = mat3,
+           secondary_matrix = mat4,
+           label = "beta",
+           nested = nested2)
+
+mat5 <- matrix(c(9.0, 10.0, 11.0, 12.0), nrow = 2, ncol = 2)
+dimnames(mat5) <- list(c("Row1", "Row2"), c("Col1", "Col2"))
+
+mat6 <- matrix(c(0.9, 1.0, 1.1, 1.2), nrow = 2, ncol = 2)
+dimnames(mat6) <- list(c("ItemA", "ItemB"), c("Col1", "Col2"))
+
+nested3 <- new("NestedData", values = c(0.03, 0.07))
+
+mc3 <- new("MatrixContainer",
+           primary_matrix = mat5,
+           secondary_matrix = mat6,
+           label = "gamma",
+           nested = nested3)
+
+# Save as list
+matrix_containers <- list(mc1, mc2, mc3)
+saveRDS(matrix_containers, file.path(output_dir, "s4_multiple_with_matrices.rds"))
+
 cat("Test RDS files generated successfully in", output_dir, "\n")
 cat("Total files:", length(list.files(output_dir, pattern = "\\.rds$")), "\n")
