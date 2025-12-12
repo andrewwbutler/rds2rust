@@ -367,6 +367,11 @@ fn ref_key(obj: &RObject) -> Option<usize> {
         // stack-allocated instances can have the same address (see write_s4_object).
         // Return None to prevent deduplication while still allowing index tracking.
         RObject::WithAttributes { .. } => None,
+        // List should NOT use pointer-based deduplication because
+        // stack-allocated Vec instances (like dimnames lists) can have the same address.
+        // This causes corruption when different matrices reuse the same stack location
+        // for their dimnames List objects.
+        RObject::List(_) => None,
         other if should_track_reference_type(other) => Some(other as *const RObject as usize),
         _ => None,
     }
