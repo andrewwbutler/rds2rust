@@ -86,16 +86,34 @@ fn ensure_bytes_available(cursor: &Cursor<&[u8]>, needed: usize, context: &str) 
     Ok(())
 }
 
+// Default limits for backward compatibility
 const MAX_VECTOR_LENGTH: usize = 50_000_000;
+#[allow(dead_code)]
 const MAX_ALLOCATION_BYTES: usize = 128 * 1024 * 1024;
 
+/// Parser context holding configuration and state
+struct ParserContext {
+    max_vector_length: usize,
+    max_allocation_bytes: usize,
+}
+
+impl ParserContext {
+    fn from_config(config: crate::ParseConfig) -> Self {
+        Self {
+            max_vector_length: config.max_vector_length,
+            max_allocation_bytes: config.max_allocation_bytes,
+        }
+    }
+}
+
 fn guard_allocation(
+    ctx: &ParserContext,
     length: usize,
     elem_size: usize,
     cursor: &Cursor<&[u8]>,
     context: &str,
 ) -> Result<()> {
-    guard_allocation_common(length, elem_size, context)?;
+    guard_allocation_common(ctx, length, elem_size, context)?;
 
     let needed = length * elem_size;
     let remaining = cursor
@@ -112,11 +130,16 @@ fn guard_allocation(
     Ok(())
 }
 
-fn guard_allocation_common(length: usize, elem_size: usize, context: &str) -> Result<()> {
-    if length > MAX_VECTOR_LENGTH {
+fn guard_allocation_common(
+    ctx: &ParserContext,
+    length: usize,
+    elem_size: usize,
+    context: &str,
+) -> Result<()> {
+    if length > ctx.max_vector_length {
         return Err(Error::InvalidFormat(format!(
             "Length {} exceeds safe limit {} while parsing {}",
-            length, MAX_VECTOR_LENGTH, context
+            length, ctx.max_vector_length, context
         )));
     }
 
@@ -124,7 +147,7 @@ fn guard_allocation_common(length: usize, elem_size: usize, context: &str) -> Re
         Error::InvalidFormat(format!("Length overflow while parsing {}", context))
     })?;
 
-    if needed > MAX_ALLOCATION_BYTES {
+    if needed > ctx.max_allocation_bytes {
         return Err(Error::InvalidFormat(format!(
             "Allocation of {} bytes exceeds cap while parsing {}",
             needed, context
@@ -357,7 +380,19 @@ fn should_track_reference(sexp_type: u32, has_attr: bool) -> bool {
 }
 
 /// Parse an RDS file from a byte slice.
-pub fn parse_rds(data: &[u8]) -> Result<RObject> {
+/// Parse an RDS file with custom configuration
+pub fn parse_rds_with_config(data: &[u8], config: crate::ParseConfig) -> Result<RObject> {
+    let ctx = ParserContext::from_config(config);
+    parse_rds_internal(data, &ctx)
+}
+
+/// Parse an RDS file with default configuration
+#[allow(dead_code)]
+pub(crate) fn parse_rds(data: &[u8]) -> Result<RObject> {
+    parse_rds_with_config(data, crate::ParseConfig::default())
+}
+
+fn parse_rds_internal(data: &[u8], ctx: &ParserContext) -> Result<RObject> {
     // Clear thread-local state to prevent leakage from previous parses.
     // This is critical because PENDING_CLASS_ATTRS can accumulate stale
     // class/package attributes from prior parse sessions, causing corruption
@@ -385,7 +420,7 @@ pub fn parse_rds(data: &[u8]) -> Result<RObject> {
         // Read the encoding string length and the encoding string itself
         ensure_bytes_available(&cursor, 4, "parse_rds:enc_len")?;
         let enc_len = cursor.read_u32::<BigEndian>()? as usize;
-        guard_allocation(enc_len, 1, &cursor, "header encoding")?;
+        guard_allocation(ctx, enc_len, 1, &cursor, "header encoding")?;
         let mut enc_bytes = vec![0u8; enc_len];
         ensure_bytes_available(&cursor, enc_len, "parse_rds:enc_bytes")?;
         cursor.read_exact(&mut enc_bytes)?;
@@ -409,6 +444,7 @@ pub fn parse_rds(data: &[u8]) -> Result<RObject> {
         );
     }
     let result = parse_object(
+        ctx,
         &mut cursor,
         &mut ref_table,
         &mut symbol_table,
@@ -466,6 +502,7 @@ fn parse_header(cursor: &mut Cursor<&[u8]>) -> Result<u32> {
 
 /// Parse an R object from the stream.
 fn parse_object(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -580,7 +617,7 @@ fn parse_object(
         if has_attr && (sexp_type == LISTSXP || sexp_type == LANGSXP || sexp_type == CLOSXP) {
             let attr_obj = PARSING_ATTRIBUTES.with(|flag| {
                 let prev = flag.replace(true);
-                let obj = parse_object(cursor, ref_table, symbol_table, dedup_table);
+                let obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table);
                 flag.set(prev);
                 obj
             })?;
@@ -592,7 +629,7 @@ fn parse_object(
 
             // Use guard to ensure PARSING_S4_TAG flag is always reset, even on error
             let _guard = S4TagGuard::new();
-            let pairlist = parse_pairlist(cursor, true, ref_table, symbol_table, dedup_table)?;
+            let pairlist = parse_pairlist(ctx, cursor, true, ref_table, symbol_table, dedup_table)?;
 
             let attrs = if let RObject::Pairlist(list) = pairlist {
                 parse_attributes(RObject::Pairlist(list))?
@@ -623,17 +660,17 @@ fn parse_object(
         EMPTYENV_SXP => RObject::EmptyEnv,         // Empty environment (root of env tree)
         BASEENV_SXP => RObject::BaseEnv,           // Base environment
         GLOBALENV_SXP => RObject::GlobalEnv,       // Global environment
-        SYMSXP => parse_symbol(cursor, ref_table, symbol_table, dedup_table)?,
-        INTSXP => parse_integer_vector(cursor)?,
-        REALSXP => parse_real_vector(cursor)?,
-        CPLXSXP => parse_complex_vector(cursor)?,
-        LGLSXP => parse_logical_vector(cursor)?,
-        STRSXP => parse_character_vector(cursor, ref_table, symbol_table, dedup_table)?,
-        RAWSXP => parse_raw_vector(cursor)?,
-        S4SXP => parse_s4_object(cursor, ref_table, symbol_table, dedup_table)?,
-        VECSXP => parse_list(cursor, ref_table, symbol_table, dedup_table, has_attr)?,
-        EXPRSXP => parse_expression(cursor, ref_table, symbol_table, dedup_table)?,
-        BCODESXP => parse_bytecode(cursor, ref_table, symbol_table, dedup_table)?,
+        SYMSXP => parse_symbol(ctx, cursor, ref_table, symbol_table, dedup_table)?,
+        INTSXP => parse_integer_vector(ctx, cursor)?,
+        REALSXP => parse_real_vector(ctx, cursor)?,
+        CPLXSXP => parse_complex_vector(ctx, cursor)?,
+        LGLSXP => parse_logical_vector(ctx, cursor)?,
+        STRSXP => parse_character_vector(ctx, cursor, ref_table, symbol_table, dedup_table)?,
+        RAWSXP => parse_raw_vector(ctx, cursor)?,
+        S4SXP => parse_s4_object(ctx, cursor, ref_table, symbol_table, dedup_table)?,
+        VECSXP => parse_list(ctx, cursor, ref_table, symbol_table, dedup_table, has_attr)?,
+        EXPRSXP => parse_expression(ctx, cursor, ref_table, symbol_table, dedup_table)?,
+        BCODESXP => parse_bytecode(ctx, cursor, ref_table, symbol_table, dedup_table)?,
         EXTPTRSXP => {
             // External pointer - typically cannot be serialized meaningfully
             // R usually replaces these with NULL on deserialization
@@ -651,15 +688,16 @@ fn parse_object(
             }
             RObject::Null
         }
-        LISTSXP => parse_pairlist(cursor, has_tag, ref_table, symbol_table, dedup_table)?,
-        LANGSXP => parse_language(cursor, has_tag, ref_table, symbol_table, dedup_table)?,
+        LISTSXP => parse_pairlist(ctx, cursor, has_tag, ref_table, symbol_table, dedup_table)?,
+        LANGSXP => parse_language(ctx, cursor, has_tag, ref_table, symbol_table, dedup_table)?,
         CHARSXP => {
             // Sometimes CHARSXP appears standalone (like for encoding markers)
-            let string = parse_charsxp_content(cursor, flags)?;
+            let string = parse_charsxp_content(ctx, cursor, flags)?;
             // Return as a single-element character vector for now
             RObject::Character(vec![Arc::from(string.as_str())])
         }
         CLOSXP => parse_closure(
+            ctx,
             cursor,
             has_tag,
             track_reference,
@@ -667,10 +705,10 @@ fn parse_object(
             symbol_table,
             dedup_table,
         )?,
-        ENVSXP => parse_environment(cursor, ref_table, symbol_table, dedup_table)?,
-        PROMSXP => parse_promise(cursor, ref_table, symbol_table, dedup_table)?,
-        SPECIALSXP => parse_special(cursor, ref_table, symbol_table, dedup_table)?,
-        BUILTINSXP => parse_builtin(cursor, ref_table, symbol_table, dedup_table)?,
+        ENVSXP => parse_environment(ctx, cursor, ref_table, symbol_table, dedup_table)?,
+        PROMSXP => parse_promise(ctx, cursor, ref_table, symbol_table, dedup_table)?,
+        SPECIALSXP => parse_special(ctx, cursor, ref_table, symbol_table, dedup_table)?,
+        BUILTINSXP => parse_builtin(ctx, cursor, ref_table, symbol_table, dedup_table)?,
         REFSXP => {
             // Reference to a previously seen object
             // The reference index occupies the upper 24 bits (bits 8-31)
@@ -724,12 +762,12 @@ fn parse_object(
             // ALTREP object (version 3 feature)
             // Structure: class_info, state, attributes
             // ALTREP handles its own attributes internally, so parse them here
-            let class_info = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-            let state = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-            let attributes_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+            let class_info = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+            let state = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+            let attributes_obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
 
             // Convert ALTREP to native representation
-            let native_obj = convert_altrep_to_native(class_info, state)?;
+            let native_obj = convert_altrep_to_native(ctx, class_info, state)?;
 
             // Parse and apply attributes if present
             let final_obj = if !matches!(attributes_obj, RObject::Null) {
@@ -756,11 +794,11 @@ fn parse_object(
         NAMESPACESXP => {
             // Namespace - parse and discard, then return early to handle attributes specially
 
-            let namespace_result = parse_namespace(cursor, ref_table, symbol_table, dedup_table)?;
+            let namespace_result = parse_namespace(ctx, cursor, ref_table, symbol_table, dedup_table)?;
 
             // For namespaces with attributes, we need to parse and discard them
             if has_attr {
-                let _attrs = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+                let _attrs = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
             }
 
             // Update ref table if needed
@@ -789,10 +827,10 @@ fn parse_object(
             // Namespace/base namespace markers in serialization format
             // Similar to NAMESPACESXP (123) but use format type 249/250
 
-            let namespace_result = parse_namespace(cursor, ref_table, symbol_table, dedup_table)?;
+            let namespace_result = parse_namespace(ctx, cursor, ref_table, symbol_table, dedup_table)?;
 
             if has_attr {
-                let _attrs = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+                let _attrs = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
             }
 
             return Ok(namespace_result);
@@ -824,9 +862,9 @@ fn parse_object(
             // Attribute list/language alternate encoding
             // Parse as regular list/language
             if sexp_type == ATTRLISTSXP {
-                parse_pairlist(cursor, has_tag, ref_table, symbol_table, dedup_table)?
+                parse_pairlist(ctx, cursor, has_tag, ref_table, symbol_table, dedup_table)?
             } else {
-                parse_language(cursor, has_tag, ref_table, symbol_table, dedup_table)?
+                parse_language(ctx, cursor, has_tag, ref_table, symbol_table, dedup_table)?
             }
         }
         _ if sexp_type > 25 && sexp_type < 238 => {
@@ -855,7 +893,7 @@ fn parse_object(
             Some(obj) => obj,
             None => PARSING_ATTRIBUTES.with(|flag| {
                 let prev = flag.replace(true);
-                let obj = parse_object(cursor, ref_table, symbol_table, dedup_table);
+                let obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table);
                 flag.set(prev);
                 obj
             })?,
@@ -1033,9 +1071,9 @@ fn parse_object(
 }
 
 /// Parse an integer vector.
-fn parse_integer_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+fn parse_integer_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
-    guard_allocation(length, std::mem::size_of::<i32>(), cursor, "integer vector")?;
+    guard_allocation(ctx, length, std::mem::size_of::<i32>(), cursor, "integer vector")?;
     let mut vec = Vec::with_capacity(length);
 
     for _ in 0..length {
@@ -1047,9 +1085,9 @@ fn parse_integer_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
 }
 
 /// Parse a real (double) vector.
-fn parse_real_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+fn parse_real_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
-    guard_allocation(length, std::mem::size_of::<f64>(), cursor, "real vector")?;
+    guard_allocation(ctx, length, std::mem::size_of::<f64>(), cursor, "real vector")?;
     let mut vec = Vec::with_capacity(length);
 
     for _ in 0..length {
@@ -1061,9 +1099,10 @@ fn parse_real_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
 }
 
 /// Parse a logical vector.
-fn parse_logical_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+fn parse_logical_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(
+        ctx,
         length,
         std::mem::size_of::<Logical>(),
         cursor,
@@ -1094,6 +1133,7 @@ fn read_int_flexible(cursor: &mut Cursor<&[u8]>) -> Result<i32> {
 
 /// Parse a character vector (STRSXP - a vector of CHARSXP).
 fn parse_character_vector(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1102,7 +1142,7 @@ fn parse_character_vector(
     let pos_before_length = cursor.position();
     ensure_bytes_available(cursor, 4, "parse_character_vector:length")?;
     let length = cursor.read_u32::<BigEndian>()? as usize;
-    guard_allocation(length, 1, cursor, "character vector")?;
+    guard_allocation(ctx, length, 1, cursor, "character vector")?;
 
     if debug_enabled() {
         let remaining = cursor.get_ref().len() as u64 - cursor.position();
@@ -1144,7 +1184,7 @@ fn parse_character_vector(
             // Symbol in a string vector - read the CHARSXP name directly
             // SYMSXP structure: flags (already read) + CHARSXP (name)
             // The name can also be a REFSXP, so handle that case
-            match parse_charsxp(cursor) {
+            match parse_charsxp(ctx, cursor) {
                 Ok(name_string) => {
                     let arc_str: Arc<str> = Arc::from(name_string.as_str());
                     string_cache.push(arc_str.clone());
@@ -1191,14 +1231,14 @@ fn parse_character_vector(
 
             // Skip the nested STRSXP by parsing and discarding it
             cursor.set_position(pos);
-            let _ = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+            let _ = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
         } else {
             // Check if it's a CHARSXP (most common case)
             let type_from_8_15 = (flags >> 8) & 0xFF;
             if type_from_0_7 == CHARSXP || type_from_8_15 == CHARSXP {
                 // Reset position and parse as CHARSXP
                 cursor.set_position(pos);
-                let string = parse_charsxp(cursor)?;
+                let string = parse_charsxp(ctx, cursor)?;
                 let arc_str: Arc<str> = Arc::from(string.as_str());
 
                 // Add to local string cache for future REFSXP references
@@ -1208,7 +1248,7 @@ fn parse_character_vector(
                 // Some other type - parse it and convert to string
                 cursor.set_position(pos);
                 let pos_before_parse = cursor.position();
-                let obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+                let obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
                 let pos_after_parse = cursor.position();
                 if debug_enabled() {
                     eprintln!(
@@ -1244,9 +1284,9 @@ fn parse_character_vector(
 }
 
 /// Parse a raw vector (RAWSXP - a vector of bytes).
-fn parse_raw_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+fn parse_raw_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
-    guard_allocation(length, 1, cursor, "raw vector")?;
+    guard_allocation(ctx, length, 1, cursor, "raw vector")?;
     let mut vec = vec![0u8; length];
 
     // Read the raw bytes directly
@@ -1256,11 +1296,12 @@ fn parse_raw_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
 }
 
 /// Parse a complex vector (CPLXSXP).
-fn parse_complex_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+fn parse_complex_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     use crate::types::Complex;
 
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(
+        ctx,
         length,
         std::mem::size_of::<Complex>(),
         cursor,
@@ -1283,6 +1324,7 @@ fn parse_complex_vector(cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
 /// S4 objects in RDS are just markers - the actual data is in attributes.
 /// We return a placeholder NULL and let the attribute parsing handle it.
 fn parse_s4_object(
+    _ctx: &ParserContext,
     _cursor: &mut Cursor<&[u8]>,
     _ref_table: &mut RefTable,
     _symbol_table: &mut SymbolTable,
@@ -1295,13 +1337,14 @@ fn parse_s4_object(
 
 /// Parse a symbol (SYMSXP).
 fn parse_symbol(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
 ) -> Result<RObject> {
     // A symbol consists of a CHARSXP for the name
-    let name_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let name_obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
 
     // Extract the name
     match name_obj {
@@ -1325,6 +1368,7 @@ fn parse_symbol(
 
 /// Parse a generic list (VECSXP).
 fn parse_list(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1333,7 +1377,7 @@ fn parse_list(
 ) -> Result<RObject> {
     let pos_before_length = cursor.position();
     let length = cursor.read_u32::<BigEndian>()? as usize;
-    guard_allocation(length, 1, cursor, "VECSXP/list")?;
+    guard_allocation(ctx, length, 1, cursor, "VECSXP/list")?;
     let mut elements = Vec::with_capacity(length);
 
     if debug_enabled() {
@@ -1363,7 +1407,7 @@ fn parse_list(
                 available: 0,
             });
         }
-        let element = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+        let element = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
 
         // Check if this is a Real vector that looks like an ALTREP compact_intseq state
         // R sometimes serializes repeated ALTREP sequences as bare state vectors
@@ -1386,7 +1430,7 @@ fn parse_list(
                     // We need to consume it ONLY if this is not the last element (to avoid
                     // consuming the marker before list attributes).
                     if i < length - 1 {
-                        let _next = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+                        let _next = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
                     }
 
                     RObject::Integer(int_vec)
@@ -1408,17 +1452,18 @@ fn parse_list(
 /// typically language objects. The difference is semantic: EXPRSXP is used for collections
 /// of unevaluated expressions (e.g., the result of parse()).
 fn parse_expression(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
 ) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
-    guard_allocation(length, 1, cursor, "expression vector")?;
+    guard_allocation(ctx, length, 1, cursor, "expression vector")?;
     let mut elements = Vec::with_capacity(length);
 
     for _ in 0..length {
-        let element = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+        let element = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
         elements.push(element);
     }
 
@@ -1427,6 +1472,7 @@ fn parse_expression(
 
 /// Parse bytecode (BCODESXP) using R's ReadBC/ReadBC1 structure.
 fn parse_bytecode(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1434,24 +1480,26 @@ fn parse_bytecode(
 ) -> Result<RObject> {
     let reps_len = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(
+        ctx,
         reps_len,
         std::mem::size_of::<Option<RObject>>(),
         cursor,
         "bytecode reps",
     )?;
     let mut reps = vec![None; reps_len];
-    parse_bytecode_body(cursor, ref_table, symbol_table, dedup_table, &mut reps)
+    parse_bytecode_body(ctx, cursor, ref_table, symbol_table, dedup_table, &mut reps)
 }
 
 fn parse_bytecode_body(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
     reps: &mut [Option<RObject>],
 ) -> Result<RObject> {
-    let code = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-    let constants = parse_bc_constants(cursor, ref_table, symbol_table, dedup_table, reps)?;
+    let code = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+    let constants = parse_bc_constants(ctx, cursor, ref_table, symbol_table, dedup_table, reps)?;
 
     Ok(RObject::Bytecode {
         code: Box::new(code),
@@ -1461,6 +1509,7 @@ fn parse_bytecode_body(
 }
 
 fn parse_bc_constants(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1468,14 +1517,15 @@ fn parse_bc_constants(
     reps: &mut [Option<RObject>],
 ) -> Result<Vec<RObject>> {
     let count = cursor.read_u32::<BigEndian>()? as usize;
-    guard_allocation(count, 1, cursor, "bytecode constants")?;
+    guard_allocation(ctx, count, 1, cursor, "bytecode constants")?;
     let mut constants = Vec::with_capacity(count);
 
     for _ in 0..count {
         let type_code = cursor.read_i32::<BigEndian>()?;
         let value = match type_code as u32 {
-            BCODESXP => parse_bytecode_body(cursor, ref_table, symbol_table, dedup_table, reps)?,
+            BCODESXP => parse_bytecode_body(ctx, cursor, ref_table, symbol_table, dedup_table, reps)?,
             BCREPREF | BCREPDEF | LANGSXP | LISTSXP | ATTRLANGSXP | ATTRLISTSXP => parse_bc_lang(
+                ctx,
                 cursor,
                 ref_table,
                 symbol_table,
@@ -1483,7 +1533,7 @@ fn parse_bc_constants(
                 reps,
                 type_code,
             )?,
-            _ => parse_object(cursor, ref_table, symbol_table, dedup_table)?,
+            _ => parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?,
         };
         constants.push(value);
     }
@@ -1492,6 +1542,7 @@ fn parse_bc_constants(
 }
 
 fn parse_bc_lang(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1510,6 +1561,7 @@ fn parse_bc_lang(
             let index = cursor.read_u32::<BigEndian>()? as usize;
             let inner_type = cursor.read_i32::<BigEndian>()?;
             let value = parse_bc_lang(
+                ctx,
                 cursor,
                 ref_table,
                 symbol_table,
@@ -1523,6 +1575,7 @@ fn parse_bc_lang(
             Ok(value)
         }
         ATTRLANGSXP => parse_bc_lang_struct(
+            ctx,
             cursor,
             ref_table,
             symbol_table,
@@ -1532,6 +1585,7 @@ fn parse_bc_lang(
             true,
         ),
         ATTRLISTSXP => parse_bc_lang_struct(
+            ctx,
             cursor,
             ref_table,
             symbol_table,
@@ -1541,6 +1595,7 @@ fn parse_bc_lang(
             true,
         ),
         LANGSXP => parse_bc_lang_struct(
+            ctx,
             cursor,
             ref_table,
             symbol_table,
@@ -1550,6 +1605,7 @@ fn parse_bc_lang(
             false,
         ),
         LISTSXP => parse_bc_lang_struct(
+            ctx,
             cursor,
             ref_table,
             symbol_table,
@@ -1558,11 +1614,12 @@ fn parse_bc_lang(
             LISTSXP,
             false,
         ),
-        _ => parse_object(cursor, ref_table, symbol_table, dedup_table),
+        _ => parse_object(ctx, cursor, ref_table, symbol_table, dedup_table),
     }
 }
 
 fn parse_bc_lang_struct(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1572,16 +1629,16 @@ fn parse_bc_lang_struct(
     has_attr: bool,
 ) -> Result<RObject> {
     let attr_obj = if has_attr {
-        Some(parse_object(cursor, ref_table, symbol_table, dedup_table)?)
+        Some(parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?)
     } else {
         None
     };
 
-    let tag_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let tag_obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
     let car_type = cursor.read_i32::<BigEndian>()?;
-    let car = parse_bc_lang(cursor, ref_table, symbol_table, dedup_table, reps, car_type)?;
+    let car = parse_bc_lang(ctx, cursor, ref_table, symbol_table, dedup_table, reps, car_type)?;
     let cdr_type = cursor.read_i32::<BigEndian>()?;
-    let cdr = parse_bc_lang(cursor, ref_table, symbol_table, dedup_table, reps, cdr_type)?;
+    let cdr = parse_bc_lang(ctx, cursor, ref_table, symbol_table, dedup_table, reps, cdr_type)?;
 
     let mut base = match actual_type {
         LANGSXP => build_language_from_bc(car, cdr),
@@ -1661,6 +1718,7 @@ fn build_pairlist_from_bc(tag_obj: RObject, car: RObject, cdr: RObject) -> RObje
 /// When has_tag is true, it means the closure has attributes that need to be parsed
 /// and returned separately for the caller to handle.
 fn parse_closure(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     _has_tag: bool,
     track_reference: bool,
@@ -1678,10 +1736,10 @@ fn parse_closure(
 
     // Standard order (from R's serialize.c): environment, formals, body
     let _env_start = cursor.position();
-    let env = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let env = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
 
     let _form_start = cursor.position();
-    let form = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let form = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
 
     // Delay registering the closure placeholder until after formals are parsed so that
     // symbols introduced by formals occupy the earliest reference slots before the
@@ -1696,7 +1754,7 @@ fn parse_closure(
     let _body_start = cursor.position();
     let bod = PARSING_CLOSURE_BODY.with(|flag| {
         let prev = flag.replace(true);
-        let result = parse_object(cursor, ref_table, symbol_table, dedup_table);
+        let result = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table);
         flag.set(prev);
         result
     })?;
@@ -1726,6 +1784,7 @@ fn parse_closure(
 /// Parse an environment (ENVSXP).
 /// Environments consist of: locked flag, enclosing environment, frame (pairlist), hashtab
 fn parse_environment(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1733,15 +1792,15 @@ fn parse_environment(
 ) -> Result<RObject> {
     // Parse locked flag (an integer: 0 or 1)
     // We read it but don't currently store it in the Environment struct
-    let _locked = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let _locked = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
     // Parse enclosing environment (can be another environment or NULL for global env)
-    let enclosing = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let enclosing = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
     // Parse frame (pairlist of bindings)
-    let frame = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let frame = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
     // Parse hashtab (can be NULL or a VECSXP)
-    let hashtab = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let hashtab = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
     // Parse attributes (serialized even when NULL)
-    let _attrs = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let _attrs = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
 
     // Note: attributes are NOT parsed here - they're handled by the HAS_ATTR flag
     // in parse_object
@@ -1757,6 +1816,7 @@ fn parse_environment(
 /// Namespaces are special environments used by R packages.
 /// They trigger automatic package loading when the RDS file is read in R.
 fn parse_namespace(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1766,12 +1826,12 @@ fn parse_namespace(
     // a length, then that many CHARSXP entries.
     let _names_flag = cursor.read_u32::<BigEndian>()?;
     let length = cursor.read_u32::<BigEndian>()? as usize;
-    guard_allocation(length, 1, cursor, "namespace names")?;
+    guard_allocation(ctx, length, 1, cursor, "namespace names")?;
 
     let mut names = Vec::with_capacity(length);
     for _ in 0..length {
         // Each entry is written via WriteItem on a CHARSXP
-        let obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+        let obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
         // Extract the string from the parsed object
         if let RObject::Character(chars) = obj {
             if let Some(s) = chars.first() {
@@ -1787,6 +1847,7 @@ fn parse_namespace(
 /// Language objects represent unevaluated expressions/calls.
 /// They're structured like pairlists: TAG (if present), CAR (function), CDR (arguments).
 fn parse_language(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     has_tag: bool,
     ref_table: &mut RefTable,
@@ -1795,15 +1856,15 @@ fn parse_language(
 ) -> Result<RObject> {
     // Parse the TAG if present (usually not for language objects)
     if has_tag {
-        let _tag_obj = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+        let _tag_obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
         // Tags in language objects are rare, we'll skip them for now
     }
 
     // Parse the CAR (the function being called)
-    let function = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let function = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
 
     // Parse the CDR (the argument list)
-    let cdr = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let cdr = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
 
     // Extract arguments with their names (tags) from the CDR
     let args = match cdr.into_concrete() {
@@ -1835,6 +1896,7 @@ fn parse_language(
 /// Does NOT parse the CDR - that's handled by the iterative loop in parse_pairlist.
 /// Returns (tag_name, tag_object, car_value).
 fn parse_pairlist_element(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     has_tag: bool,
     ref_table: &mut RefTable,
@@ -1929,7 +1991,7 @@ fn parse_pairlist_element(
         } else {
             // Reset and parse normally for non-REFSXP tags.
             cursor.set_position(pos);
-            parse_object(cursor, ref_table, symbol_table, dedup_table)?
+            parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?
         };
 
         // Extract the tag name from the symbol or character object
@@ -1941,7 +2003,7 @@ fn parse_pairlist_element(
     };
 
     // Parse the CAR (the value for this element)
-    let car = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let car = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
 
     Ok((tag, tag_object, car))
 }
@@ -1951,6 +2013,7 @@ fn parse_pairlist_element(
 /// R's serialization format: FLAGS (with type), TAG (if HAS_TAG_BIT), CAR, then FLAGS for next element.
 /// If next FLAGS indicate LISTSXP/LANGSXP/etc., it's a continuation; otherwise it's the CDR terminator.
 fn parse_pairlist(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     has_tag: bool,
     ref_table: &mut RefTable,
@@ -1970,7 +2033,7 @@ fn parse_pairlist(
 
     // Parse the first element (TAG if has_tag, then CAR)
     let (first_tag, first_tag_object, first_car) =
-        parse_pairlist_element(cursor, has_tag, ref_table, symbol_table, dedup_table)?;
+        parse_pairlist_element(ctx, cursor, has_tag, ref_table, symbol_table, dedup_table)?;
     elements.push(PairlistElement {
         tag: first_tag,
         value: first_car,
@@ -2035,7 +2098,7 @@ fn parse_pairlist(
         if next_type == REFSXP {
             // Rewind to let parse_object consume from the REFSXP flags we peeked.
             cursor.set_position(pos);
-            let referenced = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+            let referenced = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
             match referenced.into_concrete() {
                 RObject::Null => break,
                 RObject::Pairlist(mut tail) => {
@@ -2060,7 +2123,7 @@ fn parse_pairlist(
             }
 
             let (tag, tag_object, car) =
-                parse_pairlist_element(cursor, has_tag_next, ref_table, symbol_table, dedup_table)?;
+                parse_pairlist_element(ctx, cursor, has_tag_next, ref_table, symbol_table, dedup_table)?;
             elements.push(PairlistElement {
                 tag,
                 value: car,
@@ -2069,7 +2132,7 @@ fn parse_pairlist(
         } else {
             // Not a pairlist continuation - reset position and parse as CDR terminator
             cursor.set_position(pos);
-            let cdr = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+            let cdr = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
 
             // Unwrap Shared if present to check the actual type
             let cdr_concrete = cdr.into_concrete();
@@ -2150,15 +2213,16 @@ fn extract_tag_name(tag_obj: RObject) -> Option<Arc<str>> {
 /// Parse a promise (PROMSXP).
 /// Promises are lazy evaluation constructs containing: value, expression, environment
 fn parse_promise(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
 ) -> Result<RObject> {
     // Parse the three components of a promise
-    let value = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-    let expression = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
-    let environment = parse_object(cursor, ref_table, symbol_table, dedup_table)?;
+    let value = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+    let expression = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+    let environment = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
 
     Ok(RObject::Promise {
         value: Box::new(value),
@@ -2171,6 +2235,7 @@ fn parse_promise(
 /// Special functions like 'if', 'for', 'while' have special evaluation rules.
 /// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
 fn parse_special(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     _ref_table: &mut RefTable,
     _symbol_table: &mut SymbolTable,
@@ -2186,7 +2251,7 @@ fn parse_special(
     }
 
     let length = length as usize;
-    guard_allocation(length, 1, cursor, "special function name")?;
+    guard_allocation(ctx, length, 1, cursor, "special function name")?;
     ensure_bytes_available(cursor, length, "special:name_bytes")?;
 
     // Read the string bytes
@@ -2204,6 +2269,7 @@ fn parse_special(
 /// Builtin functions like 'sum', 'c', '+' are internal R functions.
 /// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
 fn parse_builtin(
+    ctx: &ParserContext,
     cursor: &mut Cursor<&[u8]>,
     _ref_table: &mut RefTable,
     _symbol_table: &mut SymbolTable,
@@ -2219,7 +2285,7 @@ fn parse_builtin(
     }
 
     let length = length as usize;
-    guard_allocation(length, 1, cursor, "builtin function name")?;
+    guard_allocation(ctx, length, 1, cursor, "builtin function name")?;
     ensure_bytes_available(cursor, length, "builtin:name_bytes")?;
 
     // Read the string bytes
@@ -2234,7 +2300,7 @@ fn parse_builtin(
 }
 
 /// Convert an ALTREP object to its native representation.
-fn convert_altrep_to_native(class_info: RObject, state: RObject) -> Result<RObject> {
+fn convert_altrep_to_native(ctx: &ParserContext, class_info: RObject, state: RObject) -> Result<RObject> {
     // Debug logging to understand ALTREP structure
     let class_info = class_info.into_concrete();
     let state = state.into_concrete();
@@ -2252,10 +2318,10 @@ fn convert_altrep_to_native(class_info: RObject, state: RObject) -> Result<RObje
                 return convert_wrap_int(state);
             }
             "compact_intseq" => {
-                return convert_compact_intseq(state);
+                return convert_compact_intseq(ctx, state);
             }
             "compact_realseq" => {
-                return convert_compact_intseq(state);
+                return convert_compact_intseq(ctx, state);
             }
             _ => {}
         }
@@ -2266,12 +2332,12 @@ fn convert_altrep_to_native(class_info: RObject, state: RObject) -> Result<RObje
     match &state {
         RObject::Real(params) if params.len() == 3 => {
             // Standard compact_intseq with state vector
-            convert_compact_intseq(state)
+            convert_compact_intseq(ctx, state)
         }
         RObject::Integer(params) if params.len() == 3 => {
             // Sometimes the state is stored as integers instead of reals
             let real_params = vec![params[0] as f64, params[1] as f64, params[2] as f64];
-            convert_compact_intseq(RObject::Real(real_params))
+            convert_compact_intseq(ctx, RObject::Real(real_params))
         }
         RObject::Integer(vec) if vec.len() == 1 && vec[0] == 13 => {
             // Special case: when state is Integer([13]), R has stored the actual data
@@ -2429,7 +2495,7 @@ fn convert_altrep_pairlist_state(state: RObject) -> Result<RObject> {
 }
 
 /// Convert a compact integer sequence to a regular integer vector.
-fn convert_compact_intseq(state: RObject) -> Result<RObject> {
+fn convert_compact_intseq(ctx: &ParserContext, state: RObject) -> Result<RObject> {
     let state = state.into_concrete();
     // compact_intseq state is a Real vector: [length, first, stride]
     let (length, first, stride) = match state {
@@ -2455,7 +2521,7 @@ fn convert_compact_intseq(state: RObject) -> Result<RObject> {
     }
     let length_usize = length as usize;
     // Each element is an i32
-    guard_allocation_common(length_usize, std::mem::size_of::<i32>(), "compact_intseq")?;
+    guard_allocation_common(ctx, length_usize, std::mem::size_of::<i32>(), "compact_intseq")?;
     let mut vec = Vec::with_capacity(length_usize);
     for i in 0..length_usize {
         vec.push(first + (i as i32) * stride);
@@ -2465,7 +2531,7 @@ fn convert_compact_intseq(state: RObject) -> Result<RObject> {
 }
 
 /// Parse a CHARSXP (internal character string).
-fn parse_charsxp(cursor: &mut Cursor<&[u8]>) -> Result<String> {
+fn parse_charsxp(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<String> {
     // Read the CHARSXP header
     let flags = cursor.read_u32::<BigEndian>()?;
     let type_from_0_7 = flags & 0xFF;
@@ -2478,7 +2544,7 @@ fn parse_charsxp(cursor: &mut Cursor<&[u8]>) -> Result<String> {
     // This is important because flags might have type 0 in bits 0-7 but type 9 in bits 8-15
     if type_from_8_15 == CHARSXP || type_from_0_7 == CHARSXP {
         // Parse the string content, passing flags to detect compact encoding
-        let string = parse_charsxp_content(cursor, flags)?;
+        let string = parse_charsxp_content(ctx, cursor, flags)?;
 
         // If there are attributes, we need to skip them (they're just metadata like encoding)
         // For CHARSXP, attributes come AFTER the string data (unlike LISTSXP where they come before)
@@ -2532,7 +2598,7 @@ fn parse_charsxp(cursor: &mut Cursor<&[u8]>) -> Result<String> {
 /// signaled by bits 24-31 of the flags being non-zero (specifically 0x04).
 ///
 /// The compact encoding is detected by checking bits 24-31 of the flags field.
-fn parse_charsxp_content(cursor: &mut Cursor<&[u8]>, flags: u32) -> Result<String> {
+fn parse_charsxp_content(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>, flags: u32) -> Result<String> {
     let pos_before = cursor.position();
     if debug_enabled() {
         eprintln!("[parse_charsxp_content] Starting at pos {}", pos_before);
@@ -2574,7 +2640,7 @@ fn parse_charsxp_content(cursor: &mut Cursor<&[u8]>, flags: u32) -> Result<Strin
     }
 
     let length = length as usize;
-    guard_allocation(length, 1, cursor, "charsxp content")?;
+    guard_allocation(ctx, length, 1, cursor, "charsxp content")?;
 
     // Read the string bytes
     let mut bytes = vec![0u8; length];

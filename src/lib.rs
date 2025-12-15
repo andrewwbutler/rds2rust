@@ -16,9 +16,93 @@ pub use types::{
     Attributes, DataFrameData, FactorData, Logical, PairlistElement, RObject, S4ObjectData,
 };
 
-/// Read an RDS file from a byte slice.
+/// Configuration for parsing RDS files.
+///
+/// Allows customization of memory allocation limits to handle large files
+/// or enforce stricter safety constraints.
+#[derive(Debug, Clone, Copy)]
+pub struct ParseConfig {
+    /// Maximum number of elements allowed in a vector (default: 50,000,000)
+    pub max_vector_length: usize,
+    /// Maximum bytes that can be allocated for a single vector (default: 128 MB)
+    pub max_allocation_bytes: usize,
+}
+
+impl Default for ParseConfig {
+    fn default() -> Self {
+        Self {
+            max_vector_length: 50_000_000,
+            max_allocation_bytes: 128 * 1024 * 1024, // 128 MB
+        }
+    }
+}
+
+impl ParseConfig {
+    /// Create a new ParseConfig with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the maximum vector length.
+    pub fn with_max_vector_length(mut self, max: usize) -> Self {
+        self.max_vector_length = max;
+        self
+    }
+
+    /// Set the maximum allocation bytes.
+    pub fn with_max_allocation_bytes(mut self, max: usize) -> Self {
+        self.max_allocation_bytes = max;
+        self
+    }
+
+    /// Create a config suitable for large scientific datasets (e.g., genomics).
+    ///
+    /// Sets higher limits:
+    /// - max_vector_length: 500,000,000 (500M elements)
+    /// - max_allocation_bytes: 2 GB
+    pub fn large_data() -> Self {
+        Self {
+            max_vector_length: 500_000_000,
+            max_allocation_bytes: 2 * 1024 * 1024 * 1024, // 2 GB
+        }
+    }
+
+    /// Create a config with unlimited size (use with caution).
+    ///
+    /// Only use this when you trust the input files and have sufficient memory.
+    pub fn unlimited() -> Self {
+        Self {
+            max_vector_length: usize::MAX,
+            max_allocation_bytes: usize::MAX,
+        }
+    }
+}
+
+/// Read an RDS file from a byte slice with default safety limits.
+///
+/// For large files, consider using [`read_rds_with_config`] with [`ParseConfig::large_data()`].
 pub fn read_rds(data: &[u8]) -> Result<RObject> {
-    let obj = parser::parse_rds(data)?;
+    read_rds_with_config(data, ParseConfig::default())
+}
+
+/// Read an RDS file from a byte slice with custom configuration.
+///
+/// # Examples
+///
+/// ```
+/// use rds2rust::{read_rds_with_config, ParseConfig};
+///
+/// // For large scientific datasets
+/// let config = ParseConfig::large_data();
+/// // let obj = read_rds_with_config(&data, config)?;
+///
+/// // For custom limits
+/// let config = ParseConfig::new()
+///     .with_max_allocation_bytes(512 * 1024 * 1024); // 512 MB
+/// // let obj = read_rds_with_config(&data, config)?;
+/// ```
+pub fn read_rds_with_config(data: &[u8], config: ParseConfig) -> Result<RObject> {
+    let obj = parser::parse_rds_with_config(data, config)?;
     Ok(unwrap_top_level_shared(obj))
 }
 
