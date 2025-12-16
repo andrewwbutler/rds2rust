@@ -532,8 +532,15 @@ fn write_object_inner(
                         obj.variant_name()
                     );
                 }
-                if std::env::var("RDS_DEBUG_WITHATTR").is_ok() && matches!(obj, RObject::WithAttributes { .. }) {
-                    eprintln!("[WITHATTR] REFSXP idx={} ptr={:p} type={}", idx, ptr as *const (), obj.variant_name());
+                if std::env::var("RDS_DEBUG_WITHATTR").is_ok()
+                    && matches!(obj, RObject::WithAttributes { .. })
+                {
+                    eprintln!(
+                        "[WITHATTR] REFSXP idx={} ptr={:p} type={}",
+                        idx,
+                        ptr as *const (),
+                        obj.variant_name()
+                    );
                 }
                 write_refsxp(writer, idx)?;
                 return Ok(());
@@ -559,8 +566,15 @@ fn write_object_inner(
                     obj.variant_name()
                 );
             }
-            if std::env::var("RDS_DEBUG_WITHATTR").is_ok() && matches!(obj, RObject::WithAttributes { .. }) {
-                eprintln!("[WITHATTR] DEFINE idx={} ptr={:p} type={}", idx, ptr as *const (), obj.variant_name());
+            if std::env::var("RDS_DEBUG_WITHATTR").is_ok()
+                && matches!(obj, RObject::WithAttributes { .. })
+            {
+                eprintln!(
+                    "[WITHATTR] DEFINE idx={} ptr={:p} type={}",
+                    idx,
+                    ptr as *const (),
+                    obj.variant_name()
+                );
             }
 
             // Push on stack for cycle detection BEFORE descending (important for Shared objects too!)
@@ -1088,8 +1102,10 @@ fn write_pairlist_internal(
         // Write the tag if present
         if let Some(ref tag) = element.tag {
             if debug_pairlist {
-                eprintln!("[PAIRLIST] elem[{}] TAG='{}' (before write: obj_idx={}, sym_idx={})",
-                    i, tag, ref_table.next_index, ref_table.next_symbol_index);
+                eprintln!(
+                    "[PAIRLIST] elem[{}] TAG='{}' (before write: obj_idx={}, sym_idx={})",
+                    i, tag, ref_table.next_index, ref_table.next_symbol_index
+                );
             }
 
             // Extract SharedInfo from tag_object if it's Shared(Symbol)
@@ -1113,15 +1129,22 @@ fn write_pairlist_internal(
             )?;
 
             if debug_pairlist {
-                eprintln!("[PAIRLIST] elem[{}] TAG='{}' (after write: obj_idx={}, sym_idx={})",
-                    i, tag, ref_table.next_index, ref_table.next_symbol_index);
+                eprintln!(
+                    "[PAIRLIST] elem[{}] TAG='{}' (after write: obj_idx={}, sym_idx={})",
+                    i, tag, ref_table.next_index, ref_table.next_symbol_index
+                );
             }
         }
 
         // Write the value
         if debug_pairlist {
-            eprintln!("[PAIRLIST] elem[{}] VALUE type={} (before write: obj_idx={}, sym_idx={})",
-                i, element.value.variant_name(), ref_table.next_index, ref_table.next_symbol_index);
+            eprintln!(
+                "[PAIRLIST] elem[{}] VALUE type={} (before write: obj_idx={}, sym_idx={})",
+                i,
+                element.value.variant_name(),
+                ref_table.next_index,
+                ref_table.next_symbol_index
+            );
         }
 
         // If values_are_symbols and value is single-element Character, write as symbol
@@ -1146,8 +1169,13 @@ fn write_pairlist_internal(
         }
 
         if debug_pairlist {
-            eprintln!("[PAIRLIST] elem[{}] VALUE type={} (after write: obj_idx={}, sym_idx={})",
-                i, element.value.variant_name(), ref_table.next_index, ref_table.next_symbol_index);
+            eprintln!(
+                "[PAIRLIST] elem[{}] VALUE type={} (after write: obj_idx={}, sym_idx={})",
+                i,
+                element.value.variant_name(),
+                ref_table.next_index,
+                ref_table.next_symbol_index
+            );
         }
 
         // Write the CDR (tail)
@@ -1497,7 +1525,10 @@ fn write_s3_object(
 
             // Write attributes FIRST (before CAR/CDR)
             let mut attrs = attributes.clone();
-            attrs.insert(Arc::from("class"), RObject::Character(class.to_vec().into()));
+            attrs.insert(
+                Arc::from("class"),
+                RObject::Character(class.to_vec().into()),
+            );
             write_attributes(writer, &attrs, ref_table, symbol_tracker)?;
 
             // Write the function (CAR)
@@ -1609,7 +1640,10 @@ fn write_s3_object(
 
     // Write attributes with class added
     let mut attrs = attributes.clone();
-    attrs.insert(Arc::from("class"), RObject::Character(class.to_vec().into()));
+    attrs.insert(
+        Arc::from("class"),
+        RObject::Character(class.to_vec().into()),
+    );
     write_attributes(writer, &attrs, ref_table, symbol_tracker)?;
 
     Ok(())
@@ -1635,7 +1669,10 @@ fn write_s4_object(
     let class_obj = RObject::Character(class.to_vec().into());
     let mut class_attrs = Attributes::new();
     let pkg_value = package.cloned().unwrap_or_else(|| Arc::from(".GlobalEnv"));
-    class_attrs.insert(Arc::from("package"), RObject::Character(vec![pkg_value].into()));
+    class_attrs.insert(
+        Arc::from("package"),
+        RObject::Character(vec![pkg_value].into()),
+    );
 
     let class_with_package = RObject::WithAttributes {
         object: Box::new(class_obj),
@@ -1655,6 +1692,14 @@ fn write_s4_object(
 }
 
 /// Write an object with attributes.
+///
+/// Supports writing attributes for the following object types:
+/// - Factor (delegates to write_factor_with_attributes)
+/// - Integer vectors
+/// - Real (double) vectors
+/// - Logical vectors
+/// - Character vectors
+/// - Lists (generic vectors)
 fn write_object_with_attributes(
     writer: &mut Vec<u8>,
     object: &RObject,
@@ -1692,6 +1737,19 @@ fn write_object_with_attributes(
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             for s in vec {
                 write_charsxp(writer, s)?;
+            }
+        }
+        RObject::Logical(vec) => {
+            write_flags_with_object(writer, LGLSXP, true, false, false, is_s3_object)?;
+            writer.write_u32::<BigEndian>(vec.len() as u32)?;
+            // NA mapping follows R spec: Logical::Na -> NA_INTEGER (i32::MIN)
+            for logical in vec.as_vec() {
+                let val = match logical {
+                    Logical::False => 0i32,
+                    Logical::True => 1i32,
+                    Logical::Na => RObject::NA_INTEGER,
+                };
+                writer.write_i32::<BigEndian>(val)?;
             }
         }
         RObject::List(elements) => {
@@ -1751,13 +1809,22 @@ fn write_attributes(
 
     let debug_attrs = std::env::var("RDS_DEBUG_ATTRS").is_ok();
     if debug_attrs {
-        eprintln!("[ATTRS] Writing {} attributes, is_s4={}", attrs_iter.len(), is_s4_object);
+        eprintln!(
+            "[ATTRS] Writing {} attributes, is_s4={}",
+            attrs_iter.len(),
+            is_s4_object
+        );
     }
 
     for (key, value) in attrs_iter {
         if debug_attrs {
-            eprintln!("[ATTRS]   tag='{}' value_type={} next_obj_idx={} next_sym_idx={}",
-                key, value.variant_name(), ref_table.next_index, ref_table.next_symbol_index);
+            eprintln!(
+                "[ATTRS]   tag='{}' value_type={} next_obj_idx={} next_sym_idx={}",
+                key,
+                value.variant_name(),
+                ref_table.next_index,
+                ref_table.next_symbol_index
+            );
         }
         elements.push(PairlistElement {
             tag: Some(key.clone()),

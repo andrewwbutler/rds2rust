@@ -51,7 +51,10 @@ fn test_lazy_real_vector() {
 #[test]
 fn test_lazy_character_vector() {
     let obj = RObject::Character(
-        (1..=50).map(|i| Arc::from(format!("str{}", i).as_str())).collect::<Vec<Arc<str>>>().into(),
+        (1..=50)
+            .map(|i| Arc::from(format!("str{}", i).as_str()))
+            .collect::<Vec<Arc<str>>>()
+            .into(),
     );
     let data = write_rds(&obj).expect("Failed to write");
 
@@ -94,7 +97,12 @@ fn test_lazy_list_with_vectors() {
     let obj = RObject::List(vec![
         RObject::Integer((1..=50).collect::<Vec<i32>>().into()),
         RObject::Real((1..=50).map(|i| i as f64).collect::<Vec<f64>>().into()),
-        RObject::Character((1..=50).map(|i| Arc::from(format!("s{}", i).as_str())).collect::<Vec<Arc<str>>>().into()),
+        RObject::Character(
+            (1..=50)
+                .map(|i| Arc::from(format!("s{}", i).as_str()))
+                .collect::<Vec<Arc<str>>>()
+                .into(),
+        ),
     ]);
     let data = write_rds(&obj).expect("Failed to write");
 
@@ -207,8 +215,14 @@ fn test_lazy_dense_matrix_int() {
     // Both should be WithAttributes wrapping Integer vectors
     match (&full_obj, &lazy_obj) {
         (
-            RObject::WithAttributes { object: full_inner, attributes: full_attrs },
-            RObject::WithAttributes { object: lazy_inner, attributes: lazy_attrs }
+            RObject::WithAttributes {
+                object: full_inner,
+                attributes: full_attrs,
+            },
+            RObject::WithAttributes {
+                object: lazy_inner,
+                attributes: lazy_attrs,
+            },
         ) => {
             // Both should have dim attribute
             assert!(full_attrs.get("dim").is_some());
@@ -244,8 +258,14 @@ fn test_lazy_dense_matrix_real() {
 
     match (&full_obj, &lazy_obj) {
         (
-            RObject::WithAttributes { object: full_inner, attributes: full_attrs },
-            RObject::WithAttributes { object: lazy_inner, attributes: lazy_attrs }
+            RObject::WithAttributes {
+                object: full_inner,
+                attributes: full_attrs,
+            },
+            RObject::WithAttributes {
+                object: lazy_inner,
+                attributes: lazy_attrs,
+            },
         ) => {
             // Verify dim attributes match
             match (full_attrs.get("dim"), lazy_attrs.get("dim")) {
@@ -288,8 +308,14 @@ fn test_lazy_matrix_with_dimnames() {
     // Verify dimnames are preserved in lazy mode
     match (&full_obj, &lazy_obj) {
         (
-            RObject::WithAttributes { attributes: full_attrs, .. },
-            RObject::WithAttributes { attributes: lazy_attrs, .. }
+            RObject::WithAttributes {
+                attributes: full_attrs,
+                ..
+            },
+            RObject::WithAttributes {
+                attributes: lazy_attrs,
+                ..
+            },
         ) => {
             // Both should have dimnames
             assert!(full_attrs.get("dimnames").is_some());
@@ -409,15 +435,13 @@ fn test_lazy_large_matrix() {
 
     // dim attribute should be loaded (it's small)
     match lazy_obj {
-        RObject::WithAttributes { attributes, .. } => {
-            match attributes.get("dim") {
-                Some(RObject::Integer(dim)) => {
-                    assert!(dim.is_loaded());
-                    assert_eq!(dim.len(), 2);
-                }
-                _ => panic!("Expected dim attribute"),
+        RObject::WithAttributes { attributes, .. } => match attributes.get("dim") {
+            Some(RObject::Integer(dim)) => {
+                assert!(dim.is_loaded());
+                assert_eq!(dim.len(), 2);
             }
-        }
+            _ => panic!("Expected dim attribute"),
+        },
         _ => panic!("Expected WithAttributes"),
     }
 }
@@ -555,7 +579,10 @@ fn test_lazy_complex_s4_has_lazy_matrices() {
     assert!(full_obj.is_fully_loaded());
 
     let spans = lazy_obj.lazy_spans();
-    println!("Found {} lazy vectors in complex S4 object with matrices", spans.len());
+    println!(
+        "Found {} lazy vectors in complex S4 object with matrices",
+        spans.len()
+    );
 
     // This file contains 3 MatrixContainer S4 objects, each with 2 matrices (2x2)
     // With lazy_threshold=10, the small matrices (4 elements each) should be loaded

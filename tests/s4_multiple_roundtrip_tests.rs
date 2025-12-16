@@ -36,12 +36,7 @@ fn test_multiple_s4_same_class_roundtrip() {
 
                 // Verify name slot
                 if let Some(RObject::Character(vec)) = s4.slots.get(&Arc::from("name")) {
-                    assert_eq!(
-                        vec[0].as_ref(),
-                        *expected_name,
-                        "Item {} name mismatch",
-                        i
-                    );
+                    assert_eq!(vec[0].as_ref(), *expected_name, "Item {} name mismatch", i);
                 } else {
                     panic!("Item {} name slot missing or wrong type", i);
                 }

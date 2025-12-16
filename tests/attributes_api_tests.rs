@@ -20,11 +20,9 @@ fn test_construct_named_list() {
     ]);
 
     // Create names attribute
-    let names = RObject::Character(vec![
-        Arc::from("first"),
-        Arc::from("second"),
-        Arc::from("third"),
-    ].into());
+    let names = RObject::Character(
+        vec![Arc::from("first"), Arc::from("second"), Arc::from("third")].into(),
+    );
 
     // Construct attributes using the public API
     let mut attrs = Attributes::new();
@@ -161,14 +159,17 @@ fn test_object_with_multiple_attributes() {
     // Add names attribute
     attrs.insert(
         Arc::from("names"),
-        RObject::Character(vec![
-            Arc::from("a"),
-            Arc::from("b"),
-            Arc::from("c"),
-            Arc::from("d"),
-            Arc::from("e"),
-            Arc::from("f"),
-        ].into()),
+        RObject::Character(
+            vec![
+                Arc::from("a"),
+                Arc::from("b"),
+                Arc::from("c"),
+                Arc::from("d"),
+                Arc::from("e"),
+                Arc::from("f"),
+            ]
+            .into(),
+        ),
     );
 
     // Add dim attribute to make it a 2x3 matrix
@@ -207,12 +208,15 @@ fn test_multiple_attributes_roundtrip() {
     let mut attrs = Attributes::new();
     attrs.insert(
         Arc::from("names"),
-        RObject::Character(vec![
-            Arc::from("w"),
-            Arc::from("x"),
-            Arc::from("y"),
-            Arc::from("z"),
-        ].into()),
+        RObject::Character(
+            vec![
+                Arc::from("w"),
+                Arc::from("x"),
+                Arc::from("y"),
+                Arc::from("z"),
+            ]
+            .into(),
+        ),
     );
     attrs.insert(Arc::from("version"), RObject::Integer(vec![1].into()));
     attrs.insert(

@@ -17,7 +17,10 @@ use std::sync::Arc;
 fn test_dataframe_column_order_preservation() {
     // Create a DataFrame with specific column order
     let mut columns = IndexMap::new();
-    columns.insert(Arc::from("vst.mean"), RObject::Real(vec![1.0, 2.0, 3.0].into()));
+    columns.insert(
+        Arc::from("vst.mean"),
+        RObject::Real(vec![1.0, 2.0, 3.0].into()),
+    );
     columns.insert(
         Arc::from("vst.variance"),
         RObject::Real(vec![0.5, 1.5, 2.5].into()),
@@ -32,11 +35,14 @@ fn test_dataframe_column_order_preservation() {
     );
     columns.insert(
         Arc::from("vst.variable"),
-        RObject::Logical(vec![
-            rds2rust::Logical::True,
-            rds2rust::Logical::False,
-            rds2rust::Logical::True,
-        ].into()),
+        RObject::Logical(
+            vec![
+                rds2rust::Logical::True,
+                rds2rust::Logical::False,
+                rds2rust::Logical::True,
+            ]
+            .into(),
+        ),
     );
 
     let row_names = vec![Arc::from("1"), Arc::from("2"), Arc::from("3")];

@@ -313,12 +313,8 @@ fn test_logical_vector() {
 
 #[test]
 fn test_logical_roundtrip() {
-    let obj = RObject::Logical(vec![
-        Logical::True,
-        Logical::False,
-        Logical::Na,
-        Logical::True,
-    ].into());
+    let obj =
+        RObject::Logical(vec![Logical::True, Logical::False, Logical::Na, Logical::True].into());
     let serialized = write_rds(&obj).expect("Failed to write logical vector");
     let deserialized = read_rds(&serialized).expect("Failed to read logical vector");
     assert_eq!(obj, deserialized);
@@ -723,4 +719,175 @@ fn test_character_vs_symbol_contexts() {
     // Cleanup
     let _ = fs::remove_file("/tmp/rds2rust_char_contexts_regression.rds");
     let _ = fs::remove_file("/tmp/rds2rust_char_contexts_regression_out.rds");
+}
+
+// =============================================================================
+// Logical Vector with Attributes Tests
+// =============================================================================
+
+#[test]
+fn test_logical_vector_with_attributes() {
+    use rds2rust::Attributes;
+
+    // Create logical vector with attributes
+    let logical_vec = RObject::Logical(
+        vec![Logical::True, Logical::False, Logical::True].into()
+    );
+
+    let mut attrs = Attributes::new();
+    attrs.insert("test_attr".into(), RObject::Character(vec!["value".into()].into()));
+
+    let obj = RObject::WithAttributes {
+        object: Box::new(logical_vec),
+        attributes: attrs,
+    };
+
+    // Write and read back
+    let bytes = write_rds(&obj).unwrap();
+    let result = read_rds(&bytes[..]).unwrap();
+
+    // Verify structure matches
+    assert_eq!(obj, result);
+}
+
+#[test]
+fn test_logical_vector_empty_with_attributes() {
+    use rds2rust::Attributes;
+
+    // Edge case: empty logical vector with attributes (length=0)
+    let logical_vec = RObject::Logical(vec![].into());
+    let mut attrs = Attributes::new();
+    attrs.insert("empty".into(), RObject::Logical(vec![Logical::True].into()));
+
+    let obj = RObject::WithAttributes {
+        object: Box::new(logical_vec),
+        attributes: attrs,
+    };
+
+    let bytes = write_rds(&obj).unwrap();
+    let result = read_rds(&bytes[..]).unwrap();
+    assert_eq!(obj, result);
+}
+
+#[test]
+fn test_logical_vector_na_heavy_with_attributes() {
+    use rds2rust::Attributes;
+
+    // Edge case: mixture of TRUE/FALSE/NA
+    let logical_vec = RObject::Logical(
+        vec![
+            Logical::True, Logical::Na, Logical::False,
+            Logical::Na, Logical::Na, Logical::True,
+            Logical::False, Logical::Na,
+        ].into()
+    );
+
+    let mut attrs = Attributes::new();
+    attrs.insert("test".into(), RObject::Integer(vec![1].into()));
+
+    let obj = RObject::WithAttributes {
+        object: Box::new(logical_vec),
+        attributes: attrs,
+    };
+
+    let bytes = write_rds(&obj).unwrap();
+    let result = read_rds(&bytes[..]).unwrap();
+    assert_eq!(obj, result);
+}
+
+#[test]
+fn test_logical_matrix_with_dimnames() {
+    use rds2rust::Attributes;
+
+    // Create 2x3 logical matrix (R stores by column)
+    let logical_vec = RObject::Logical(
+        vec![
+            Logical::True, Logical::False,  // Column 1
+            Logical::True, Logical::True,   // Column 2
+            Logical::False, Logical::True,  // Column 3
+        ].into()
+    );
+
+    let mut attrs = Attributes::new();
+
+    // Add dim attribute (rows, cols)
+    attrs.insert(
+        "dim".into(),
+        RObject::Integer(vec![2, 3].into())
+    );
+
+    // Add dimnames attribute
+    let dimnames = RObject::List(vec![
+        RObject::Character(vec!["row1".into(), "row2".into()].into()),
+        RObject::Character(vec!["col1".into(), "col2".into(), "col3".into()].into()),
+    ]);
+    attrs.insert("dimnames".into(), dimnames);
+
+    let matrix = RObject::WithAttributes {
+        object: Box::new(logical_vec),
+        attributes: attrs,
+    };
+
+    // Write and read back
+    let bytes = write_rds(&matrix).unwrap();
+    let result = read_rds(&bytes[..]).unwrap();
+
+    assert_eq!(matrix, result);
+}
+
+#[test]
+fn test_logical_matrix_attribute_order_variation() {
+    use rds2rust::Attributes;
+
+    // Test that logical matrices with attributes can be written regardless of attribute insertion order
+    // Note: The parser may reorder attributes during read, so we verify each version writes successfully
+    let logical_vec = RObject::Logical(vec![Logical::True; 6].into());
+
+    // Version 1: dim then dimnames
+    let mut attrs1 = Attributes::new();
+    attrs1.insert("dim".into(), RObject::Integer(vec![2, 3].into()));
+    attrs1.insert("dimnames".into(), RObject::List(vec![
+        RObject::Character(vec!["r1".into(), "r2".into()].into()),
+        RObject::Character(vec!["c1".into(), "c2".into(), "c3".into()].into()),
+    ]));
+    let matrix1 = RObject::WithAttributes {
+        object: Box::new(logical_vec.clone()),
+        attributes: attrs1,
+    };
+
+    // Version 2: dimnames then dim (reverse order)
+    let mut attrs2 = Attributes::new();
+    attrs2.insert("dimnames".into(), RObject::List(vec![
+        RObject::Character(vec!["r1".into(), "r2".into()].into()),
+        RObject::Character(vec!["c1".into(), "c2".into(), "c3".into()].into()),
+    ]));
+    attrs2.insert("dim".into(), RObject::Integer(vec![2, 3].into()));
+    let matrix2 = RObject::WithAttributes {
+        object: Box::new(logical_vec),
+        attributes: attrs2,
+    };
+
+    // Both should write successfully and produce valid RDS
+    let bytes1 = write_rds(&matrix1).unwrap();
+    let result1 = read_rds(&bytes1[..]).unwrap();
+
+    let bytes2 = write_rds(&matrix2).unwrap();
+    let result2 = read_rds(&bytes2[..]).unwrap();
+
+    // Verify both results are WithAttributes containing Logical vectors
+    match (&result1, &result2) {
+        (
+            RObject::WithAttributes { object: obj1, attributes: attrs1 },
+            RObject::WithAttributes { object: obj2, attributes: attrs2 }
+        ) => {
+            // Both should have the same logical vector
+            assert_eq!(obj1, obj2);
+            // Both should have dim and dimnames attributes (order may vary)
+            assert!(attrs1.get("dim").is_some());
+            assert!(attrs1.get("dimnames").is_some());
+            assert!(attrs2.get("dim").is_some());
+            assert!(attrs2.get("dimnames").is_some());
+        }
+        _ => panic!("Expected WithAttributes objects")
+    }
 }

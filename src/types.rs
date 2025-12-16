@@ -424,50 +424,80 @@ impl RObject {
             List(items) => items.iter().all(|item| item.is_fully_loaded_impl(visited)),
             Expression(items) => items.iter().all(|item| item.is_fully_loaded_impl(visited)),
             Pairlist(elements) => elements.iter().all(|elem| {
-                elem.value.is_fully_loaded_impl(visited) &&
-                elem.tag_object.as_ref().map_or(true, |t| t.is_fully_loaded_impl(visited))
+                elem.value.is_fully_loaded_impl(visited)
+                    && elem
+                        .tag_object
+                        .as_ref()
+                        .map_or(true, |t| t.is_fully_loaded_impl(visited))
             }),
             Language { function, args } => {
-                function.is_fully_loaded_impl(visited) &&
-                args.iter().all(|elem| elem.value.is_fully_loaded_impl(visited) &&
-                    elem.tag_object.as_ref().map_or(true, |t| t.is_fully_loaded_impl(visited)))
-            },
+                function.is_fully_loaded_impl(visited)
+                    && args.iter().all(|elem| {
+                        elem.value.is_fully_loaded_impl(visited)
+                            && elem
+                                .tag_object
+                                .as_ref()
+                                .map_or(true, |t| t.is_fully_loaded_impl(visited))
+                    })
+            }
 
             // DataFrame - check all columns
-            DataFrame(df) => df.columns.values().all(|col| col.is_fully_loaded_impl(visited)),
+            DataFrame(df) => df
+                .columns
+                .values()
+                .all(|col| col.is_fully_loaded_impl(visited)),
 
             // Factor - levels are always loaded (Vec<Arc<str>>), values are Vec<i32>
-            Factor(_f) => true,  // No lazy data in factors
+            Factor(_f) => true, // No lazy data in factors
 
             // S3/S4 objects - check base object and slots
             S3Object(s3) => s3.base.is_fully_loaded_impl(visited),
-            S4Object(s4) => s4.slots.values().all(|val| val.is_fully_loaded_impl(visited)),
+            S4Object(s4) => s4
+                .slots
+                .values()
+                .all(|val| val.is_fully_loaded_impl(visited)),
 
             // Closures and environments
-            Closure { formals, body, environment } => {
-                formals.is_fully_loaded_impl(visited) &&
-                body.is_fully_loaded_impl(visited) &&
-                environment.is_fully_loaded_impl(visited)
-            },
-            Environment { enclosing, frame, hashtab } => {
-                enclosing.is_fully_loaded_impl(visited) &&
-                frame.is_fully_loaded_impl(visited) &&
-                hashtab.is_fully_loaded_impl(visited)
-            },
+            Closure {
+                formals,
+                body,
+                environment,
+            } => {
+                formals.is_fully_loaded_impl(visited)
+                    && body.is_fully_loaded_impl(visited)
+                    && environment.is_fully_loaded_impl(visited)
+            }
+            Environment {
+                enclosing,
+                frame,
+                hashtab,
+            } => {
+                enclosing.is_fully_loaded_impl(visited)
+                    && frame.is_fully_loaded_impl(visited)
+                    && hashtab.is_fully_loaded_impl(visited)
+            }
 
             // Promise
-            Promise { value, expression, environment } => {
-                value.is_fully_loaded_impl(visited) &&
-                expression.is_fully_loaded_impl(visited) &&
-                environment.is_fully_loaded_impl(visited)
-            },
+            Promise {
+                value,
+                expression,
+                environment,
+            } => {
+                value.is_fully_loaded_impl(visited)
+                    && expression.is_fully_loaded_impl(visited)
+                    && environment.is_fully_loaded_impl(visited)
+            }
 
             // Bytecode
-            Bytecode { code, constants, expr } => {
-                code.is_fully_loaded_impl(visited) &&
-                constants.is_fully_loaded_impl(visited) &&
-                expr.is_fully_loaded_impl(visited)
-            },
+            Bytecode {
+                code,
+                constants,
+                expr,
+            } => {
+                code.is_fully_loaded_impl(visited)
+                    && constants.is_fully_loaded_impl(visited)
+                    && expr.is_fully_loaded_impl(visited)
+            }
 
             // Namespace - just a Vec<Arc<str>>, always loaded
             Namespace(_ns) => true,
@@ -479,8 +509,15 @@ impl RObject {
             Shared(_) => unreachable!("Shared case handled above"),
 
             // Atomic types and special values - always fully loaded
-            Null | Symbol(_) | Special { .. } | Builtin { .. } |
-            GlobalEnv | BaseEnv | EmptyEnv | MissingArg | UnboundValue => true,
+            Null
+            | Symbol(_)
+            | Special { .. }
+            | Builtin { .. }
+            | GlobalEnv
+            | BaseEnv
+            | EmptyEnv
+            | MissingArg
+            | UnboundValue => true,
         }
     }
 
@@ -502,7 +539,12 @@ impl RObject {
     }
 
     /// Internal helper for recursively collecting lazy spans with cycle detection.
-    fn collect_lazy_spans_impl(&self, path_prefix: &str, spans: &mut Vec<(String, LazyVector)>, visited: &mut std::collections::HashSet<usize>) {
+    fn collect_lazy_spans_impl(
+        &self,
+        path_prefix: &str,
+        spans: &mut Vec<(String, LazyVector)>,
+        visited: &mut std::collections::HashSet<usize>,
+    ) {
         use RObject::*;
 
         // For Shared objects, use the Arc pointer address for cycle detection
@@ -512,7 +554,10 @@ impl RObject {
                 // Already visited - skip to avoid infinite recursion
                 return;
             }
-            inner.read().unwrap().collect_lazy_spans_impl(path_prefix, spans, visited);
+            inner
+                .read()
+                .unwrap()
+                .collect_lazy_spans_impl(path_prefix, spans, visited);
             return;
         }
 
@@ -522,32 +567,32 @@ impl RObject {
                 if let VectorData::Lazy(lazy) = v {
                     spans.push((path_prefix.to_string(), *lazy));
                 }
-            },
+            }
             Real(v) => {
                 if let VectorData::Lazy(lazy) = v {
                     spans.push((path_prefix.to_string(), *lazy));
                 }
-            },
+            }
             Logical(v) => {
                 if let VectorData::Lazy(lazy) = v {
                     spans.push((path_prefix.to_string(), *lazy));
                 }
-            },
+            }
             Character(v) => {
                 if let VectorData::Lazy(lazy) = v {
                     spans.push((path_prefix.to_string(), *lazy));
                 }
-            },
+            }
             Raw(v) => {
                 if let VectorData::Lazy(lazy) = v {
                     spans.push((path_prefix.to_string(), *lazy));
                 }
-            },
+            }
             Complex(v) => {
                 if let VectorData::Lazy(lazy) = v {
                     spans.push((path_prefix.to_string(), *lazy));
                 }
-            },
+            }
 
             // Container types - recursively collect from contents
             List(items) => {
@@ -559,7 +604,7 @@ impl RObject {
                     };
                     item.collect_lazy_spans_impl(&path, spans, visited);
                 }
-            },
+            }
             Expression(items) => {
                 for (i, item) in items.iter().enumerate() {
                     let path = if path_prefix.is_empty() {
@@ -569,7 +614,7 @@ impl RObject {
                     };
                     item.collect_lazy_spans_impl(&path, spans, visited);
                 }
-            },
+            }
             Pairlist(elements) => {
                 for (i, elem) in elements.iter().enumerate() {
                     let value_path = if path_prefix.is_empty() {
@@ -577,7 +622,8 @@ impl RObject {
                     } else {
                         format!("{}[{}].value", path_prefix, i)
                     };
-                    elem.value.collect_lazy_spans_impl(&value_path, spans, visited);
+                    elem.value
+                        .collect_lazy_spans_impl(&value_path, spans, visited);
 
                     if let Some(tag_obj) = &elem.tag_object {
                         let tag_path = if path_prefix.is_empty() {
@@ -588,7 +634,7 @@ impl RObject {
                         tag_obj.collect_lazy_spans_impl(&tag_path, spans, visited);
                     }
                 }
-            },
+            }
             Language { function, args } => {
                 let func_path = if path_prefix.is_empty() {
                     "function".to_string()
@@ -603,7 +649,8 @@ impl RObject {
                     } else {
                         format!("{}.args[{}].value", path_prefix, i)
                     };
-                    elem.value.collect_lazy_spans_impl(&value_path, spans, visited);
+                    elem.value
+                        .collect_lazy_spans_impl(&value_path, spans, visited);
 
                     if let Some(tag_obj) = &elem.tag_object {
                         let tag_path = if path_prefix.is_empty() {
@@ -614,7 +661,7 @@ impl RObject {
                         tag_obj.collect_lazy_spans_impl(&tag_path, spans, visited);
                     }
                 }
-            },
+            }
 
             // DataFrame - collect from all columns
             DataFrame(df) => {
@@ -626,10 +673,10 @@ impl RObject {
                     };
                     col_obj.collect_lazy_spans_impl(&col_path, spans, visited);
                 }
-            },
+            }
 
             // Factor - no lazy data (values are Vec<i32>, levels are Vec<Arc<str>>)
-            Factor(_f) => {},
+            Factor(_f) => {}
 
             // S3/S4 objects
             S3Object(s3) => {
@@ -639,7 +686,7 @@ impl RObject {
                     format!("{}.base", path_prefix)
                 };
                 s3.base.collect_lazy_spans_impl(&base_path, spans, visited);
-            },
+            }
             S4Object(s4) => {
                 for (slot_name, slot_val) in &s4.slots {
                     let slot_path = if path_prefix.is_empty() {
@@ -649,10 +696,14 @@ impl RObject {
                     };
                     slot_val.collect_lazy_spans_impl(&slot_path, spans, visited);
                 }
-            },
+            }
 
             // Closures and environments
-            Closure { formals, body, environment } => {
+            Closure {
+                formals,
+                body,
+                environment,
+            } => {
                 let formals_path = if path_prefix.is_empty() {
                     "formals".to_string()
                 } else {
@@ -673,8 +724,12 @@ impl RObject {
                     format!("{}.environment", path_prefix)
                 };
                 environment.collect_lazy_spans_impl(&env_path, spans, visited);
-            },
-            Environment { enclosing, frame, hashtab } => {
+            }
+            Environment {
+                enclosing,
+                frame,
+                hashtab,
+            } => {
                 let enclosing_path = if path_prefix.is_empty() {
                     "enclosing".to_string()
                 } else {
@@ -695,10 +750,14 @@ impl RObject {
                     format!("{}.hashtab", path_prefix)
                 };
                 hashtab.collect_lazy_spans_impl(&hashtab_path, spans, visited);
-            },
+            }
 
             // Promise
-            Promise { value, expression, environment } => {
+            Promise {
+                value,
+                expression,
+                environment,
+            } => {
                 let value_path = if path_prefix.is_empty() {
                     "value".to_string()
                 } else {
@@ -719,10 +778,14 @@ impl RObject {
                     format!("{}.environment", path_prefix)
                 };
                 environment.collect_lazy_spans_impl(&env_path, spans, visited);
-            },
+            }
 
             // Bytecode
-            Bytecode { code, constants, expr } => {
+            Bytecode {
+                code,
+                constants,
+                expr,
+            } => {
                 let code_path = if path_prefix.is_empty() {
                     "code".to_string()
                 } else {
@@ -743,24 +806,34 @@ impl RObject {
                     format!("{}.expr", path_prefix)
                 };
                 expr.collect_lazy_spans_impl(&expr_path, spans, visited);
-            },
+            }
 
             // Namespace - just a Vec<Arc<str>>, no lazy data
-            Namespace(_ns) => {},
+            Namespace(_ns) => {}
 
             // WithAttributes wrapper
             WithAttributes { object, .. } => {
                 object.collect_lazy_spans_impl(path_prefix, spans, visited);
-            },
+            }
 
             // Shared wrapper
             Shared(inner) => {
-                inner.read().unwrap().collect_lazy_spans_impl(path_prefix, spans, visited);
-            },
+                inner
+                    .read()
+                    .unwrap()
+                    .collect_lazy_spans_impl(path_prefix, spans, visited);
+            }
 
             // Atomic types and special values - no lazy data
-            Null | Symbol(_) | Special { .. } | Builtin { .. } |
-            GlobalEnv | BaseEnv | EmptyEnv | MissingArg | UnboundValue => {},
+            Null
+            | Symbol(_)
+            | Special { .. }
+            | Builtin { .. }
+            | GlobalEnv
+            | BaseEnv
+            | EmptyEnv
+            | MissingArg
+            | UnboundValue => {}
         }
     }
 }
@@ -970,7 +1043,10 @@ impl Attributes {
 impl FactorData {
     pub(crate) fn base_attributes(&self) -> Attributes {
         let mut attrs = Attributes::new();
-        attrs.insert(Arc::from("levels"), RObject::Character(self.levels.clone().into()));
+        attrs.insert(
+            Arc::from("levels"),
+            RObject::Character(self.levels.clone().into()),
+        );
 
         let class = if self.ordered {
             vec![Arc::from("ordered"), Arc::from("factor")]

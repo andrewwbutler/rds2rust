@@ -690,3 +690,93 @@ fn variant_name(obj: &RObject) -> &'static str {
         _ => "Unknown",
     }
 }
+
+// =============================================================================
+// S4 Object Tests with Logical Matrix .Data Slot
+// =============================================================================
+
+#[test]
+fn test_s4_with_logical_matrix_data_slot() {
+    use rds2rust::{Attributes, S4ObjectData};
+
+    // Create .Data slot: logical matrix (non-square: 5 rows × 3 cols)
+    // Use irregular TRUE/FALSE/NA pattern to catch row/col ordering bugs
+    let n_rows = 5;
+    let n_cols = 3;
+    let logical_data = vec![
+        // Column 1
+        Logical::True, Logical::False, Logical::Na, Logical::True, Logical::False,
+        // Column 2
+        Logical::Na, Logical::True, Logical::True, Logical::False, Logical::Na,
+        // Column 3
+        Logical::False, Logical::Na, Logical::True, Logical::True, Logical::False,
+    ];
+    let logical_vec = RObject::Logical(logical_data.into());
+
+    let mut matrix_attrs = Attributes::new();
+    matrix_attrs.insert("dim".into(), RObject::Integer(vec![n_rows, n_cols].into()));
+
+    let row_names: Vec<Arc<str>> = (0..n_rows)
+        .map(|i| format!("item_{}", i + 1).into())
+        .collect();
+    let col_names: Vec<Arc<str>> = vec![
+        "layer1".into(),
+        "layer2".into(),
+        "layer3".into(),
+    ];
+
+    let dimnames = RObject::List(vec![
+        RObject::Character(row_names.into()),
+        RObject::Character(col_names.into()),
+    ]);
+    matrix_attrs.insert("dimnames".into(), dimnames);
+
+    let data_slot = RObject::WithAttributes {
+        object: Box::new(logical_vec),
+        attributes: matrix_attrs,
+    };
+
+    // Create S4 object with logical matrix in .Data slot
+    let mut slots = IndexMap::new();
+    slots.insert(".Data".into(), data_slot);
+
+    let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
+        class: vec!["BooleanMatrix".into()],
+        package: Some("TestPackage".into()),
+        slots,
+    }));
+
+    // Write and read back
+    let bytes = write_rds(&s4_obj).unwrap();
+    let result = read_rds(&bytes[..]).unwrap();
+
+    assert_eq!(s4_obj, result);
+}
+
+#[test]
+fn test_s4_with_logical_matrix_different_package() {
+    use rds2rust::{Attributes, S4ObjectData};
+
+    // Test another S4 class to ensure package info is preserved
+    let logical_vec = RObject::Logical(vec![Logical::True; 4].into());
+    let mut attrs = Attributes::new();
+    attrs.insert("dim".into(), RObject::Integer(vec![2, 2].into()));
+
+    let data_slot = RObject::WithAttributes {
+        object: Box::new(logical_vec),
+        attributes: attrs,
+    };
+
+    let mut slots = IndexMap::new();
+    slots.insert(".Data".into(), data_slot);
+
+    let obj = RObject::S4Object(Box::new(S4ObjectData {
+        class: vec!["CustomMatrix".into()],
+        package: Some("TestPackage".into()),
+        slots,
+    }));
+
+    let bytes = write_rds(&obj).unwrap();
+    let result = read_rds(&bytes[..]).unwrap();
+    assert_eq!(obj, result);
+}

@@ -88,10 +88,7 @@ impl ObjectPath {
         if self.segments.len() > other.len() {
             return false;
         }
-        self.segments
-            .iter()
-            .zip(other.iter())
-            .all(|(a, b)| a == b)
+        self.segments.iter().zip(other.iter()).all(|(a, b)| a == b)
     }
 }
 
