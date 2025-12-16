@@ -275,7 +275,7 @@ fn test_multiple_namespace_references() {
     let namespace = RObject::Namespace(vec![Arc::from("Matrix")]);
     let list = RObject::List(vec![
         namespace.clone(),
-        RObject::Integer(vec![1, 2, 3]),
+        RObject::Integer(vec![1, 2, 3].into()),
         namespace.clone(), // Second reference should use REFSXP
     ]);
 
@@ -332,7 +332,7 @@ fn test_different_namespaces_in_list() {
     // Create a list with two different namespaces
     let list = RObject::List(vec![
         RObject::Namespace(vec![Arc::from("Matrix")]),
-        RObject::Integer(vec![42]),
+        RObject::Integer(vec![42].into()),
         RObject::Namespace(vec![Arc::from("stats")]),
     ]);
 

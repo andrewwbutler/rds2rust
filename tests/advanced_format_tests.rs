@@ -803,7 +803,7 @@ fn test_namespace_in_list() {
 
     let list = RObject::List(vec![
         RObject::Namespace(vec![Arc::from("base")]),
-        RObject::Integer(vec![1, 2, 3]),
+        RObject::Integer(vec![1, 2, 3].into()),
         RObject::Namespace(vec![Arc::from("Matrix")]),
     ]);
 
@@ -895,10 +895,10 @@ fn test_closure_with_namespace_environment() {
     let closure = RObject::Closure {
         formals: Box::new(RObject::Null),
         body: Box::new(RObject::Language {
-            function: Box::new(RObject::Character(vec![Arc::from("print")])),
+            function: Box::new(RObject::Character(vec![Arc::from("print")].into())),
             args: vec![PairlistElement {
                 tag: None,
-                value: RObject::Character(vec![Arc::from("x")]),
+                value: RObject::Character(vec![Arc::from("x")].into()),
                 tag_object: None,
             }],
         }),

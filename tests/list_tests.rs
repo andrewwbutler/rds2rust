@@ -92,9 +92,9 @@ fn test_list_empty() {
 #[test]
 fn test_list_roundtrip() {
     let obj = RObject::List(vec![
-        RObject::Integer(vec![1, 2, 3]),
-        RObject::Character(vec![Arc::from("test")]),
-        RObject::Real(vec![4.5]),
+        RObject::Integer(vec![1, 2, 3].into()),
+        RObject::Character(vec![Arc::from("test")].into()),
+        RObject::Real(vec![4.5].into()),
     ]);
     let serialized = write_rds(&obj).expect("Failed to write list");
     let deserialized = read_rds(&serialized).expect("Failed to read list");

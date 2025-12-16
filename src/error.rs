@@ -38,4 +38,10 @@ pub enum Error {
 
     #[error("Unsupported feature: {0}")]
     Unsupported(String),
+
+    #[error("Lazy payload truncated: expected {expected} bytes, got {actual}")]
+    TruncatedLazyPayload { expected: u64, actual: u64 },
+
+    #[error("Cannot write lazy object; materialize first or use full parse mode")]
+    CannotWriteLazyObject,
 }

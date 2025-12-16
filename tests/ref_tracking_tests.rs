@@ -221,7 +221,7 @@ fn test_simple_ref() {
         assert_eq!(elements.len(), 3);
         for element in elements {
             match element {
-                RObject::Integer(v) => assert_eq!(&v[..], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+                RObject::Integer(v) => assert_eq!(&*v, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
                 other => panic!("Expected Integer, got {:?}", other),
             }
         }
@@ -246,7 +246,7 @@ fn test_three_copies() {
         assert_eq!(elements.len(), 3);
         for element in elements {
             match element {
-                RObject::Integer(v) => assert_eq!(&v[..], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+                RObject::Integer(v) => assert_eq!(&*v, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
                 other => panic!("Expected Integer, got {:?}", other),
             }
         }
@@ -271,7 +271,7 @@ fn test_non_altrep() {
         assert_eq!(elements.len(), 3);
         for element in elements {
             match element {
-                RObject::Integer(v) => assert_eq!(&v[..], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
+                RObject::Integer(v) => assert_eq!(&*v, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]),
                 other => panic!("Expected Integer, got {:?}", other),
             }
         }
@@ -297,7 +297,7 @@ fn test_four_copies() {
             match &elements[i] {
                 RObject::Integer(v) => {
                     assert_eq!(v.len(), 10);
-                    assert_eq!(&v[..], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+                    assert_eq!(&*v, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
                 }
                 other => panic!("Element {} should be Integer, got {:?}", i, other),
             }
@@ -324,7 +324,7 @@ fn test_two_copies() {
             match &elements[i] {
                 RObject::Integer(v) => {
                     assert_eq!(v.len(), 10);
-                    assert_eq!(&v[..], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+                    assert_eq!(&*v, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
                 }
                 other => panic!("Element {} should be Integer, got {:?}", i, other),
             }
@@ -347,7 +347,7 @@ fn test_third_only() {
     match result {
         RObject::Integer(v) => {
             assert_eq!(v.len(), 10);
-            assert_eq!(&v[..], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+            assert_eq!(&*v, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
         }
         other => panic!("Expected Integer, got {:?}", other),
     }
@@ -370,7 +370,7 @@ fn test_three_shared() {
             match &elements[i] {
                 RObject::Integer(v) => {
                     assert_eq!(v.len(), 5);
-                    assert_eq!(&v[..], &[1, 2, 3, 4, 5]);
+                    assert_eq!(&*v, &[1, 2, 3, 4, 5]);
                 }
                 other => panic!("Element {} should be Integer, got {:?}", i, other),
             }

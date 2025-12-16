@@ -17,18 +17,18 @@ use std::sync::Arc;
 fn test_dataframe_column_order_preservation() {
     // Create a DataFrame with specific column order
     let mut columns = IndexMap::new();
-    columns.insert(Arc::from("vst.mean"), RObject::Real(vec![1.0, 2.0, 3.0]));
+    columns.insert(Arc::from("vst.mean"), RObject::Real(vec![1.0, 2.0, 3.0].into()));
     columns.insert(
         Arc::from("vst.variance"),
-        RObject::Real(vec![0.5, 1.5, 2.5]),
+        RObject::Real(vec![0.5, 1.5, 2.5].into()),
     );
     columns.insert(
         Arc::from("vst.variance.expected"),
-        RObject::Real(vec![0.3, 1.3, 2.3]),
+        RObject::Real(vec![0.3, 1.3, 2.3].into()),
     );
     columns.insert(
         Arc::from("vst.variance.standardized"),
-        RObject::Real(vec![0.8, 1.8, 2.8]),
+        RObject::Real(vec![0.8, 1.8, 2.8].into()),
     );
     columns.insert(
         Arc::from("vst.variable"),
@@ -36,7 +36,7 @@ fn test_dataframe_column_order_preservation() {
             rds2rust::Logical::True,
             rds2rust::Logical::False,
             rds2rust::Logical::True,
-        ]),
+        ].into()),
     );
 
     let row_names = vec![Arc::from("1"), Arc::from("2"), Arc::from("3")];
@@ -76,7 +76,7 @@ fn test_dataframe_column_order_with_many_columns() {
     ];
 
     for name in &column_names {
-        columns.insert(Arc::from(*name), RObject::Integer(vec![1, 2, 3]));
+        columns.insert(Arc::from(*name), RObject::Integer(vec![1, 2, 3].into()));
     }
 
     let row_names = vec![Arc::from("1"), Arc::from("2"), Arc::from("3")];
@@ -115,12 +115,12 @@ fn test_dataframe_column_order_with_many_columns() {
 fn test_s4_slot_order_preservation() {
     // Create an S4 object with specific slot order
     let mut slots = IndexMap::new();
-    slots.insert(Arc::from("counts"), RObject::Integer(vec![1, 2, 3]));
-    slots.insert(Arc::from("data"), RObject::Real(vec![1.0, 2.0, 3.0]));
+    slots.insert(Arc::from("counts"), RObject::Integer(vec![1, 2, 3].into()));
+    slots.insert(Arc::from("data"), RObject::Real(vec![1.0, 2.0, 3.0].into()));
     slots.insert(Arc::from("scale.data"), RObject::List(vec![]));
     slots.insert(
         Arc::from("assay.orig"),
-        RObject::Character(vec![Arc::from("RNA")]),
+        RObject::Character(vec![Arc::from("RNA")].into()),
     );
     slots.insert(Arc::from("meta.features"), RObject::List(vec![]));
     slots.insert(Arc::from("misc"), RObject::List(vec![]));
@@ -184,7 +184,7 @@ fn test_symbol_in_s4_slot() {
         Arc::from("assay.orig"),
         RObject::Symbol(Arc::from("\x01NULL\x01")),
     );
-    slots.insert(Arc::from("data"), RObject::Integer(vec![1, 2, 3]));
+    slots.insert(Arc::from("data"), RObject::Integer(vec![1, 2, 3].into()));
 
     let s4 = RObject::S4Object(Box::new(S4ObjectData {
         class: vec![Arc::from("Assay")],
@@ -213,7 +213,7 @@ fn test_symbol_in_s4_slot() {
 #[test]
 fn test_symbol_vs_character_distinction() {
     // Verify that regular character vectors don't get confused with Symbols
-    let char_vec = RObject::Character(vec![Arc::from("regular_string")]);
+    let char_vec = RObject::Character(vec![Arc::from("regular_string")].into());
     let symbol = RObject::Symbol(Arc::from("\x01NULL\x01"));
 
     // Write and read both
@@ -251,10 +251,10 @@ fn test_dataframe_with_ordered_columns_as_s4_slot() {
     let mut df_columns = IndexMap::new();
     df_columns.insert(
         Arc::from("gene_name"),
-        RObject::Character(vec![Arc::from("GENE1"), Arc::from("GENE2")]),
+        RObject::Character(vec![Arc::from("GENE1"), Arc::from("GENE2")].into()),
     );
-    df_columns.insert(Arc::from("mean_expr"), RObject::Real(vec![5.2, 3.1]));
-    df_columns.insert(Arc::from("variance"), RObject::Real(vec![1.5, 0.8]));
+    df_columns.insert(Arc::from("mean_expr"), RObject::Real(vec![5.2, 3.1].into()));
+    df_columns.insert(Arc::from("variance"), RObject::Real(vec![1.5, 0.8].into()));
 
     let df = RObject::DataFrame(Box::new(DataFrameData {
         columns: df_columns,

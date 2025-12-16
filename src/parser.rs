@@ -95,6 +95,11 @@ const MAX_ALLOCATION_BYTES: usize = 128 * 1024 * 1024;
 struct ParserContext {
     max_vector_length: usize,
     max_allocation_bytes: usize,
+    mode: crate::ParseMode,
+    lazy_threshold: usize,
+    bytecode_lazy_threshold: usize,
+    /// True when parsing bytecode constants (use bytecode_lazy_threshold)
+    in_bytecode_context: bool,
 }
 
 impl ParserContext {
@@ -102,6 +107,20 @@ impl ParserContext {
         Self {
             max_vector_length: config.max_vector_length,
             max_allocation_bytes: config.max_allocation_bytes,
+            lazy_threshold: config.lazy_threshold,
+            bytecode_lazy_threshold: config.bytecode_lazy_threshold,
+            mode: config.mode,
+            in_bytecode_context: false,
+        }
+    }
+
+    /// Get the effective lazy threshold based on current context
+    #[inline]
+    fn effective_lazy_threshold(&self) -> usize {
+        if self.in_bytecode_context {
+            self.bytecode_lazy_threshold
+        } else {
+            self.lazy_threshold
         }
     }
 }
@@ -694,7 +713,7 @@ fn parse_object(
             // Sometimes CHARSXP appears standalone (like for encoding markers)
             let string = parse_charsxp_content(ctx, cursor, flags)?;
             // Return as a single-element character vector for now
-            RObject::Character(vec![Arc::from(string.as_str())])
+            RObject::Character(vec![Arc::from(string.as_str())].into())
         }
         CLOSXP => parse_closure(
             ctx,
@@ -749,7 +768,7 @@ fn parse_object(
                 let concrete = resolved.as_concrete();
                 resolved = match concrete {
                     RObject::Symbol(name) => RObject::Symbol(name),
-                    RObject::Character(names) if !names.is_empty() => {
+                    RObject::Character(names) if !names.is_empty() && names.is_loaded() => {
                         RObject::Symbol(names[0].clone())
                     }
                     other => other,
@@ -1074,28 +1093,69 @@ fn parse_object(
 fn parse_integer_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(ctx, length, std::mem::size_of::<i32>(), cursor, "integer vector")?;
-    let mut vec = Vec::with_capacity(length);
 
+    // Check if we should parse lazily
+    if matches!(ctx.mode, crate::ParseMode::LazyMetadata) && length > ctx.effective_lazy_threshold() {
+        use crate::types::{LazyVector, VectorData};
+
+        // Record position before data
+        let offset = cursor.position() as u64;
+        let elem_size = std::mem::size_of::<i32>();
+        let byte_len = (length * elem_size) as u64;
+
+        // Skip the data
+        let mut buf = vec![0u8; length * elem_size];
+        cursor.read_exact(&mut buf)?;
+
+        return Ok(RObject::Integer(VectorData::Lazy(LazyVector {
+            length,
+            offset,
+            byte_len,
+        })));
+    }
+
+    // Full parsing mode
+    let mut vec = Vec::with_capacity(length);
     for _ in 0..length {
         let val = read_int_flexible(cursor)?;
         vec.push(val);
     }
 
-    Ok(RObject::Integer(vec))
+    Ok(RObject::Integer(vec.into()))
 }
 
 /// Parse a real (double) vector.
 fn parse_real_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(ctx, length, std::mem::size_of::<f64>(), cursor, "real vector")?;
-    let mut vec = Vec::with_capacity(length);
 
+    // Check if we should parse lazily
+    if matches!(ctx.mode, crate::ParseMode::LazyMetadata) && length > ctx.effective_lazy_threshold() {
+        use crate::types::{LazyVector, VectorData};
+
+        let offset = cursor.position() as u64;
+        let elem_size = std::mem::size_of::<f64>();
+        let byte_len = (length * elem_size) as u64;
+
+        // Skip the data
+        let mut buf = vec![0u8; length * elem_size];
+        cursor.read_exact(&mut buf)?;
+
+        return Ok(RObject::Real(VectorData::Lazy(LazyVector {
+            length,
+            offset,
+            byte_len,
+        })));
+    }
+
+    // Full parsing mode
+    let mut vec = Vec::with_capacity(length);
     for _ in 0..length {
         let val = cursor.read_f64::<BigEndian>()?;
         vec.push(val);
     }
 
-    Ok(RObject::Real(vec))
+    Ok(RObject::Real(vec.into()))
 }
 
 /// Parse a logical vector.
@@ -1108,8 +1168,28 @@ fn parse_logical_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Resu
         cursor,
         "logical vector",
     )?;
-    let mut vec = Vec::with_capacity(length);
 
+    // Check if we should parse lazily
+    if matches!(ctx.mode, crate::ParseMode::LazyMetadata) && length > ctx.effective_lazy_threshold() {
+        use crate::types::{LazyVector, VectorData};
+
+        let offset = cursor.position() as u64;
+        let elem_size = std::mem::size_of::<i32>(); // Logicals are stored as i32
+        let byte_len = (length * elem_size) as u64;
+
+        // Skip the data
+        let mut buf = vec![0u8; length * elem_size];
+        cursor.read_exact(&mut buf)?;
+
+        return Ok(RObject::Logical(VectorData::Lazy(LazyVector {
+            length,
+            offset,
+            byte_len,
+        })));
+    }
+
+    // Full parsing mode
+    let mut vec = Vec::with_capacity(length);
     for _ in 0..length {
         // R seems to write logical values with variable byte length
         // Try to read 4 bytes, but if only 3 are available, pad with 0
@@ -1123,7 +1203,7 @@ fn parse_logical_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Resu
         vec.push(logical);
     }
 
-    Ok(RObject::Logical(vec))
+    Ok(RObject::Logical(vec.into()))
 }
 
 /// Read an integer - always reads 4 bytes in big-endian format.
@@ -1144,12 +1224,68 @@ fn parse_character_vector(
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(ctx, length, 1, cursor, "character vector")?;
 
+    // Check if we should parse lazily
+    // Note: For character vectors, we need to parse through all elements to calculate byte_len
+    // since strings are variable length. We'll skip string content but still need to read lengths.
+    if matches!(ctx.mode, crate::ParseMode::LazyMetadata) && length > ctx.effective_lazy_threshold() {
+        use crate::types::{LazyVector, VectorData};
+
+        let offset = cursor.position() as u64;
+        let start_pos = cursor.position();
+
+        // Skip through all character elements to calculate total byte length
+        for _ in 0..length {
+            let flags = cursor.read_u32::<BigEndian>()?;
+            let type_from_0_7 = flags & 0xFF;
+
+            if type_from_0_7 == REFSXP {
+                // Reference, no additional data to skip
+                continue;
+            } else if type_from_0_7 == CHARSXP || ((flags >> 8) & 0xFF) == CHARSXP {
+                // Parse CHARSXP length and skip content
+                let str_len = cursor.read_i32::<BigEndian>()?;
+                if str_len >= 0 {
+                    let mut buf = vec![0u8; str_len as usize];
+                    cursor.read_exact(&mut buf)?;
+                }
+                // NA strings have negative length, no data to read
+            } else {
+                // For other types, we need to parse and skip them
+                // This is complex, so for now we'll fall back to full parsing for safety
+                // Reset cursor and do full parsing
+                cursor.set_position(pos_before_length);
+                let _ = cursor.read_u32::<BigEndian>()?; // Re-read length
+                return parse_character_vector_full(ctx, cursor, ref_table, symbol_table, dedup_table, length);
+            }
+        }
+
+        let byte_len = cursor.position() - start_pos;
+
+        return Ok(RObject::Character(VectorData::Lazy(LazyVector {
+            length,
+            offset,
+            byte_len,
+        })));
+    }
+
+    // Full parsing mode
+    parse_character_vector_full(ctx, cursor, ref_table, symbol_table, dedup_table, length)
+}
+
+// Helper function for full character vector parsing
+fn parse_character_vector_full(
+    ctx: &ParserContext,
+    cursor: &mut Cursor<&[u8]>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    length: usize,
+) -> Result<RObject> {
     if debug_enabled() {
         let remaining = cursor.get_ref().len() as u64 - cursor.position();
         eprintln!(
-            "[STRSXP] Parsing character vector of length {} (read from pos {}, now at {}), remaining={}",
+            "[STRSXP] Parsing character vector of length {} (now at pos {}), remaining={}",
             length,
-            pos_before_length,
             cursor.position(),
             remaining
         );
@@ -1280,19 +1416,37 @@ fn parse_character_vector(
         }
     }
 
-    Ok(RObject::Character(vec))
+    Ok(RObject::Character(vec.into()))
 }
 
 /// Parse a raw vector (RAWSXP - a vector of bytes).
 fn parse_raw_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(ctx, length, 1, cursor, "raw vector")?;
-    let mut vec = vec![0u8; length];
 
-    // Read the raw bytes directly
+    // Check if we should parse lazily
+    if matches!(ctx.mode, crate::ParseMode::LazyMetadata) && length > ctx.effective_lazy_threshold() {
+        use crate::types::{LazyVector, VectorData};
+
+        let offset = cursor.position() as u64;
+        let byte_len = length as u64;
+
+        // Skip the data
+        let mut buf = vec![0u8; length];
+        cursor.read_exact(&mut buf)?;
+
+        return Ok(RObject::Raw(VectorData::Lazy(LazyVector {
+            length,
+            offset,
+            byte_len,
+        })));
+    }
+
+    // Full parsing mode
+    let mut vec = vec![0u8; length];
     cursor.read_exact(&mut vec)?;
 
-    Ok(RObject::Raw(vec))
+    Ok(RObject::Raw(vec.into()))
 }
 
 /// Parse a complex vector (CPLXSXP).
@@ -1307,8 +1461,28 @@ fn parse_complex_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Resu
         cursor,
         "complex vector",
     )?;
-    let mut vec = Vec::with_capacity(length);
 
+    // Check if we should parse lazily
+    if matches!(ctx.mode, crate::ParseMode::LazyMetadata) && length > ctx.effective_lazy_threshold() {
+        use crate::types::{LazyVector, VectorData};
+
+        let offset = cursor.position() as u64;
+        let elem_size = std::mem::size_of::<Complex>(); // 2 * f64 = 16 bytes
+        let byte_len = (length * elem_size) as u64;
+
+        // Skip the data
+        let mut buf = vec![0u8; length * elem_size];
+        cursor.read_exact(&mut buf)?;
+
+        return Ok(RObject::Complex(VectorData::Lazy(LazyVector {
+            length,
+            offset,
+            byte_len,
+        })));
+    }
+
+    // Full parsing mode
+    let mut vec = Vec::with_capacity(length);
     for _ in 0..length {
         // Each complex number is two 64-bit floats: real part then imaginary part
         let real = cursor.read_f64::<BigEndian>()?;
@@ -1317,7 +1491,7 @@ fn parse_complex_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Resu
         vec.push(Complex { real, imaginary });
     }
 
-    Ok(RObject::Complex(vec))
+    Ok(RObject::Complex(vec.into()))
 }
 
 /// Parse an S4 object (S4SXP).
@@ -1352,7 +1526,7 @@ fn parse_symbol(
             let name = &names[0];
             // Check for the special NULL marker used by R for OptionalCharacter slots
             if name.as_ref() == "\x01NULL\x01" {
-                Ok(RObject::Symbol(names.into_iter().next().unwrap()))
+                Ok(RObject::Symbol(names.into_vec().into_iter().next().unwrap()))
             } else {
                 // Regular symbol
                 Ok(RObject::Symbol(name.clone()))
@@ -1411,8 +1585,9 @@ fn parse_list(
 
         // Check if this is a Real vector that looks like an ALTREP compact_intseq state
         // R sometimes serializes repeated ALTREP sequences as bare state vectors
+        // Skip this check for lazy vectors
         let converted_element = match element.as_concrete() {
-            RObject::Real(vec) if vec.len() == 3 => {
+            RObject::Real(vec) if vec.len() == 3 && vec.is_loaded() => {
                 let n = vec[0];
                 let start = vec[1];
                 let stride = vec[2];
@@ -1433,7 +1608,7 @@ fn parse_list(
                         let _next = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
                     }
 
-                    RObject::Integer(int_vec)
+                    RObject::Integer(int_vec.into())
                 } else {
                     element
                 }
@@ -1520,12 +1695,22 @@ fn parse_bc_constants(
     guard_allocation(ctx, count, 1, cursor, "bytecode constants")?;
     let mut constants = Vec::with_capacity(count);
 
+    // Create a new context with bytecode flag set for parsing constants
+    let bc_ctx = ParserContext {
+        max_vector_length: ctx.max_vector_length,
+        max_allocation_bytes: ctx.max_allocation_bytes,
+        mode: ctx.mode.clone(),
+        lazy_threshold: ctx.lazy_threshold,
+        bytecode_lazy_threshold: ctx.bytecode_lazy_threshold,
+        in_bytecode_context: true,
+    };
+
     for _ in 0..count {
         let type_code = cursor.read_i32::<BigEndian>()?;
         let value = match type_code as u32 {
-            BCODESXP => parse_bytecode_body(ctx, cursor, ref_table, symbol_table, dedup_table, reps)?,
+            BCODESXP => parse_bytecode_body(&bc_ctx, cursor, ref_table, symbol_table, dedup_table, reps)?,
             BCREPREF | BCREPDEF | LANGSXP | LISTSXP | ATTRLANGSXP | ATTRLISTSXP => parse_bc_lang(
-                ctx,
+                &bc_ctx,
                 cursor,
                 ref_table,
                 symbol_table,
@@ -1533,7 +1718,7 @@ fn parse_bc_constants(
                 reps,
                 type_code,
             )?,
-            _ => parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?,
+            _ => parse_object(&bc_ctx, cursor, ref_table, symbol_table, dedup_table)?,
         };
         constants.push(value);
     }
@@ -2198,15 +2383,19 @@ fn parse_pairlist(
 }
 
 /// Extract a tag name from a tag object (usually a symbol or character).
+///
+/// Returns `None` if the tag is lazy (not loaded), to prevent panics during
+/// bytecode parsing with large character vectors.
 fn extract_tag_name(tag_obj: RObject) -> Option<Arc<str>> {
     // Unwrap Shared wrappers first
     let tag_obj = tag_obj.into_concrete();
 
     match tag_obj {
         RObject::Symbol(name) => Some(name),
-        RObject::Character(vec) if !vec.is_empty() => Some(vec[0].clone()),
+        // Only extract from loaded character vectors to avoid panics
+        RObject::Character(vec) if !vec.is_empty() && vec.is_loaded() => Some(vec[0].clone()),
         RObject::Null => None,
-        _ => None,
+        _ => None, // Includes lazy character vectors - return None gracefully
     }
 }
 
@@ -2337,7 +2526,7 @@ fn convert_altrep_to_native(ctx: &ParserContext, class_info: RObject, state: ROb
         RObject::Integer(params) if params.len() == 3 => {
             // Sometimes the state is stored as integers instead of reals
             let real_params = vec![params[0] as f64, params[1] as f64, params[2] as f64];
-            convert_compact_intseq(ctx, RObject::Real(real_params))
+            convert_compact_intseq(ctx, RObject::Real(real_params.into()))
         }
         RObject::Integer(vec) if vec.len() == 1 && vec[0] == 13 => {
             // Special case: when state is Integer([13]), R has stored the actual data
@@ -2527,7 +2716,7 @@ fn convert_compact_intseq(ctx: &ParserContext, state: RObject) -> Result<RObject
         vec.push(first + (i as i32) * stride);
     }
 
-    Ok(RObject::Integer(vec))
+    Ok(RObject::Integer(vec.into()))
 }
 
 /// Parse a CHARSXP (internal character string).
@@ -2866,7 +3055,7 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
             // Extract the class field and slots and convert them to attributes
             // Add the class as a "class" attribute (RObject::Character)
             if !s4.class.is_empty() {
-                attrs.insert(Arc::from("class"), RObject::Character(s4.class.clone()));
+                attrs.insert(Arc::from("class"), RObject::Character(s4.class.clone().into()));
             }
             for (slot_name, slot_value) in &s4.slots {
                 attrs.insert(slot_name.clone(), slot_value.clone());
@@ -2924,8 +3113,8 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
     // Get row names from the "row.names" attribute
     let row_names = if let Some(row_names_attr) = attributes.get("row.names") {
         match row_names_attr.as_concrete() {
-            RObject::Character(names) => names.clone(),
-            RObject::Integer(indices) => {
+            RObject::Character(names) if names.is_loaded() => names.as_vec().clone(),
+            RObject::Integer(indices) if indices.is_loaded() => {
                 // R uses a compact representation for default row names:
                 // A 2-element vector [NA_integer_, -n] represents row names 1:n
                 // where n is the number of rows
@@ -2999,14 +3188,14 @@ fn try_convert_to_factor(obj: &RObject, attributes: &Attributes) -> Option<RObje
 
     // The base object should be an integer vector (the indices)
     let values = match obj {
-        RObject::Integer(vals) => vals.clone(),
+        RObject::Integer(vals) if vals.is_loaded() => vals.as_vec().clone(),
         _ => return None,
     };
 
     // Get the levels from the "levels" attribute
     let levels_attr = attributes.get("levels")?.as_concrete();
     let levels = match levels_attr {
-        RObject::Character(levels) => levels.clone(),
+        RObject::Character(levels) if levels.is_loaded() => levels.as_vec().clone(),
         _ => return None,
     };
 
@@ -3045,7 +3234,7 @@ fn convert_to_s3_object(obj: RObject, mut attributes: Attributes) -> RObject {
         .iter()
         .position(|(k, _)| k.as_ref() == "class")
         .and_then(|idx| match attributes.attrs[idx].1.as_concrete() {
-            RObject::Character(classes) => Some(classes.clone()),
+            RObject::Character(classes) => Some(classes.as_vec().clone()),
             _ => None,
         })
         .unwrap_or_default();
@@ -3098,14 +3287,14 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
             }
 
             match class_obj {
-                RObject::Character(classes) => (classes.clone(), None),
+                RObject::Character(classes) => (classes.as_vec().clone(), None),
                 RObject::WithAttributes {
                     object,
                     attributes: class_attrs,
                 } => {
                     // Unwrap the WithAttributes to get the actual class vector
                     let classes = match object.as_ref() {
-                        RObject::Character(classes) => classes.clone(),
+                        RObject::Character(classes) => classes.as_vec().clone(),
                         _ => vec![],
                     };
                     // Extract the package attribute from the class's attributes

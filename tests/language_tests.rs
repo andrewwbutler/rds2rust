@@ -150,10 +150,10 @@ fn test_lang_nested_roundtrip() {
 fn test_language_construction_roundtrip() {
     // Construct a Language object: print("hello")
     let lang = RObject::Language {
-        function: Box::new(RObject::Character(vec![Arc::from("print")])),
+        function: Box::new(RObject::Character(vec![Arc::from("print")].into())),
         args: vec![PairlistElement {
             tag: None,
-            value: RObject::Character(vec![Arc::from("hello")]),
+            value: RObject::Character(vec![Arc::from("hello")].into()),
             tag_object: None,
         }],
     };

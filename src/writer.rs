@@ -380,6 +380,11 @@ fn ref_key(obj: &RObject) -> Option<usize> {
 /// Write an RObject to RDS format.
 /// Returns the serialized bytes (gzip compressed).
 pub fn write_rds(obj: &RObject) -> Result<Vec<u8>> {
+    // Check if object is fully loaded (no lazy vectors)
+    if !obj.is_fully_loaded() {
+        return Err(Error::CannotWriteLazyObject);
+    }
+
     let mut buffer = Vec::new();
 
     // Write header
@@ -635,7 +640,7 @@ fn write_object_inner(
             // Character vectors are always written as STRSXP
             // Symbols (SYMSXP) are only written in specific contexts like pairlist tags
             // or Language function positions, not here
-            write_character_vector(writer, vec.as_slice())
+            write_character_vector(writer, vec)
         }
         RObject::Symbol(name) => {
             // Write as SYMSXP - used for R's symbol table and special markers
@@ -1373,14 +1378,14 @@ fn write_dataframe(
 
     // Write attributes (names, row.names, class)
     let mut attrs = Attributes::new();
-    attrs.insert(Arc::from("names"), RObject::Character(column_names));
+    attrs.insert(Arc::from("names"), RObject::Character(column_names.into()));
     attrs.insert(
         Arc::from("row.names"),
-        RObject::Character(row_names.to_vec()),
+        RObject::Character(row_names.to_vec().into()),
     );
     attrs.insert(
         Arc::from("class"),
-        RObject::Character(vec![Arc::from("data.frame")]),
+        RObject::Character(vec![Arc::from("data.frame")].into()),
     );
 
     write_attributes(writer, &attrs, ref_table, symbol_tracker)?;
@@ -1492,7 +1497,7 @@ fn write_s3_object(
 
             // Write attributes FIRST (before CAR/CDR)
             let mut attrs = attributes.clone();
-            attrs.insert(Arc::from("class"), RObject::Character(class.to_vec()));
+            attrs.insert(Arc::from("class"), RObject::Character(class.to_vec().into()));
             write_attributes(writer, &attrs, ref_table, symbol_tracker)?;
 
             // Write the function (CAR)
@@ -1604,7 +1609,7 @@ fn write_s3_object(
 
     // Write attributes with class added
     let mut attrs = attributes.clone();
-    attrs.insert(Arc::from("class"), RObject::Character(class.to_vec()));
+    attrs.insert(Arc::from("class"), RObject::Character(class.to_vec().into()));
     write_attributes(writer, &attrs, ref_table, symbol_tracker)?;
 
     Ok(())
@@ -1627,10 +1632,10 @@ fn write_s4_object(
 
     // For S4 objects, the class attribute must have a package attribute
     // Use the stored package if available, otherwise fall back to ".GlobalEnv" for user-defined classes
-    let class_obj = RObject::Character(class.to_vec());
+    let class_obj = RObject::Character(class.to_vec().into());
     let mut class_attrs = Attributes::new();
     let pkg_value = package.cloned().unwrap_or_else(|| Arc::from(".GlobalEnv"));
-    class_attrs.insert(Arc::from("package"), RObject::Character(vec![pkg_value]));
+    class_attrs.insert(Arc::from("package"), RObject::Character(vec![pkg_value].into()));
 
     let class_with_package = RObject::WithAttributes {
         object: Box::new(class_obj),

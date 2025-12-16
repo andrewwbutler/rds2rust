@@ -149,7 +149,7 @@ fn test_factor_with_names_roundtrip() {
     let mut attrs = Attributes::new();
     attrs.insert(
         Arc::from("names"),
-        RObject::Character(expected_names.clone()),
+        RObject::Character(expected_names.clone().into()),
     );
 
     let obj = factor.clone().with_attributes(attrs);

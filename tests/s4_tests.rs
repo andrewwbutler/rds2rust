@@ -245,10 +245,10 @@ fn test_s4_as_attribute_container() {
 
     // Create an S4 object with a class and slots
     let mut slots = IndexMap::new();
-    slots.insert(Arc::from("data"), RObject::Integer(vec![1, 2, 3]));
+    slots.insert(Arc::from("data"), RObject::Integer(vec![1, 2, 3].into()));
     slots.insert(
         Arc::from("metadata"),
-        RObject::Character(vec![Arc::from("test")]),
+        RObject::Character(vec![Arc::from("test")].into()),
     );
 
     let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
@@ -303,7 +303,7 @@ fn test_s4_nested_as_attribute() {
 
     // Create inner S4 object
     let mut inner_slots = IndexMap::new();
-    inner_slots.insert(Arc::from("value"), RObject::Real(vec![3.14]));
+    inner_slots.insert(Arc::from("value"), RObject::Real(vec![3.14].into()));
 
     let inner_s4 = RObject::S4Object(Box::new(S4ObjectData {
         class: vec![Arc::from("InnerClass")],
@@ -316,7 +316,7 @@ fn test_s4_nested_as_attribute() {
     outer_slots.insert(Arc::from("inner"), inner_s4);
     outer_slots.insert(
         Arc::from("name"),
-        RObject::Character(vec![Arc::from("outer")]),
+        RObject::Character(vec![Arc::from("outer")].into()),
     );
 
     let outer_s4 = RObject::S4Object(Box::new(S4ObjectData {
@@ -373,14 +373,14 @@ fn test_s4_flags_correctly_set() {
 
     // Create an S4 object similar to a Matrix dgCMatrix
     let mut slots = IndexMap::new();
-    slots.insert(Arc::from("Dim"), RObject::Integer(vec![3, 3]));
+    slots.insert(Arc::from("Dim"), RObject::Integer(vec![3, 3].into()));
     slots.insert(
         Arc::from("Dimnames"),
         RObject::List(vec![RObject::Null, RObject::Null]),
     );
-    slots.insert(Arc::from("x"), RObject::Real(vec![1.0, 2.0, 3.0]));
-    slots.insert(Arc::from("i"), RObject::Integer(vec![0, 1, 2]));
-    slots.insert(Arc::from("p"), RObject::Integer(vec![0, 1, 2, 3]));
+    slots.insert(Arc::from("x"), RObject::Real(vec![1.0, 2.0, 3.0].into()));
+    slots.insert(Arc::from("i"), RObject::Integer(vec![0, 1, 2].into()));
+    slots.insert(Arc::from("p"), RObject::Integer(vec![0, 1, 2, 3].into()));
 
     let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
         class: vec![Arc::from("dgCMatrix")],
@@ -478,7 +478,7 @@ fn test_s4_package_attribute_preserved() {
 
     for (package, class_name) in test_cases {
         let mut slots = IndexMap::new();
-        slots.insert(Arc::from("data"), RObject::Integer(vec![1, 2, 3]));
+        slots.insert(Arc::from("data"), RObject::Integer(vec![1, 2, 3].into()));
 
         let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
             class: vec![Arc::from(class_name)],
@@ -516,7 +516,7 @@ fn test_s4_default_package_fallback() {
     // Using IndexMap instead of HashMap for order preservation
 
     let mut slots = IndexMap::new();
-    slots.insert(Arc::from("value"), RObject::Real(vec![42.0]));
+    slots.insert(Arc::from("value"), RObject::Real(vec![42.0].into()));
 
     let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
         class: vec![Arc::from("MyCustomClass")],
@@ -687,5 +687,6 @@ fn variant_name(obj: &RObject) -> &'static str {
         RObject::UnboundValue => "UnboundValue",
         RObject::WithAttributes { .. } => "WithAttributes",
         RObject::Shared(_) => "Shared",
+        _ => "Unknown",
     }
 }

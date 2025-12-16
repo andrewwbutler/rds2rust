@@ -13,19 +13,120 @@ mod writer;
 
 pub use error::{Error, Result};
 pub use types::{
-    Attributes, DataFrameData, FactorData, Logical, PairlistElement, RObject, S4ObjectData,
+    Attributes, Complex, DataFrameData, FactorData, LazyVector, Logical, PairlistElement, RObject,
+    S3ObjectData, S4ObjectData, VectorData,
 };
+
+/// Parsing mode for RDS files.
+///
+/// Determines whether to fully parse all data or parse only metadata
+/// for lightweight file inspection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseMode {
+    /// Fully parse all data (current behavior, default).
+    ///
+    /// All vectors and matrices are loaded into memory.
+    Full,
+
+    /// Parse structure only, skip large allocations.
+    ///
+    /// Vectors/matrices are represented as metadata (type, length, dimensions)
+    /// without allocating the actual data. This enables:
+    /// - Fast file inspection
+    /// - Handling files larger than available RAM
+    /// - Metadata extraction without memory overhead
+    LazyMetadata,
+
+    /// Parse structure with selective loading (advanced).
+    ///
+    /// Caller specifies which paths to fully load.
+    /// Note: Paths use structured segments to avoid parsing ambiguity.
+    Selective {
+        /// Paths to fully load (all others remain lazy)
+        paths: Vec<ObjectPath>,
+    },
+}
+
+impl Default for ParseMode {
+    fn default() -> Self {
+        ParseMode::Full
+    }
+}
+
+/// Structured path for selective loading.
+///
+/// Uses interned string segments to avoid parsing ambiguity and
+/// reduce memory allocations when matching paths during parsing.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ObjectPath {
+    /// Path segments (e.g., ["data", "matrices", "values"])
+    pub segments: Vec<Arc<str>>,
+}
+
+impl ObjectPath {
+    /// Create a new object path from segments.
+    pub fn new(segments: Vec<Arc<str>>) -> Self {
+        Self { segments }
+    }
+
+    /// Create a new object path from string segments.
+    pub fn from_strings<I, S>(segments: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self {
+            segments: segments
+                .into_iter()
+                .map(|s| Arc::from(s.as_ref()))
+                .collect(),
+        }
+    }
+
+    /// Check if this path matches or is a prefix of another path.
+    pub fn matches(&self, other: &[Arc<str>]) -> bool {
+        if self.segments.len() > other.len() {
+            return false;
+        }
+        self.segments
+            .iter()
+            .zip(other.iter())
+            .all(|(a, b)| a == b)
+    }
+}
 
 /// Configuration for parsing RDS files.
 ///
 /// Allows customization of memory allocation limits to handle large files
 /// or enforce stricter safety constraints.
-#[derive(Debug, Clone, Copy)]
+///
+/// # Safety Guardrails
+///
+/// Note: `mode` does NOT override safety guardrails (`max_vector_length`, `max_allocation_bytes`).
+/// These limits are enforced even in `LazyMetadata` mode to protect against corrupt headers.
+#[derive(Debug, Clone)]
 pub struct ParseConfig {
     /// Maximum number of elements allowed in a vector (default: 50,000,000)
     pub max_vector_length: usize,
     /// Maximum bytes that can be allocated for a single vector (default: 128 MB)
     pub max_allocation_bytes: usize,
+    /// Parsing mode (default: Full)
+    pub mode: ParseMode,
+    /// In lazy mode, vectors smaller than this are always loaded (default: 10 elements)
+    ///
+    /// Small vectors are typically metadata (dimensions, names, etc.) and should
+    /// be loaded even in lazy mode for efficient structure inspection.
+    pub lazy_threshold: usize,
+
+    /// In lazy mode, bytecode constants smaller than this are always loaded (default: 1000 elements)
+    ///
+    /// Bytecode parsing requires extracting tag/symbol names from character vectors.
+    /// This threshold is higher than `lazy_threshold` because:
+    /// - Tags/symbols are almost always small (class names, function names, etc.)
+    /// - Loading a 1000-element character vector is cheap (typically <50 KB)
+    /// - If a tag exceeds this threshold, it will be skipped gracefully (placeholder used)
+    /// - This prevents failures when parsing S4 objects with embedded command history
+    pub bytecode_lazy_threshold: usize,
 }
 
 impl Default for ParseConfig {
@@ -33,6 +134,9 @@ impl Default for ParseConfig {
         Self {
             max_vector_length: 50_000_000,
             max_allocation_bytes: 128 * 1024 * 1024, // 128 MB
+            mode: ParseMode::default(),
+            lazy_threshold: 10, // Load vectors with <= 10 elements even in lazy mode
+            bytecode_lazy_threshold: 1000, // Load bytecode constants with <= 1000 elements
         }
     }
 }
@@ -55,6 +159,43 @@ impl ParseConfig {
         self
     }
 
+    /// Set the parsing mode.
+    pub fn with_mode(mut self, mode: ParseMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Set the lazy threshold (vectors smaller than this are always loaded in lazy mode).
+    pub fn with_lazy_threshold(mut self, threshold: usize) -> Self {
+        self.lazy_threshold = threshold;
+        self
+    }
+
+    /// Set the bytecode lazy threshold (bytecode constants smaller than this are always loaded).
+    pub fn with_bytecode_lazy_threshold(mut self, threshold: usize) -> Self {
+        self.bytecode_lazy_threshold = threshold;
+        self
+    }
+
+    /// Create a config for lazy metadata parsing.
+    ///
+    /// This mode parses only structure and metadata without allocating
+    /// vector/matrix data, enabling:
+    /// - Fast file inspection
+    /// - Handling files larger than available RAM
+    /// - Metadata extraction with minimal memory overhead
+    ///
+    /// # Note
+    ///
+    /// Safety guardrails (`max_vector_length`, `max_allocation_bytes`) are
+    /// still enforced to protect against corrupt headers.
+    pub fn lazy_metadata() -> Self {
+        Self {
+            mode: ParseMode::LazyMetadata,
+            ..Default::default()
+        }
+    }
+
     /// Create a config suitable for large scientific datasets (e.g., genomics).
     ///
     /// Sets higher limits:
@@ -64,6 +205,9 @@ impl ParseConfig {
         Self {
             max_vector_length: 500_000_000,
             max_allocation_bytes: 2 * 1024 * 1024 * 1024, // 2 GB
+            mode: ParseMode::default(),
+            lazy_threshold: 100,
+            bytecode_lazy_threshold: 1000,
         }
     }
 
@@ -74,6 +218,9 @@ impl ParseConfig {
         Self {
             max_vector_length: usize::MAX,
             max_allocation_bytes: usize::MAX,
+            mode: ParseMode::default(),
+            lazy_threshold: 100,
+            bytecode_lazy_threshold: 1000,
         }
     }
 }
@@ -81,8 +228,49 @@ impl ParseConfig {
 /// Read an RDS file from a byte slice with default safety limits.
 ///
 /// For large files, consider using [`read_rds_with_config`] with [`ParseConfig::large_data()`].
+/// For lazy parsing (metadata only), use [`read_rds_lazy`].
 pub fn read_rds(data: &[u8]) -> Result<RObject> {
     read_rds_with_config(data, ParseConfig::default())
+}
+
+/// Read an RDS file in lazy mode (metadata only, no vector data allocation).
+///
+/// This function parses only the structure and metadata without allocating
+/// vector/matrix data, enabling:
+/// - Fast file inspection (structure, column names, dimensions)
+/// - Handling files larger than available RAM
+/// - Metadata extraction with minimal memory overhead
+///
+/// # Examples
+///
+/// ```
+/// use rds2rust::{read_rds_lazy, RObject};
+///
+/// # fn example(data: &[u8]) -> rds2rust::Result<()> {
+/// // Parse metadata only
+/// let obj = read_rds_lazy(data)?;
+///
+/// // Check if object is fully loaded
+/// assert!(!obj.is_fully_loaded());
+///
+/// // Get lazy vector spans for inspection
+/// let spans = obj.lazy_spans();
+/// for (path, lazy_vec) in spans {
+///     println!("{}: {} elements at offset {}", path, lazy_vec.length, lazy_vec.offset);
+/// }
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Note
+///
+/// Safety guardrails (`max_vector_length`, `max_allocation_bytes`) are
+/// still enforced to protect against corrupt headers.
+///
+/// Attempting to write a lazy object will fail - materialize it first
+/// or re-parse in full mode.
+pub fn read_rds_lazy(data: &[u8]) -> Result<RObject> {
+    read_rds_with_config(data, ParseConfig::lazy_metadata())
 }
 
 /// Read an RDS file from a byte slice with custom configuration.

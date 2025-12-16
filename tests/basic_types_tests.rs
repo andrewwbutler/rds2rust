@@ -131,7 +131,7 @@ fn test_integer_with_na() {
 
 #[test]
 fn test_integer_roundtrip() {
-    let obj = RObject::Integer(vec![1, 2, 3, 4, 5]);
+    let obj = RObject::Integer(vec![1, 2, 3, 4, 5].into());
     let serialized = write_rds(&obj).expect("Failed to write integer vector");
     let deserialized = read_rds(&serialized).expect("Failed to read integer vector");
     assert_eq!(obj, deserialized);
@@ -225,7 +225,7 @@ fn test_real_special() {
 
 #[test]
 fn test_real_roundtrip() {
-    let obj = RObject::Real(vec![1.5, 2.5, 3.5]);
+    let obj = RObject::Real(vec![1.5, 2.5, 3.5].into());
     let serialized = write_rds(&obj).expect("Failed to write real vector");
     let deserialized = read_rds(&serialized).expect("Failed to read real vector");
     assert_eq!(obj, deserialized);
@@ -318,7 +318,7 @@ fn test_logical_roundtrip() {
         Logical::False,
         Logical::Na,
         Logical::True,
-    ]);
+    ].into());
     let serialized = write_rds(&obj).expect("Failed to write logical vector");
     let deserialized = read_rds(&serialized).expect("Failed to read logical vector");
     assert_eq!(obj, deserialized);
@@ -425,7 +425,7 @@ fn test_character_empty() {
 
 #[test]
 fn test_character_roundtrip() {
-    let obj = RObject::Character(vec![Arc::from("hello"), Arc::from("world")]);
+    let obj = RObject::Character(vec![Arc::from("hello"), Arc::from("world")].into());
     let serialized = write_rds(&obj).expect("Failed to write character vector");
     let deserialized = read_rds(&serialized).expect("Failed to read character vector");
     assert_eq!(obj, deserialized);
@@ -474,7 +474,7 @@ fn test_raw_vector() {
 
 #[test]
 fn test_raw_roundtrip() {
-    let obj = RObject::Raw(vec![0x01, 0x02, 0x03, 0xFF, 0x00]);
+    let obj = RObject::Raw(vec![0x01, 0x02, 0x03, 0xFF, 0x00].into());
     let serialized = write_rds(&obj).expect("Failed to write raw vector");
     let deserialized = read_rds(&serialized).expect("Failed to read raw vector");
     assert_eq!(obj, deserialized);
