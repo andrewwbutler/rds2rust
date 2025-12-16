@@ -1649,19 +1649,13 @@ fn write_s3_object(
     Ok(())
 }
 
-/// Write an S4 object.
-fn write_s4_object(
-    writer: &mut Vec<u8>,
+/// Build the standard S4 attribute map (class with package + slots).
+/// This is shared between write_s4_object and write_object_with_attributes.
+fn build_s4_attributes(
     class: &[Arc<str>],
     package: Option<&Arc<str>>,
     slots: &IndexMap<Arc<str>, RObject>,
-    ref_table: &mut RefTable,
-    symbol_tracker: &mut SymbolTracker,
-) -> Result<()> {
-    // S4 objects are written as S4SXP with attributes and IS_S4_BIT set
-    write_flags(writer, S4SXP, true, false, true)?;
-
-    // Write attributes (class + slots)
+) -> Attributes {
     let mut attrs = Attributes::new();
 
     // For S4 objects, the class attribute must have a package attribute
@@ -1686,6 +1680,24 @@ fn write_s4_object(
         attrs.insert(name.clone(), value.clone());
     }
 
+    attrs
+}
+
+/// Write an S4 object.
+fn write_s4_object(
+    writer: &mut Vec<u8>,
+    class: &[Arc<str>],
+    package: Option<&Arc<str>>,
+    slots: &IndexMap<Arc<str>, RObject>,
+    ref_table: &mut RefTable,
+    symbol_tracker: &mut SymbolTracker,
+) -> Result<()> {
+    // S4 objects are written as S4SXP with attributes and IS_S4_BIT set
+    write_flags(writer, S4SXP, true, false, true)?;
+
+    // Build S4 attributes (class + slots)
+    let attrs = build_s4_attributes(class, package, slots);
+
     write_attributes(writer, &attrs, ref_table, symbol_tracker)?;
 
     Ok(())
@@ -1700,6 +1712,7 @@ fn write_s4_object(
 /// - Logical vectors
 /// - Character vectors
 /// - Lists (generic vectors)
+/// - S4 objects (merges outer attributes with class and slots)
 fn write_object_with_attributes(
     writer: &mut Vec<u8>,
     object: &RObject,
@@ -1758,6 +1771,31 @@ fn write_object_with_attributes(
             for element in elements {
                 write_object(writer, element, ref_table, symbol_tracker)?;
             }
+        }
+        RObject::S4Object(s4_data) => {
+            // S4 objects with outer attributes: write S4SXP with HAS_ATTR and IS_S4_BIT
+            // Note: OBJ flag is NOT set for S4 objects (only for S3)
+            write_flags(writer, S4SXP, true, false, true)?;
+
+            // Build base S4 attributes (class with package + slots)
+            let mut merged_attrs = build_s4_attributes(
+                &s4_data.class,
+                s4_data.package.as_ref(),
+                &s4_data.slots,
+            );
+
+            // Merge outer attributes into S4 attributes
+            // Outer attributes can shadow slot names, but NOT the 'class' attribute
+            for (key, value) in &attributes.attrs {
+                if key.as_ref() != "class" {
+                    // Allow outer attributes to override slots (explicit intent)
+                    merged_attrs.insert(key.clone(), (**value).clone());
+                }
+                // If key == "class", silently ignore - S4 class is authoritative
+            }
+
+            write_attributes(writer, &merged_attrs, ref_table, symbol_tracker)?;
+            return Ok(());
         }
         _ => {
             return Err(Error::Unsupported(

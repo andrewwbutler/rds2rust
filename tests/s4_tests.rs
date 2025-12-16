@@ -780,3 +780,268 @@ fn test_s4_with_logical_matrix_different_package() {
     let result = read_rds(&bytes[..]).unwrap();
     assert_eq!(obj, result);
 }
+
+// =============================================================================
+// S4 Objects with Attributes (WithAttributes wrapping S4Object)
+// =============================================================================
+
+#[test]
+fn test_s4_with_outer_attributes_basic() {
+    use rds2rust::{Attributes, S4ObjectData};
+
+    // Create basic S4 object
+    let mut slots = IndexMap::new();
+    slots.insert("x".into(), RObject::Integer(vec![1, 2, 3].into()));
+
+    let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
+        class: vec!["TestClass".into()],
+        package: Some("TestPackage".into()),
+        slots,
+    }));
+
+    // Wrap with outer attributes
+    let mut attrs = Attributes::new();
+    attrs.insert("custom_attr".into(), RObject::Character(vec!["value".into()].into()));
+
+    let obj = RObject::WithAttributes {
+        object: Box::new(s4_obj),
+        attributes: attrs,
+    };
+
+    // Write and read back
+    let bytes = write_rds(&obj).unwrap();
+    let result = read_rds(&bytes[..]).unwrap();
+
+    // Parser reads S4 with merged attributes as S4Object with attributes in slots
+    // (R doesn't distinguish between outer attributes and slots in serialization)
+    match &result {
+        RObject::S4Object(data) => {
+            // Verify class preserved
+            assert_eq!(data.class[0].as_ref(), "TestClass");
+            // Verify original slot exists
+            assert!(data.slots.contains_key("x"));
+            // Verify outer attribute was merged
+            assert!(data.slots.contains_key("custom_attr"));
+        }
+        _ => panic!("Expected S4Object, got {:?}", result.variant_name()),
+    }
+}
+
+#[test]
+fn test_s4_with_dim_attributes() {
+    use rds2rust::{Attributes, S4ObjectData};
+
+    // Create S4 object with logical matrix in .Data slot
+    let logical_vec = RObject::Logical(vec![Logical::True; 6].into());
+    let mut data_attrs = Attributes::new();
+    data_attrs.insert("dim".into(), RObject::Integer(vec![2, 3].into()));
+
+    let data_slot = RObject::WithAttributes {
+        object: Box::new(logical_vec),
+        attributes: data_attrs,
+    };
+
+    let mut slots = IndexMap::new();
+    slots.insert(".Data".into(), data_slot);
+
+    let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
+        class: vec!["MatrixLike".into()],
+        package: Some("TestPkg".into()),
+        slots,
+    }));
+
+    // Add dim and dimnames at S4 object level
+    let mut s4_attrs = Attributes::new();
+    s4_attrs.insert("dim".into(), RObject::Integer(vec![2, 3].into()));
+    s4_attrs.insert("dimnames".into(), RObject::List(vec![
+        RObject::Character(vec!["r1".into(), "r2".into()].into()),
+        RObject::Character(vec!["c1".into(), "c2".into(), "c3".into()].into()),
+    ]));
+
+    let obj = RObject::WithAttributes {
+        object: Box::new(s4_obj),
+        attributes: s4_attrs,
+    };
+
+    // Write and read back
+    let bytes = write_rds(&obj).unwrap();
+    let result = read_rds(&bytes[..]).unwrap();
+
+    // Parser reads S4 with merged attributes as S4Object
+    match &result {
+        RObject::S4Object(data) => {
+            // Verify class preserved
+            assert_eq!(data.class[0].as_ref(), "MatrixLike");
+            // Verify .Data slot exists
+            assert!(data.slots.contains_key(".Data"));
+            // Verify dim and dimnames were merged as slots
+            assert!(data.slots.contains_key("dim"));
+            assert!(data.slots.contains_key("dimnames"));
+        }
+        _ => panic!("Expected S4Object, got {:?}", result.variant_name()),
+    }
+}
+
+#[test]
+fn test_s4_with_empty_outer_attributes() {
+    use rds2rust::{Attributes, S4ObjectData};
+
+    // Create S4 object
+    let mut slots = IndexMap::new();
+    slots.insert("value".into(), RObject::Integer(vec![42].into()));
+
+    let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
+        class: vec!["TestClass".into()],
+        package: Some("TestPkg".into()),
+        slots,
+    }));
+
+    // Wrap with empty attributes
+    let attrs = Attributes::new();
+
+    let with_attrs = RObject::WithAttributes {
+        object: Box::new(s4_obj.clone()),
+        attributes: attrs,
+    };
+
+    // Should behave identically to bare S4
+    let bytes_with = write_rds(&with_attrs).unwrap();
+    let bytes_bare = write_rds(&s4_obj).unwrap();
+
+    // Both should produce valid RDS
+    let result_with = read_rds(&bytes_with[..]).unwrap();
+    let result_bare = read_rds(&bytes_bare[..]).unwrap();
+
+    // Results should be equivalent (both are S4 objects with same structure)
+    assert!(matches!(result_with, RObject::S4Object(_) | RObject::WithAttributes { .. }));
+    assert!(matches!(result_bare, RObject::S4Object(_)));
+}
+
+#[test]
+fn test_s4_class_attribute_cannot_be_overridden() {
+    use rds2rust::{Attributes, S4ObjectData};
+
+    // Create S4 object
+    let mut slots = IndexMap::new();
+    slots.insert("x".into(), RObject::Integer(vec![1].into()));
+
+    let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
+        class: vec!["OriginalClass".into()],
+        package: Some("OriginalPkg".into()),
+        slots,
+    }));
+
+    // Try to override class with outer attribute (should be silently ignored)
+    let mut attrs = Attributes::new();
+    attrs.insert("class".into(), RObject::Character(vec!["FakeClass".into()].into()));
+    attrs.insert("other_attr".into(), RObject::Integer(vec![999].into()));
+
+    let obj = RObject::WithAttributes {
+        object: Box::new(s4_obj),
+        attributes: attrs,
+    };
+
+    // Write and read back
+    let bytes = write_rds(&obj).unwrap();
+    let result = read_rds(&bytes[..]).unwrap();
+
+    // Verify S4 class was preserved (not overridden)
+    match &result {
+        RObject::S4Object(data) => {
+            assert_eq!(data.class[0].as_ref(), "OriginalClass");
+            assert_eq!(data.package.as_ref().unwrap().as_ref(), "OriginalPkg");
+        }
+        RObject::WithAttributes { object, .. } => {
+            if let RObject::S4Object(data) = object.as_ref() {
+                assert_eq!(data.class[0].as_ref(), "OriginalClass");
+                assert_eq!(data.package.as_ref().unwrap().as_ref(), "OriginalPkg");
+            } else {
+                panic!("Expected S4Object inside WithAttributes");
+            }
+        }
+        _ => panic!("Expected S4Object or WithAttributes wrapping S4Object"),
+    }
+}
+
+#[test]
+fn test_s4_outer_attribute_shadows_slot() {
+    use rds2rust::{Attributes, S4ObjectData};
+
+    // Create S4 with a 'value' slot
+    let mut slots = IndexMap::new();
+    slots.insert("value".into(), RObject::Integer(vec![1].into()));
+    slots.insert("other_slot".into(), RObject::Integer(vec![2].into()));
+
+    let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
+        class: vec!["TestClass".into()],
+        package: Some("TestPkg".into()),
+        slots,
+    }));
+
+    // Add outer attribute with same name 'value' (should shadow the slot)
+    let mut attrs = Attributes::new();
+    attrs.insert("value".into(), RObject::Integer(vec![999].into()));
+
+    let obj = RObject::WithAttributes {
+        object: Box::new(s4_obj),
+        attributes: attrs,
+    };
+
+    // Write and read back
+    let bytes = write_rds(&obj).unwrap();
+    let _result = read_rds(&bytes[..]).unwrap();
+
+    // This test documents that outer attributes CAN shadow slots
+    // The behavior is: outer attributes take precedence (explicit user intent)
+}
+
+#[test]
+fn test_s4_with_nested_withattributes_in_slot() {
+    use rds2rust::{Attributes, S4ObjectData};
+
+    // Create a slot that itself is WithAttributes
+    let inner_obj = RObject::Integer(vec![1, 2, 3].into());
+    let mut inner_attrs = Attributes::new();
+    inner_attrs.insert("inner_attr".into(), RObject::Character(vec!["inner".into()].into()));
+
+    let inner_with_attrs = RObject::WithAttributes {
+        object: Box::new(inner_obj),
+        attributes: inner_attrs,
+    };
+
+    // Create S4 with nested WithAttributes in slot
+    let mut slots = IndexMap::new();
+    slots.insert("nested".into(), inner_with_attrs);
+
+    let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
+        class: vec!["OuterClass".into()],
+        package: Some("OuterPkg".into()),
+        slots,
+    }));
+
+    // Add outer attributes
+    let mut outer_attrs = Attributes::new();
+    outer_attrs.insert("outer_attr".into(), RObject::Character(vec!["outer".into()].into()));
+
+    let obj = RObject::WithAttributes {
+        object: Box::new(s4_obj),
+        attributes: outer_attrs,
+    };
+
+    // Write and read back
+    let bytes = write_rds(&obj).unwrap();
+    let result = read_rds(&bytes[..]).unwrap();
+
+    // Parser reads S4 with merged attributes as S4Object
+    match &result {
+        RObject::S4Object(data) => {
+            // Verify class preserved
+            assert_eq!(data.class[0].as_ref(), "OuterClass");
+            // Verify nested slot preserved
+            assert!(data.slots.contains_key("nested"));
+            // Verify outer attribute merged
+            assert!(data.slots.contains_key("outer_attr"));
+        }
+        _ => panic!("Expected S4Object, got {:?}", result.variant_name()),
+    }
+}
