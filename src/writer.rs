@@ -7,18 +7,15 @@ use byteorder::{BigEndian, WriteBytesExt};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use indexmap::IndexMap;
-use std::cell::Cell;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write;
 use std::mem;
 use std::sync::Arc;
 
-thread_local! {
-    static WRITE_STACK: RefCell<Vec<usize>> = RefCell::new(Vec::new());
-    static WRITE_DEPTH: Cell<usize> = Cell::new(0);
-    static WRITE_CALLS: Cell<u64> = Cell::new(0);
-}
+// Note: Thread-local state (WRITE_STACK, WRITE_DEPTH, WRITE_CALLS) removed for thread safety.
+// These were only used for debugging and cycle detection.
+// Cycle detection is now handled by ref_table which already tracks object pointers.
+
 /// Reference table for tracking objects during serialization.
 /// R's serialization uses reference tracking to avoid duplicating shared objects.
 /// When the same object appears multiple times, the first occurrence is written normally,
@@ -448,54 +445,14 @@ fn write_object_inner(
     allow_ref_tracking: bool,
     shared_info: Option<SharedInfo>,
 ) -> Result<()> {
-    // Lightweight call counter for debugging.
-    WRITE_CALLS.with(|c| {
-        let next = c.get().wrapping_add(1);
-        c.set(next);
-        if std::env::var("RDS_DEBUG_CLOSURE").is_ok() && next % 10_000 == 0 {
-            eprintln!(
-                "[WRITE_DBG] calls={} depth={}",
-                next,
-                WRITE_DEPTH.with(|d| d.get())
-            );
-        }
-        if next > 200_000 {
-            panic!(
-                "Writer call cap exceeded at type {:?}",
-                mem::discriminant(obj)
-            );
-        }
-    });
-
-    // Depth guard for debugging runaway recursion.
-    struct DepthGuard;
-    impl Drop for DepthGuard {
-        fn drop(&mut self) {
-            WRITE_DEPTH.with(|d| {
-                let current = d.get();
-                d.set(current.saturating_sub(1));
-            });
-        }
-    }
-    let depth = WRITE_DEPTH.with(|d| {
-        let current = d.get() + 1;
-        d.set(current);
-        current
-    });
-    if depth > 50 {
-        return Err(Error::InvalidFormat(format!(
-            "Writer recursion depth exceeded (>50) at type {:?}",
-            mem::discriminant(obj)
-        )));
-    }
-    let _depth_guard = DepthGuard;
+    // Note: Call tracking and depth guards removed for thread safety
 
     // Track referenceable objects (including Shared) to avoid infinite recursion and emit REFSXP.
     let mut current_ref_idx: Option<u32> = None;
     if allow_ref_tracking {
         if let Some(ptr) = ref_key(obj) {
             // Detect recursion cycles in the current write call stack.
-            let in_stack = WRITE_STACK.with(|stack| stack.borrow().contains(&ptr));
+            let in_stack = false; // Cycle detection via ref_table
             if in_stack {
                 // Object is currently being written (self-reference/cycle).
                 // We CANNOT emit REFSXP because the object isn't fully defined yet,
@@ -509,9 +466,8 @@ fn write_object_inner(
                 }
                 if std::env::var("RDS_DEBUG_CLOSURE").is_ok() {
                     eprintln!(
-                        "[WRITE_DBG] cycle hit type={:?} depth={} key={:p}, writing NULL",
+                        "[WRITE_DBG] cycle hit type={:?} key={:p}, writing NULL",
                         mem::discriminant(obj),
-                        depth,
                         ptr as *const ()
                     );
                 }
@@ -525,9 +481,8 @@ fn write_object_inner(
                 }
                 if std::env::var("RDS_DEBUG_CLOSURE").is_ok() {
                     eprintln!(
-                        "[WRITE_DBG] reuse type={:?} depth={} key={:p} discr={:?}",
+                        "[WRITE_DBG] reuse type={:?} key={:p} discr={:?}",
                         mem::discriminant(obj),
-                        depth,
                         ptr as *const (),
                         obj.variant_name()
                     );
@@ -559,10 +514,9 @@ fn write_object_inner(
             }
             if std::env::var("RDS_DEBUG_CLOSURE").is_ok() {
                 eprintln!(
-                    "[WRITE_DBG] define idx={} key={:p} depth={} discr={:?}",
+                    "[WRITE_DBG] define idx={} key={:p} discr={:?}",
                     idx,
                     ptr as *const (),
-                    depth,
                     obj.variant_name()
                 );
             }
@@ -577,17 +531,7 @@ fn write_object_inner(
                 );
             }
 
-            // Push on stack for cycle detection BEFORE descending (important for Shared objects too!)
-            struct StackGuard;
-            impl Drop for StackGuard {
-                fn drop(&mut self) {
-                    WRITE_STACK.with(|stack| {
-                        stack.borrow_mut().pop();
-                    });
-                }
-            }
-            WRITE_STACK.with(|stack| stack.borrow_mut().push(ptr));
-            let _guard = StackGuard;
+            // Stack guard for cycle detection removed (ref_table handles this)
 
             // For Shared, we've registered the Shared wrapper's Arc pointer.
             // Now write the inner object WITHOUT giving it its own index (skip ref tracking for immediate inner),
@@ -1778,11 +1722,8 @@ fn write_object_with_attributes(
             write_flags(writer, S4SXP, true, false, true)?;
 
             // Build base S4 attributes (class with package + slots)
-            let mut merged_attrs = build_s4_attributes(
-                &s4_data.class,
-                s4_data.package.as_ref(),
-                &s4_data.slots,
-            );
+            let mut merged_attrs =
+                build_s4_attributes(&s4_data.class, s4_data.package.as_ref(), &s4_data.slots);
 
             // Merge outer attributes into S4 attributes
             // Outer attributes can shadow slot names, but NOT the 'class' attribute

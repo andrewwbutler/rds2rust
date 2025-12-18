@@ -2,6 +2,7 @@
 
 use indexmap::IndexMap;
 use smallvec::SmallVec;
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 /// Lazy vector metadata for deferred loading.
@@ -343,6 +344,160 @@ impl RObject {
     pub fn into_concrete(self) -> RObject {
         match self {
             RObject::Shared(inner) => inner.read().unwrap().clone(),
+            other => other,
+        }
+    }
+
+    /// Recursively convert all Shared wrappers to concrete objects throughout the entire tree.
+    ///
+    /// This is essential for thread safety when the resulting RObject will be used across
+    /// threads. While each parse has its own RefTable, nested Shared objects (in Lists,
+    /// Pairlists, WithAttributes, etc.) share Arc<RwLock> pointers that can cause race
+    /// conditions when accessed concurrently from different threads.
+    ///
+    /// Uses cycle detection to handle circular references (e.g., in environments).
+    pub fn into_concrete_deep(self) -> RObject {
+        let mut visited = std::collections::HashMap::new();
+        self.into_concrete_deep_impl(&mut visited)
+    }
+
+    /// Internal implementation with cycle detection.
+    ///
+    /// When a cycle is detected (Shared object already visited), we break the cycle by
+    /// returning a clone of the already-processed concrete object.
+    fn into_concrete_deep_impl(
+        self,
+        visited: &mut HashMap<usize, RObject>,
+    ) -> RObject {
+        use RObject::*;
+
+        // First unwrap top-level Shared
+        let obj = match self {
+            Shared(inner) => {
+                let addr = Arc::as_ptr(&inner) as usize;
+                // Check if we've already processed this Shared object
+                if let Some(concrete) = visited.get(&addr) {
+                    // Cycle detected - return the already-processed object
+                    return concrete.clone();
+                }
+                // Lock and clone the inner object
+                let inner_obj = inner.read().unwrap().clone();
+                // Recursively process it and store in visited map
+                let concrete = inner_obj.into_concrete_deep_impl(visited);
+                visited.insert(addr, concrete.clone());
+                return concrete;
+            }
+            other => other,
+        };
+
+        // Now recursively process nested objects
+        match obj {
+            List(elements) => List(
+                elements
+                    .into_iter()
+                    .map(|e| e.into_concrete_deep_impl(visited))
+                    .collect(),
+            ),
+            Pairlist(elements) => Pairlist(
+                elements
+                    .into_iter()
+                    .map(|e| PairlistElement {
+                        tag: e.tag,
+                        value: e.value.into_concrete_deep_impl(visited),
+                        tag_object: e.tag_object.map(|t| Box::new(t.into_concrete_deep_impl(visited))),
+                    })
+                    .collect(),
+            ),
+            Language { function, args } => Language {
+                function: Box::new(function.into_concrete_deep_impl(visited)),
+                args: args
+                    .into_iter()
+                    .map(|e| PairlistElement {
+                        tag: e.tag,
+                        value: e.value.into_concrete_deep_impl(visited),
+                        tag_object: e.tag_object.map(|t| Box::new(t.into_concrete_deep_impl(visited))),
+                    })
+                    .collect(),
+            },
+            Expression(elements) => Expression(
+                elements
+                    .into_iter()
+                    .map(|e| e.into_concrete_deep_impl(visited))
+                    .collect(),
+            ),
+            Closure {
+                formals,
+                body,
+                environment,
+            } => Closure {
+                formals: Box::new(formals.into_concrete_deep_impl(visited)),
+                body: Box::new(body.into_concrete_deep_impl(visited)),
+                environment: Box::new(environment.into_concrete_deep_impl(visited)),
+            },
+            Environment {
+                enclosing,
+                frame,
+                hashtab,
+            } => Environment {
+                enclosing: Box::new(enclosing.into_concrete_deep_impl(visited)),
+                frame: Box::new(frame.into_concrete_deep_impl(visited)),
+                hashtab: Box::new(hashtab.into_concrete_deep_impl(visited)),
+            },
+            Promise {
+                value,
+                expression,
+                environment,
+            } => Promise {
+                value: Box::new(value.into_concrete_deep_impl(visited)),
+                expression: Box::new(expression.into_concrete_deep_impl(visited)),
+                environment: Box::new(environment.into_concrete_deep_impl(visited)),
+            },
+            Bytecode {
+                code,
+                constants,
+                expr,
+            } => Bytecode {
+                code: Box::new(code.into_concrete_deep_impl(visited)),
+                constants: Box::new(constants.into_concrete_deep_impl(visited)),
+                expr: Box::new(expr.into_concrete_deep_impl(visited)),
+            },
+            DataFrame(mut df) => {
+                df.columns = df
+                    .columns
+                    .into_iter()
+                    .map(|(name, obj)| (name, obj.into_concrete_deep_impl(visited)))
+                    .collect();
+                DataFrame(df)
+            },
+            Factor(f) => {
+                // FactorData only contains primitive types, no nested RObjects
+                Factor(f)
+            },
+            S3Object(mut s3) => {
+                s3.base = Box::new(s3.base.into_concrete_deep_impl(visited));
+                s3.attributes = s3.attributes.into_concrete_deep_impl(visited);
+                S3Object(s3)
+            },
+            S4Object(mut s4) => {
+                s4.slots = s4
+                    .slots
+                    .into_iter()
+                    .map(|(k, v)| (k, v.into_concrete_deep_impl(visited)))
+                    .collect();
+                S4Object(s4)
+            },
+            WithAttributes {
+                object,
+                attributes,
+            } => WithAttributes {
+                object: Box::new(object.into_concrete_deep_impl(visited)),
+                attributes: attributes.into_concrete_deep_impl(visited),
+            },
+            Namespace(ns) => {
+                // Namespace is Vec<Arc<str>>, no nested RObjects
+                Namespace(ns)
+            },
+            // All other variants don't contain nested RObjects
             other => other,
         }
     }
@@ -1037,6 +1192,25 @@ impl Attributes {
     /// Get iterator over attribute entries
     pub fn iter(&self) -> impl Iterator<Item = (&Arc<str>, &RObject)> {
         self.attrs.iter().map(|(k, v)| (k, v.as_ref()))
+    }
+
+    /// Recursively convert all Shared wrappers in attribute values to concrete objects.
+    ///
+    /// This is called from RObject::into_concrete_deep_impl to ensure attributes
+    /// are also fully concrete.
+    pub(crate) fn into_concrete_deep_impl(
+        mut self,
+        visited: &mut HashMap<usize, RObject>,
+    ) -> Self {
+        self.attrs = self
+            .attrs
+            .into_iter()
+            .map(|(k, v)| {
+                let concrete_obj = (*v).into_concrete_deep_impl(visited);
+                (k, Box::new(concrete_obj))
+            })
+            .collect();
+        self
     }
 }
 

@@ -730,12 +730,13 @@ fn test_logical_vector_with_attributes() {
     use rds2rust::Attributes;
 
     // Create logical vector with attributes
-    let logical_vec = RObject::Logical(
-        vec![Logical::True, Logical::False, Logical::True].into()
-    );
+    let logical_vec = RObject::Logical(vec![Logical::True, Logical::False, Logical::True].into());
 
     let mut attrs = Attributes::new();
-    attrs.insert("test_attr".into(), RObject::Character(vec!["value".into()].into()));
+    attrs.insert(
+        "test_attr".into(),
+        RObject::Character(vec!["value".into()].into()),
+    );
 
     let obj = RObject::WithAttributes {
         object: Box::new(logical_vec),
@@ -776,10 +777,16 @@ fn test_logical_vector_na_heavy_with_attributes() {
     // Edge case: mixture of TRUE/FALSE/NA
     let logical_vec = RObject::Logical(
         vec![
-            Logical::True, Logical::Na, Logical::False,
-            Logical::Na, Logical::Na, Logical::True,
-            Logical::False, Logical::Na,
-        ].into()
+            Logical::True,
+            Logical::Na,
+            Logical::False,
+            Logical::Na,
+            Logical::Na,
+            Logical::True,
+            Logical::False,
+            Logical::Na,
+        ]
+        .into(),
     );
 
     let mut attrs = Attributes::new();
@@ -802,19 +809,20 @@ fn test_logical_matrix_with_dimnames() {
     // Create 2x3 logical matrix (R stores by column)
     let logical_vec = RObject::Logical(
         vec![
-            Logical::True, Logical::False,  // Column 1
-            Logical::True, Logical::True,   // Column 2
-            Logical::False, Logical::True,  // Column 3
-        ].into()
+            Logical::True,
+            Logical::False, // Column 1
+            Logical::True,
+            Logical::True, // Column 2
+            Logical::False,
+            Logical::True, // Column 3
+        ]
+        .into(),
     );
 
     let mut attrs = Attributes::new();
 
     // Add dim attribute (rows, cols)
-    attrs.insert(
-        "dim".into(),
-        RObject::Integer(vec![2, 3].into())
-    );
+    attrs.insert("dim".into(), RObject::Integer(vec![2, 3].into()));
 
     // Add dimnames attribute
     let dimnames = RObject::List(vec![
@@ -846,10 +854,13 @@ fn test_logical_matrix_attribute_order_variation() {
     // Version 1: dim then dimnames
     let mut attrs1 = Attributes::new();
     attrs1.insert("dim".into(), RObject::Integer(vec![2, 3].into()));
-    attrs1.insert("dimnames".into(), RObject::List(vec![
-        RObject::Character(vec!["r1".into(), "r2".into()].into()),
-        RObject::Character(vec!["c1".into(), "c2".into(), "c3".into()].into()),
-    ]));
+    attrs1.insert(
+        "dimnames".into(),
+        RObject::List(vec![
+            RObject::Character(vec!["r1".into(), "r2".into()].into()),
+            RObject::Character(vec!["c1".into(), "c2".into(), "c3".into()].into()),
+        ]),
+    );
     let matrix1 = RObject::WithAttributes {
         object: Box::new(logical_vec.clone()),
         attributes: attrs1,
@@ -857,10 +868,13 @@ fn test_logical_matrix_attribute_order_variation() {
 
     // Version 2: dimnames then dim (reverse order)
     let mut attrs2 = Attributes::new();
-    attrs2.insert("dimnames".into(), RObject::List(vec![
-        RObject::Character(vec!["r1".into(), "r2".into()].into()),
-        RObject::Character(vec!["c1".into(), "c2".into(), "c3".into()].into()),
-    ]));
+    attrs2.insert(
+        "dimnames".into(),
+        RObject::List(vec![
+            RObject::Character(vec!["r1".into(), "r2".into()].into()),
+            RObject::Character(vec!["c1".into(), "c2".into(), "c3".into()].into()),
+        ]),
+    );
     attrs2.insert("dim".into(), RObject::Integer(vec![2, 3].into()));
     let matrix2 = RObject::WithAttributes {
         object: Box::new(logical_vec),
@@ -877,8 +891,14 @@ fn test_logical_matrix_attribute_order_variation() {
     // Verify both results are WithAttributes containing Logical vectors
     match (&result1, &result2) {
         (
-            RObject::WithAttributes { object: obj1, attributes: attrs1 },
-            RObject::WithAttributes { object: obj2, attributes: attrs2 }
+            RObject::WithAttributes {
+                object: obj1,
+                attributes: attrs1,
+            },
+            RObject::WithAttributes {
+                object: obj2,
+                attributes: attrs2,
+            },
         ) => {
             // Both should have the same logical vector
             assert_eq!(obj1, obj2);
@@ -888,6 +908,6 @@ fn test_logical_matrix_attribute_order_variation() {
             assert!(attrs2.get("dim").is_some());
             assert!(attrs2.get("dimnames").is_some());
         }
-        _ => panic!("Expected WithAttributes objects")
+        _ => panic!("Expected WithAttributes objects"),
     }
 }

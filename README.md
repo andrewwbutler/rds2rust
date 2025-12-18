@@ -15,6 +15,7 @@ A pure Rust library for reading and writing R's RDS (R Data Serialization) files
 - **Automatic compression** - Transparent gzip compression/decompression
 - **Type safe** - Strong Rust types for all R objects
 - **Zero-copy where possible** - Efficient parsing and serialization
+- **Thread safe** - Safe to use concurrently from multiple threads
 
 ### Supported R Types
 
@@ -296,9 +297,9 @@ let obj2 = Arc::clone(&obj);
 
 ## Development Status
 
-**Current version**: 0.1.0
+**Current version**: 0.1.33
 
-**Test coverage**: 137 passing tests covering all R object types
+**Test coverage**: 239 passing tests covering all R object types
 
 **Completed phases**:
 - ✅ All basic R types (NULL, vectors, matrices, data frames)

@@ -9,61 +9,12 @@ use crate::types::{
 use byteorder::{BigEndian, ReadBytesExt};
 use flate2::read::GzDecoder;
 use indexmap::IndexMap;
-use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::sync::{Arc, RwLock};
 
-thread_local! {
-    /// Holds pending class/package attributes during S4 object parsing.
-    /// This is used to handle R's serialization quirk where class attributes
-    /// may be stored separately from the object data.
-    ///
-    /// IMPORTANT: Must be cleared at the start of each parse_rds() call to
-    /// prevent state leakage between parses. See reset_parse_state().
-    static PENDING_CLASS_ATTRS: RefCell<Option<Attributes>> = RefCell::new(None);
-    static PARSING_ATTRIBUTES: Cell<bool> = Cell::new(false);
-    static PARSING_CLOSURE_BODY: Cell<bool> = Cell::new(false);
-    static PARSING_S4_TAG: Cell<bool> = Cell::new(false);
-}
-
-// Guard to ensure PARSING_S4_TAG flag is always reset
-struct S4TagGuard;
-
-impl S4TagGuard {
-    fn new() -> Self {
-        PARSING_S4_TAG.with(|flag| flag.set(true));
-        S4TagGuard
-    }
-}
-
-impl Drop for S4TagGuard {
-    fn drop(&mut self) {
-        PARSING_S4_TAG.with(|flag| flag.set(false));
-    }
-}
-
 fn debug_enabled() -> bool {
     std::env::var("RDS_DEBUG").is_ok()
-}
-
-/// Reset thread-local parse state to prevent leakage between parse_rds() calls.
-/// This ensures that data from one parse session doesn't contaminate subsequent parses.
-fn reset_parse_state() {
-    // Debug assertion to detect state leakage during development
-    #[cfg(debug_assertions)]
-    {
-        PENDING_CLASS_ATTRS.with(|store| {
-            if store.borrow().is_some() {
-                eprintln!("WARNING: PENDING_CLASS_ATTRS not empty at parse_rds() entry - clearing stale state");
-            }
-        });
-    }
-
-    // Clear any pending class attributes from previous parse
-    PENDING_CLASS_ATTRS.with(|store| {
-        store.borrow_mut().take();
-    });
 }
 
 fn ensure_bytes_available(cursor: &Cursor<&[u8]>, needed: usize, context: &str) -> Result<()> {
@@ -100,6 +51,12 @@ struct ParserContext {
     bytecode_lazy_threshold: usize,
     /// True when parsing bytecode constants (use bytecode_lazy_threshold)
     in_bytecode_context: bool,
+
+    // Parse state (previously thread-local)
+    pending_class_attrs: Option<Attributes>,
+    parsing_attributes: bool,
+    parsing_closure_body: bool,
+    parsing_s4_tag: bool,
 }
 
 impl ParserContext {
@@ -111,6 +68,11 @@ impl ParserContext {
             bytecode_lazy_threshold: config.bytecode_lazy_threshold,
             mode: config.mode,
             in_bytecode_context: false,
+            // Initialize parse state to clean values
+            pending_class_attrs: None,
+            parsing_attributes: false,
+            parsing_closure_body: false,
+            parsing_s4_tag: false,
         }
     }
 
@@ -126,7 +88,7 @@ impl ParserContext {
 }
 
 fn guard_allocation(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     length: usize,
     elem_size: usize,
     cursor: &Cursor<&[u8]>,
@@ -150,7 +112,7 @@ fn guard_allocation(
 }
 
 fn guard_allocation_common(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     length: usize,
     elem_size: usize,
     context: &str,
@@ -401,8 +363,8 @@ fn should_track_reference(sexp_type: u32, has_attr: bool) -> bool {
 /// Parse an RDS file from a byte slice.
 /// Parse an RDS file with custom configuration
 pub fn parse_rds_with_config(data: &[u8], config: crate::ParseConfig) -> Result<RObject> {
-    let ctx = ParserContext::from_config(config);
-    parse_rds_internal(data, &ctx)
+    let mut ctx = ParserContext::from_config(config);
+    parse_rds_internal(data, &mut ctx)
 }
 
 /// Parse an RDS file with default configuration
@@ -411,12 +373,9 @@ pub(crate) fn parse_rds(data: &[u8]) -> Result<RObject> {
     parse_rds_with_config(data, crate::ParseConfig::default())
 }
 
-fn parse_rds_internal(data: &[u8], ctx: &ParserContext) -> Result<RObject> {
-    // Clear thread-local state to prevent leakage from previous parses.
-    // This is critical because PENDING_CLASS_ATTRS can accumulate stale
-    // class/package attributes from prior parse sessions, causing corruption
-    // in S4 object slot values (e.g., graph Dimnames becoming Symbol instead of List).
-    reset_parse_state();
+fn parse_rds_internal(data: &[u8], ctx: &mut ParserContext) -> Result<RObject> {
+    // Note: Parse state is now automatically clean because ctx is freshly initialized
+    // in parse_rds_with_config(). No need to reset - each parse gets fresh state.
 
     // Check if the file is gzip compressed (starts with 0x1f 0x8b)
     let decompressed_data = if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
@@ -521,7 +480,7 @@ fn parse_header(cursor: &mut Cursor<&[u8]>) -> Result<u32> {
 
 /// Parse an R object from the stream.
 fn parse_object(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -634,27 +593,26 @@ fn parse_object(
     // IMPORTANT: For S4SXP, when HAS_TAG_BIT is set, the TAG contains the attributes pairlist!
     let early_attributes =
         if has_attr && (sexp_type == LISTSXP || sexp_type == LANGSXP || sexp_type == CLOSXP) {
-            let attr_obj = PARSING_ATTRIBUTES.with(|flag| {
-                let prev = flag.replace(true);
-                let obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table);
-                flag.set(prev);
-                obj
-            })?;
-            Some(parse_attributes(attr_obj)?)
+            let prev = ctx.parsing_attributes;
+            ctx.parsing_attributes = true;
+            let obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+            ctx.parsing_attributes = prev;
+            Some(parse_attributes(obj, ctx)?)
         } else if sexp_type == S4SXP && has_tag {
             // S4 objects with HAS_TAG_BIT store their attributes in the TAG
             // The TAG is a pairlist where each element has a tag (slot name) and value (slot data).
             // Parse with has_tag=true to extract the tag names correctly.
 
-            // Use guard to ensure PARSING_S4_TAG flag is always reset, even on error
-            let _guard = S4TagGuard::new();
+            // Set S4 tag parsing flag (will be cleared after this block)
+            ctx.parsing_s4_tag = true;
             let pairlist = parse_pairlist(ctx, cursor, true, ref_table, symbol_table, dedup_table)?;
 
             let attrs = if let RObject::Pairlist(list) = pairlist {
-                parse_attributes(RObject::Pairlist(list))?
+                parse_attributes(RObject::Pairlist(list), ctx)?
             } else {
-                parse_attributes(pairlist)?
+                parse_attributes(pairlist, ctx)?
             };
+            ctx.parsing_s4_tag = false;
             Some(attrs)
         } else {
             None
@@ -734,7 +692,7 @@ fn parse_object(
             // of the flags word; use the full width to support large graphs.
             let ref_index_val = flags >> 8;
 
-            let in_closure_body = PARSING_CLOSURE_BODY.with(|flag| flag.get());
+            let in_closure_body = ctx.parsing_closure_body;
 
             // Prefer the symbol table for closure bodies so parameter references resolve
             // to symbols even when ref_table indices clash with earlier placeholders.
@@ -788,7 +746,7 @@ fn parse_object(
 
             // Parse and apply attributes if present
             let final_obj = if !matches!(attributes_obj, RObject::Null) {
-                let attrs = parse_attributes(attributes_obj)?;
+                let attrs = parse_attributes(attributes_obj, ctx)?;
                 if !attrs.is_empty() {
                     RObject::WithAttributes {
                         object: Box::new(native_obj),
@@ -910,12 +868,13 @@ fn parse_object(
         }
         let attr_value = match attr_obj {
             Some(obj) => obj,
-            None => PARSING_ATTRIBUTES.with(|flag| {
-                let prev = flag.replace(true);
-                let obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table);
-                flag.set(prev);
+            None => {
+                let prev = ctx.parsing_attributes;
+                ctx.parsing_attributes = true;
+                let obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+                ctx.parsing_attributes = prev;
                 obj
-            })?,
+            }
         };
         if std::env::var("RDS_DEBUG_ATTR_POS").is_ok() {
             eprintln!(
@@ -943,7 +902,7 @@ fn parse_object(
                 }
             }
         }
-        let attrs = parse_attributes(attr_value)?;
+        let attrs = parse_attributes(attr_value, ctx)?;
         attrs
     } else {
         Attributes::new()
@@ -956,18 +915,15 @@ fn parse_object(
         // If the S4 attributes are missing class (or other trailing attrs),
         // try to merge any recently parsed attribute set that carried a class
         // or package information.
-        PENDING_CLASS_ATTRS.with(|store| {
-            let mut pending = store.borrow_mut().take();
-            if let Some(extra) = pending.take() {
-                if attributes.get("class").is_none() || attributes.get("package").is_none() {
-                    for (k, v) in extra.attrs.into_iter() {
-                        if !attributes.attrs.iter().any(|(ek, _)| ek == &k) {
-                            attributes.insert(k, *v);
-                        }
+        if let Some(extra) = ctx.pending_class_attrs.take() {
+            if attributes.get("class").is_none() || attributes.get("package").is_none() {
+                for (k, v) in extra.attrs.into_iter() {
+                    if !attributes.attrs.iter().any(|(ek, _)| ek == &k) {
+                        attributes.insert(k, *v);
                     }
                 }
             }
-        });
+        }
 
         if std::env::var("RDS_DEBUG_S4_ATTRS").is_ok() {
             let keys: Vec<_> = attributes
@@ -986,20 +942,18 @@ fn parse_object(
                 let mut attributes = attributes;
                 // If the S4 attributes are missing class (or other trailing attrs),
                 // try to merge any recently parsed attribute set that carried a class.
-                PENDING_CLASS_ATTRS.with(|store| {
-                    if attributes.get("class").is_none() {
-                        if let Some(extra) = store.borrow_mut().take() {
-                            for (k, v) in extra.attrs.into_iter() {
-                                if !attributes.attrs.iter().any(|(ek, _)| ek == &k) {
-                                    attributes.insert(k, *v);
-                                }
+                if attributes.get("class").is_none() {
+                    if let Some(extra) = ctx.pending_class_attrs.take() {
+                        for (k, v) in extra.attrs.into_iter() {
+                            if !attributes.attrs.iter().any(|(ek, _)| ek == &k) {
+                                attributes.insert(k, *v);
                             }
                         }
-                    } else {
-                        // Clear pending if we already have class to avoid leaking across objects.
-                        store.borrow_mut().take();
                     }
-                });
+                } else {
+                    // Clear pending if we already have class to avoid leaking across objects.
+                    ctx.pending_class_attrs.take();
+                }
 
                 if std::env::var("RDS_DEBUG_S4_ATTRS").is_ok() {
                     let keys: Vec<_> = attributes
@@ -1090,7 +1044,7 @@ fn parse_object(
 }
 
 /// Parse an integer vector.
-fn parse_integer_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+fn parse_integer_vector(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(
         ctx,
@@ -1132,7 +1086,7 @@ fn parse_integer_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Resu
 }
 
 /// Parse a real (double) vector.
-fn parse_real_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+fn parse_real_vector(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(
         ctx,
@@ -1173,7 +1127,7 @@ fn parse_real_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<
 }
 
 /// Parse a logical vector.
-fn parse_logical_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+fn parse_logical_vector(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(
         ctx,
@@ -1228,7 +1182,7 @@ fn read_int_flexible(cursor: &mut Cursor<&[u8]>) -> Result<i32> {
 
 /// Parse a character vector (STRSXP - a vector of CHARSXP).
 fn parse_character_vector(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1297,7 +1251,7 @@ fn parse_character_vector(
 
 // Helper function for full character vector parsing
 fn parse_character_vector_full(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1443,7 +1397,7 @@ fn parse_character_vector_full(
 }
 
 /// Parse a raw vector (RAWSXP - a vector of bytes).
-fn parse_raw_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+fn parse_raw_vector(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(ctx, length, 1, cursor, "raw vector")?;
 
@@ -1474,7 +1428,7 @@ fn parse_raw_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<R
 }
 
 /// Parse a complex vector (CPLXSXP).
-fn parse_complex_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+fn parse_complex_vector(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
     use crate::types::Complex;
 
     let length = cursor.read_u32::<BigEndian>()? as usize;
@@ -1523,7 +1477,7 @@ fn parse_complex_vector(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Resu
 /// S4 objects in RDS are just markers - the actual data is in attributes.
 /// We return a placeholder NULL and let the attribute parsing handle it.
 fn parse_s4_object(
-    _ctx: &ParserContext,
+    _ctx: &mut ParserContext,
     _cursor: &mut Cursor<&[u8]>,
     _ref_table: &mut RefTable,
     _symbol_table: &mut SymbolTable,
@@ -1536,7 +1490,7 @@ fn parse_s4_object(
 
 /// Parse a symbol (SYMSXP).
 fn parse_symbol(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1569,7 +1523,7 @@ fn parse_symbol(
 
 /// Parse a generic list (VECSXP).
 fn parse_list(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1655,7 +1609,7 @@ fn parse_list(
 /// typically language objects. The difference is semantic: EXPRSXP is used for collections
 /// of unevaluated expressions (e.g., the result of parse()).
 fn parse_expression(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1675,7 +1629,7 @@ fn parse_expression(
 
 /// Parse bytecode (BCODESXP) using R's ReadBC/ReadBC1 structure.
 fn parse_bytecode(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1694,7 +1648,7 @@ fn parse_bytecode(
 }
 
 fn parse_bytecode_body(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1712,7 +1666,7 @@ fn parse_bytecode_body(
 }
 
 fn parse_bc_constants(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1723,24 +1677,18 @@ fn parse_bc_constants(
     guard_allocation(ctx, count, 1, cursor, "bytecode constants")?;
     let mut constants = Vec::with_capacity(count);
 
-    // Create a new context with bytecode flag set for parsing constants
-    let bc_ctx = ParserContext {
-        max_vector_length: ctx.max_vector_length,
-        max_allocation_bytes: ctx.max_allocation_bytes,
-        mode: ctx.mode.clone(),
-        lazy_threshold: ctx.lazy_threshold,
-        bytecode_lazy_threshold: ctx.bytecode_lazy_threshold,
-        in_bytecode_context: true,
-    };
+    // Set bytecode flag for parsing constants
+    let _prev_bytecode_ctx = ctx.in_bytecode_context;
+    ctx.in_bytecode_context = true;
 
     for _ in 0..count {
         let type_code = cursor.read_i32::<BigEndian>()?;
         let value = match type_code as u32 {
             BCODESXP => {
-                parse_bytecode_body(&bc_ctx, cursor, ref_table, symbol_table, dedup_table, reps)?
+                parse_bytecode_body(ctx, cursor, ref_table, symbol_table, dedup_table, reps)?
             }
             BCREPREF | BCREPDEF | LANGSXP | LISTSXP | ATTRLANGSXP | ATTRLISTSXP => parse_bc_lang(
-                &bc_ctx,
+                ctx,
                 cursor,
                 ref_table,
                 symbol_table,
@@ -1748,7 +1696,7 @@ fn parse_bc_constants(
                 reps,
                 type_code,
             )?,
-            _ => parse_object(&bc_ctx, cursor, ref_table, symbol_table, dedup_table)?,
+            _ => parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?,
         };
         constants.push(value);
     }
@@ -1757,7 +1705,7 @@ fn parse_bc_constants(
 }
 
 fn parse_bc_lang(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1834,7 +1782,7 @@ fn parse_bc_lang(
 }
 
 fn parse_bc_lang_struct(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -1889,7 +1837,7 @@ fn parse_bc_lang_struct(
     };
 
     if let Some(attr) = attr_obj {
-        let attrs = parse_attributes(attr)?;
+        let attrs = parse_attributes(attr, ctx)?;
         if !attrs.is_empty() {
             base = RObject::WithAttributes {
                 object: Box::new(base),
@@ -1955,7 +1903,7 @@ fn build_pairlist_from_bc(tag_obj: RObject, car: RObject, cdr: RObject) -> RObje
 /// When has_tag is true, it means the closure has attributes that need to be parsed
 /// and returned separately for the caller to handle.
 fn parse_closure(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     _has_tag: bool,
     track_reference: bool,
@@ -1989,12 +1937,10 @@ fn parse_closure(
     };
 
     let _body_start = cursor.position();
-    let bod = PARSING_CLOSURE_BODY.with(|flag| {
-        let prev = flag.replace(true);
-        let result = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table);
-        flag.set(prev);
-        result
-    })?;
+    let prev = ctx.parsing_closure_body;
+    ctx.parsing_closure_body = true;
+    let bod = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+    ctx.parsing_closure_body = prev;
 
     let closure_obj = RObject::Closure {
         formals: Box::new(form),
@@ -2021,7 +1967,7 @@ fn parse_closure(
 /// Parse an environment (ENVSXP).
 /// Environments consist of: locked flag, enclosing environment, frame (pairlist), hashtab
 fn parse_environment(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -2053,7 +1999,7 @@ fn parse_environment(
 /// Namespaces are special environments used by R packages.
 /// They trigger automatic package loading when the RDS file is read in R.
 fn parse_namespace(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -2084,7 +2030,7 @@ fn parse_namespace(
 /// Language objects represent unevaluated expressions/calls.
 /// They're structured like pairlists: TAG (if present), CAR (function), CDR (arguments).
 fn parse_language(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     has_tag: bool,
     ref_table: &mut RefTable,
@@ -2133,7 +2079,7 @@ fn parse_language(
 /// Does NOT parse the CDR - that's handled by the iterative loop in parse_pairlist.
 /// Returns (tag_name, tag_object, car_value).
 fn parse_pairlist_element(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     has_tag: bool,
     ref_table: &mut RefTable,
@@ -2151,7 +2097,7 @@ fn parse_pairlist_element(
 
         let tag_obj = if tag_type == REFSXP {
             let sym_index = flags >> 8;
-            let prefer_symbol_table = PARSING_ATTRIBUTES.with(|flag| flag.get());
+            let prefer_symbol_table = ctx.parsing_attributes;
 
             // If parsing attributes, prefer symbol table for tag resolution to avoid
             // clashes with ref_table object indices. Otherwise, try ref_table first.
@@ -2250,7 +2196,7 @@ fn parse_pairlist_element(
 /// R's serialization format: FLAGS (with type), TAG (if HAS_TAG_BIT), CAR, then FLAGS for next element.
 /// If next FLAGS indicate LISTSXP/LANGSXP/etc., it's a continuation; otherwise it's the CDR terminator.
 fn parse_pairlist(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     has_tag: bool,
     ref_table: &mut RefTable,
@@ -2460,7 +2406,7 @@ fn extract_tag_name(tag_obj: RObject) -> Option<Arc<str>> {
 /// Parse a promise (PROMSXP).
 /// Promises are lazy evaluation constructs containing: value, expression, environment
 fn parse_promise(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -2482,7 +2428,7 @@ fn parse_promise(
 /// Special functions like 'if', 'for', 'while' have special evaluation rules.
 /// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
 fn parse_special(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     _ref_table: &mut RefTable,
     _symbol_table: &mut SymbolTable,
@@ -2516,7 +2462,7 @@ fn parse_special(
 /// Builtin functions like 'sum', 'c', '+' are internal R functions.
 /// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
 fn parse_builtin(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     _ref_table: &mut RefTable,
     _symbol_table: &mut SymbolTable,
@@ -2548,7 +2494,7 @@ fn parse_builtin(
 
 /// Convert an ALTREP object to its native representation.
 fn convert_altrep_to_native(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     class_info: RObject,
     state: RObject,
 ) -> Result<RObject> {
@@ -2746,7 +2692,7 @@ fn convert_altrep_pairlist_state(state: RObject) -> Result<RObject> {
 }
 
 /// Convert a compact integer sequence to a regular integer vector.
-fn convert_compact_intseq(ctx: &ParserContext, state: RObject) -> Result<RObject> {
+fn convert_compact_intseq(ctx: &mut ParserContext, state: RObject) -> Result<RObject> {
     let state = state.into_concrete();
     // compact_intseq state is a Real vector: [length, first, stride]
     let (length, first, stride) = match state {
@@ -2787,7 +2733,7 @@ fn convert_compact_intseq(ctx: &ParserContext, state: RObject) -> Result<RObject
 }
 
 /// Parse a CHARSXP (internal character string).
-fn parse_charsxp(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<String> {
+fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<String> {
     // Read the CHARSXP header
     let flags = cursor.read_u32::<BigEndian>()?;
     let type_from_0_7 = flags & 0xFF;
@@ -2855,7 +2801,7 @@ fn parse_charsxp(ctx: &ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<Stri
 ///
 /// The compact encoding is detected by checking bits 24-31 of the flags field.
 fn parse_charsxp_content(
-    ctx: &ParserContext,
+    ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
     flags: u32,
 ) -> Result<String> {
@@ -2923,7 +2869,7 @@ fn parse_charsxp_content(
 
 /// Parse attributes from a pairlist object.
 /// Attributes are stored as pairlists where TAG = attribute name, CAR = attribute value.
-fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
+fn parse_attributes(attr_obj: RObject, ctx: &mut ParserContext) -> Result<Attributes> {
     // INSTRUMENTATION: Log BEFORE unwrapping Shared to see what we receive
     if std::env::var("RDS_DEBUG_ATTR_UNWRAP").is_ok() {
         thread_local! {
@@ -2962,22 +2908,19 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
     let attr_obj = attr_obj.into_concrete();
     let mut attrs = Attributes::new();
 
-    fn store_attrs_for_class(attrs: &Attributes) {
+    fn store_attrs_for_class(attrs: &Attributes, ctx: &mut ParserContext) {
         if attrs.get("class").is_some() || attrs.get("package").is_some() {
-            PENDING_CLASS_ATTRS.with(|store| {
-                let mut guard = store.borrow_mut();
-                if let Some(existing) = guard.take() {
-                    let mut merged = existing;
-                    for (k, v) in attrs.iter() {
-                        if !merged.attrs.iter().any(|(ek, _)| ek == k) {
-                            merged.insert(k.clone(), v.clone());
-                        }
+            if let Some(existing) = ctx.pending_class_attrs.take() {
+                let mut merged = existing;
+                for (k, v) in attrs.iter() {
+                    if !merged.attrs.iter().any(|(ek, _)| ek == k) {
+                        merged.insert(k.clone(), v.clone());
                     }
-                    *guard = Some(merged);
-                } else {
-                    *guard = Some(attrs.clone());
                 }
-            });
+                ctx.pending_class_attrs = Some(merged);
+            } else {
+                ctx.pending_class_attrs = Some(attrs.clone());
+            }
         }
     }
 
@@ -2993,7 +2936,7 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
     match attr_obj {
         RObject::Null => {
             // No attributes
-            store_attrs_for_class(&attrs);
+            store_attrs_for_class(&attrs, ctx);
             return Ok(attrs);
         }
         RObject::Pairlist(elements) => {
@@ -3074,14 +3017,14 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
                     // Otherwise, skip elements without tags that we can't identify
                 }
             }
-            store_attrs_for_class(&attrs);
+            store_attrs_for_class(&attrs, ctx);
             return Ok(attrs);
         }
         RObject::List(_elements) => {
             // Regular list (VECSXP) - names should be stored as a "names" attribute
             // This case shouldn't happen for attributes themselves, but handle it gracefully
             // Just return empty attributes
-            store_attrs_for_class(&attrs);
+            store_attrs_for_class(&attrs, ctx);
             return Ok(attrs);
         }
         RObject::WithAttributes {
@@ -3091,20 +3034,20 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
             // When we receive a WithAttributes as an attributes object,
             // we should return its attributes field directly, not transform it.
             // The inner_attrs already contains the parsed attributes (like "names", "row.names", etc.)
-            store_attrs_for_class(&inner_attrs);
+            store_attrs_for_class(&inner_attrs, ctx);
             return Ok(inner_attrs.clone());
         }
         RObject::Integer(vec) if vec.len() == 1 => {
             // Single integer might be a reference index or special marker
             // In some cases, R uses compact formats for attributes
             // For now, treat as no attributes
-            store_attrs_for_class(&attrs);
+            store_attrs_for_class(&attrs, ctx);
             return Ok(attrs);
         }
         RObject::Real(vec) if vec.len() == 3 => {
             // This might be ALTREP state being passed as attributes
             // This shouldn't happen, but handle it gracefully
-            store_attrs_for_class(&attrs);
+            store_attrs_for_class(&attrs, ctx);
             return Ok(attrs);
         }
         RObject::Character(_names) => {
@@ -3112,13 +3055,13 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
             // This can happen with certain R objects where attributes are stored
             // in a special compact format. For now, treat as no attributes.
             // In the future, we may need to look up values elsewhere.
-            store_attrs_for_class(&attrs);
+            store_attrs_for_class(&attrs, ctx);
             return Ok(attrs);
         }
         RObject::S3Object(s3) => {
             // S3 object used as attributes container
             // Extract the attributes from the S3 object
-            store_attrs_for_class(&s3.attributes);
+            store_attrs_for_class(&s3.attributes, ctx);
             return Ok(s3.attributes.clone());
         }
         RObject::S4Object(s4) => {
@@ -3134,14 +3077,14 @@ fn parse_attributes(attr_obj: RObject) -> Result<Attributes> {
             for (slot_name, slot_value) in &s4.slots {
                 attrs.insert(slot_name.clone(), slot_value.clone());
             }
-            store_attrs_for_class(&attrs);
+            store_attrs_for_class(&attrs, ctx);
             return Ok(attrs);
         }
         _ => {
             // Unexpected attribute structure - this can happen with certain R serialization patterns
             // For example, when attributes are encoded using alternate representations
             // Return empty attributes with a warning rather than failing
-            store_attrs_for_class(&attrs);
+            store_attrs_for_class(&attrs, ctx);
             return Ok(Attributes::new());
         }
     }

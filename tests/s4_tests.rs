@@ -705,11 +705,23 @@ fn test_s4_with_logical_matrix_data_slot() {
     let n_cols = 3;
     let logical_data = vec![
         // Column 1
-        Logical::True, Logical::False, Logical::Na, Logical::True, Logical::False,
+        Logical::True,
+        Logical::False,
+        Logical::Na,
+        Logical::True,
+        Logical::False,
         // Column 2
-        Logical::Na, Logical::True, Logical::True, Logical::False, Logical::Na,
+        Logical::Na,
+        Logical::True,
+        Logical::True,
+        Logical::False,
+        Logical::Na,
         // Column 3
-        Logical::False, Logical::Na, Logical::True, Logical::True, Logical::False,
+        Logical::False,
+        Logical::Na,
+        Logical::True,
+        Logical::True,
+        Logical::False,
     ];
     let logical_vec = RObject::Logical(logical_data.into());
 
@@ -719,11 +731,7 @@ fn test_s4_with_logical_matrix_data_slot() {
     let row_names: Vec<Arc<str>> = (0..n_rows)
         .map(|i| format!("item_{}", i + 1).into())
         .collect();
-    let col_names: Vec<Arc<str>> = vec![
-        "layer1".into(),
-        "layer2".into(),
-        "layer3".into(),
-    ];
+    let col_names: Vec<Arc<str>> = vec!["layer1".into(), "layer2".into(), "layer3".into()];
 
     let dimnames = RObject::List(vec![
         RObject::Character(row_names.into()),
@@ -801,7 +809,10 @@ fn test_s4_with_outer_attributes_basic() {
 
     // Wrap with outer attributes
     let mut attrs = Attributes::new();
-    attrs.insert("custom_attr".into(), RObject::Character(vec!["value".into()].into()));
+    attrs.insert(
+        "custom_attr".into(),
+        RObject::Character(vec!["value".into()].into()),
+    );
 
     let obj = RObject::WithAttributes {
         object: Box::new(s4_obj),
@@ -853,10 +864,13 @@ fn test_s4_with_dim_attributes() {
     // Add dim and dimnames at S4 object level
     let mut s4_attrs = Attributes::new();
     s4_attrs.insert("dim".into(), RObject::Integer(vec![2, 3].into()));
-    s4_attrs.insert("dimnames".into(), RObject::List(vec![
-        RObject::Character(vec!["r1".into(), "r2".into()].into()),
-        RObject::Character(vec!["c1".into(), "c2".into(), "c3".into()].into()),
-    ]));
+    s4_attrs.insert(
+        "dimnames".into(),
+        RObject::List(vec![
+            RObject::Character(vec!["r1".into(), "r2".into()].into()),
+            RObject::Character(vec!["c1".into(), "c2".into(), "c3".into()].into()),
+        ]),
+    );
 
     let obj = RObject::WithAttributes {
         object: Box::new(s4_obj),
@@ -913,7 +927,10 @@ fn test_s4_with_empty_outer_attributes() {
     let result_bare = read_rds(&bytes_bare[..]).unwrap();
 
     // Results should be equivalent (both are S4 objects with same structure)
-    assert!(matches!(result_with, RObject::S4Object(_) | RObject::WithAttributes { .. }));
+    assert!(matches!(
+        result_with,
+        RObject::S4Object(_) | RObject::WithAttributes { .. }
+    ));
     assert!(matches!(result_bare, RObject::S4Object(_)));
 }
 
@@ -933,7 +950,10 @@ fn test_s4_class_attribute_cannot_be_overridden() {
 
     // Try to override class with outer attribute (should be silently ignored)
     let mut attrs = Attributes::new();
-    attrs.insert("class".into(), RObject::Character(vec!["FakeClass".into()].into()));
+    attrs.insert(
+        "class".into(),
+        RObject::Character(vec!["FakeClass".into()].into()),
+    );
     attrs.insert("other_attr".into(), RObject::Integer(vec![999].into()));
 
     let obj = RObject::WithAttributes {
@@ -1002,7 +1022,10 @@ fn test_s4_with_nested_withattributes_in_slot() {
     // Create a slot that itself is WithAttributes
     let inner_obj = RObject::Integer(vec![1, 2, 3].into());
     let mut inner_attrs = Attributes::new();
-    inner_attrs.insert("inner_attr".into(), RObject::Character(vec!["inner".into()].into()));
+    inner_attrs.insert(
+        "inner_attr".into(),
+        RObject::Character(vec!["inner".into()].into()),
+    );
 
     let inner_with_attrs = RObject::WithAttributes {
         object: Box::new(inner_obj),
@@ -1021,7 +1044,10 @@ fn test_s4_with_nested_withattributes_in_slot() {
 
     // Add outer attributes
     let mut outer_attrs = Attributes::new();
-    outer_attrs.insert("outer_attr".into(), RObject::Character(vec!["outer".into()].into()));
+    outer_attrs.insert(
+        "outer_attr".into(),
+        RObject::Character(vec!["outer".into()].into()),
+    );
 
     let obj = RObject::WithAttributes {
         object: Box::new(s4_obj),
