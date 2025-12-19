@@ -428,3 +428,56 @@ fn test_closure_named_arguments_preserved() {
     let _ = fs::remove_file("/tmp/rds2rust_named_args_regression.rds");
     let _ = fs::remove_file("/tmp/rds2rust_named_args_regression_out.rds");
 }
+
+#[test]
+fn test_command_closures_roundtrip_r_read() {
+    if !test_data_exists() {
+        eprintln!("Warning: tests/data directory not found, skipping test");
+        return;
+    }
+    if !r_available() {
+        eprintln!("Warning: R not available, skipping test");
+        return;
+    }
+
+    let candidates = [
+        "test_minimal_closure.rds",
+        "test_with_real_functions.rds",
+        "command_one_real.rds",
+        "commands_real_1.rds",
+        "commands_real_2.rds",
+        "command_realistic.rds",
+        "withattr_language.rds",
+        "withattr_closure.rds",
+    ];
+
+    let debug_only = std::env::var("RDS_DEBUG_ONLY").ok();
+    for filename in candidates
+        .iter()
+        .copied()
+        .filter(|name| debug_only.as_deref().map_or(true, |only| only == *name))
+    {
+        let data = read_test_file(filename);
+        let obj = read_rds(&data).unwrap_or_else(|e| {
+            panic!("Failed to parse {} with rds2rust: {:?}", filename, e)
+        });
+        let output = write_rds(&obj)
+            .unwrap_or_else(|e| panic!("Failed to serialize {} with rds2rust: {:?}", filename, e));
+
+        if std::env::var("RDS_DEBUG_REF_FALLBACK").is_ok() {
+            let _ = read_rds(&output)
+                .unwrap_or_else(|e| panic!("Failed to parse roundtripped {}: {:?}", filename, e));
+        }
+
+        let output_path = format!("/tmp/rds2rust_command_roundtrip_{}", filename);
+        fs::write(&output_path, &output)
+            .unwrap_or_else(|e| panic!("Failed to write {}: {}", output_path, e));
+
+        let r_code = format!("readRDS('{}')", output_path.replace('\'', "\\'"));
+        if let Err(err) = run_r_code(&r_code) {
+            panic!("R failed to read roundtripped {}: {}", filename, err);
+        }
+
+        let _ = fs::remove_file(&output_path);
+    }
+}

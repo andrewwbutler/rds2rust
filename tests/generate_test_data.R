@@ -270,6 +270,74 @@ make_counter <- function() {
 counter <- make_counter()
 saveRDS(counter, file.path(output_dir, "closure_with_env.rds"))
 
+# Generic closure bundles with environments (used for cross-language roundtrip)
+# Minimal closure with an environment and simple body
+make_minimal_closure <- function() {
+    seed <- 1
+    function(x) x + seed
+}
+minimal_closure <- make_minimal_closure()
+saveRDS(minimal_closure, file.path(output_dir, "test_minimal_closure.rds"))
+
+# Single closure wrapped in a list to exercise nested structures
+make_scaler <- function(factor) {
+    function(x) x * factor
+}
+scaled_fn <- make_scaler(2)
+single_wrapper <- list(fn = scaled_fn, label = "scale_by_2")
+saveRDS(single_wrapper, file.path(output_dir, "command_one_real.rds"))
+
+# Multiple closures in a list to exercise repeated references
+make_offset <- function(offset) {
+    function(x) x + offset
+}
+offset_a <- make_offset(3)
+offset_b <- make_offset(7)
+closures_list <- list(a = offset_a, b = offset_b, again = offset_a)
+saveRDS(closures_list, file.path(output_dir, "commands_real_1.rds"))
+
+# Nested closures with shared environments
+make_pair <- function(mult, add) {
+    env <- new.env(parent = emptyenv())
+    env$mult <- mult
+    env$add <- add
+    list(
+        mult = function(x) x * env$mult,
+        add = function(x) x + env$add,
+        env = env
+    )
+}
+pair_obj <- make_pair(4, 9)
+saveRDS(pair_obj, file.path(output_dir, "commands_real_2.rds"))
+
+# More realistic closure structure with attributes and metadata
+make_pipeline <- function(scale, shift) {
+    inner_env <- new.env(parent = emptyenv())
+    inner_env$scale <- scale
+    inner_env$shift <- shift
+    function(x) (x * inner_env$scale) + inner_env$shift
+}
+pipeline <- make_pipeline(1.5, 2.0)
+realistic_obj <- structure(
+    list(
+        step = pipeline,
+        params = list(scale = 1.5, shift = 2.0),
+        info = "pipeline"
+    ),
+    class = "pipeline_bundle"
+)
+saveRDS(realistic_obj, file.path(output_dir, "command_realistic.rds"))
+
+# With-attributes language object
+lang_with_attr <- quote(x + y)
+attr(lang_with_attr, "note") <- "example"
+saveRDS(lang_with_attr, file.path(output_dir, "withattr_language.rds"))
+
+# With-attributes closure
+attr_closure <- function(x) x + 1
+attr(attr_closure, "note") <- "example"
+saveRDS(attr_closure, file.path(output_dir, "withattr_closure.rds"))
+
 # Standalone environment
 env <- new.env()
 env$x <- 42

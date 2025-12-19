@@ -161,6 +161,10 @@ impl RefTable {
     fn add(&mut self, obj: RObject) -> u32 {
         let index = self.next_index;
         let arc = Arc::new(RwLock::new(obj));
+        if std::env::var("RDS_DEBUG_REF_ORDER").is_ok() {
+            let name = arc.read().unwrap().variant_name();
+            eprintln!("[PARSE_REF] idx={} type={}", index, name);
+        }
         // WORKAROUND: Conditional branch prevents LLVM backend optimization bug
         // See: RDS2RUST_PHASE1_FINDINGS.md and RDS2RUST_PHASE2_ADVANCED_TESTS.md
         if true {
@@ -180,6 +184,10 @@ impl RefTable {
                 let _ = index; // Force compiler to preserve Arc reference ordering
             }
             *guard = obj;
+            if std::env::var("RDS_DEBUG_REF_ORDER").is_ok() {
+                let name = guard.variant_name();
+                eprintln!("[PARSE_REF_UPDATE] idx={} type={}", index, name);
+            }
             return;
         }
         // WORKAROUND: Conditional branch prevents LLVM backend optimization bug
@@ -591,13 +599,17 @@ fn parse_object(
     // Parse them early if present
     // Note: For CLOSXP, R uses HAS_TAG_BIT to indicate attributes (not HAS_ATTR_BIT)
     // IMPORTANT: For S4SXP, when HAS_TAG_BIT is set, the TAG contains the attributes pairlist!
-    let early_attributes =
-        if has_attr && (sexp_type == LISTSXP || sexp_type == LANGSXP || sexp_type == CLOSXP) {
-            let prev = ctx.parsing_attributes;
-            ctx.parsing_attributes = true;
-            let obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
-            ctx.parsing_attributes = prev;
-            Some(parse_attributes(obj, ctx)?)
+    let early_attributes = if has_attr
+        && (sexp_type == LISTSXP
+            || sexp_type == LANGSXP
+            || sexp_type == CLOSXP
+            || sexp_type == PROMSXP)
+    {
+        let prev = ctx.parsing_attributes;
+        ctx.parsing_attributes = true;
+        let obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+        ctx.parsing_attributes = prev;
+        Some(parse_attributes(obj, ctx)?)
         } else if sexp_type == S4SXP && has_tag {
             // S4 objects with HAS_TAG_BIT store their attributes in the TAG
             // The TAG is a pairlist where each element has a tag (slot name) and value (slot data).
@@ -683,7 +695,7 @@ fn parse_object(
             dedup_table,
         )?,
         ENVSXP => parse_environment(ctx, cursor, ref_table, symbol_table, dedup_table)?,
-        PROMSXP => parse_promise(ctx, cursor, ref_table, symbol_table, dedup_table)?,
+        PROMSXP => parse_promise(ctx, cursor, has_tag, ref_table, symbol_table, dedup_table)?,
         SPECIALSXP => parse_special(ctx, cursor, ref_table, symbol_table, dedup_table)?,
         BUILTINSXP => parse_builtin(ctx, cursor, ref_table, symbol_table, dedup_table)?,
         REFSXP => {
@@ -700,6 +712,16 @@ fn parse_object(
                 if let Some(sym) = symbol_table.get(ref_index_val) {
                     sym.clone()
                 } else if let Some(obj) = ref_table.get(ref_index_val) {
+                    if std::env::var("RDS_DEBUG_REF_FALLBACK").is_ok() {
+                        let obj_type = obj.read().unwrap().variant_name();
+                        eprintln!(
+                            "[CLOSURE_REF_FALLBACK] idx={} sym_table={} ref_table={} type={}",
+                            ref_index_val,
+                            symbol_table.len(),
+                            ref_table.next_index - 1,
+                            obj_type
+                        );
+                    }
                     RObject::Shared(obj)
                 } else {
                     return Err(Error::InvalidFormat(format!(
@@ -1973,9 +1995,9 @@ fn parse_environment(
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
 ) -> Result<RObject> {
-    // Parse locked flag (an integer: 0 or 1)
-    // We read it but don't currently store it in the Environment struct
-    let _locked = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+    // Parse locked flag (raw integer: 0 or 1)
+    // We read it but don't currently store it in the Environment struct.
+    let _locked = cursor.read_i32::<BigEndian>()?;
     // Parse enclosing environment (can be another environment or NULL for global env)
     let enclosing = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
     // Parse frame (pairlist of bindings)
@@ -2114,6 +2136,14 @@ fn parse_pairlist_element(
                     }
                     sym.clone()
                 } else if let Some(obj) = ref_table.get(sym_index) {
+                    if std::env::var("RDS_DEBUG_REF_FALLBACK").is_ok() {
+                        eprintln!(
+                            "[TAG_REF_FALLBACK] idx={} sym_table={} ref_table={}",
+                            sym_index,
+                            symbol_table.len(),
+                            ref_table.next_index - 1
+                        );
+                    }
                     obj.read().unwrap().clone()
                 } else {
                     return Err(Error::InvalidFormat(format!(
@@ -2408,14 +2438,20 @@ fn extract_tag_name(tag_obj: RObject) -> Option<Arc<str>> {
 fn parse_promise(
     ctx: &mut ParserContext,
     cursor: &mut Cursor<&[u8]>,
+    has_tag: bool,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
 ) -> Result<RObject> {
-    // Parse the three components of a promise
+    // PROMSXP is serialized like a dotted pair: TAG (environment) if present,
+    // then CAR (value), then CDR (expression).
+    let environment = if has_tag {
+        parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?
+    } else {
+        RObject::Null
+    };
     let value = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
     let expression = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
-    let environment = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
 
     Ok(RObject::Promise {
         value: Box::new(value),

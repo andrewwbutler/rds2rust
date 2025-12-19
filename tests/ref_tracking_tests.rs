@@ -6,6 +6,7 @@
 use rds2rust::{read_rds, write_rds, RObject};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 fn test_data_exists() -> bool {
     Path::new("tests/data").exists()
@@ -14,6 +15,32 @@ fn test_data_exists() -> bool {
 fn read_test_file(filename: &str) -> Vec<u8> {
     let path = format!("tests/data/{}", filename);
     fs::read(&path).unwrap_or_else(|_| panic!("Failed to read test file: {}", path))
+}
+
+#[test]
+fn emit_ref_ordering_trace() {
+    if !test_data_exists() {
+        eprintln!("Warning: tests/data directory not found, skipping test");
+        return;
+    }
+
+    let debug_only = std::env::var("RDS_DEBUG_ONLY").ok();
+    let candidates = ["test_minimal_closure.rds", "commands_real_2.rds"];
+
+    for filename in candidates
+        .iter()
+        .copied()
+        .filter(|name| debug_only.as_deref().map_or(true, |only| only == *name))
+    {
+        let data = read_test_file(filename);
+        let obj = read_rds(&data)
+            .unwrap_or_else(|e| panic!("Failed to parse {}: {:?}", filename, e));
+        let output =
+            write_rds(&obj).unwrap_or_else(|e| panic!("Failed to write {}: {:?}", filename, e));
+        let output_path = format!("/tmp/rds2rust_ref_order_{}", filename);
+        fs::write(&output_path, &output)
+            .unwrap_or_else(|e| panic!("Failed to write {}: {}", output_path, e));
+    }
 }
 
 #[test]
@@ -464,13 +491,17 @@ fn test_ref_shared_expression_roundtrip() {
             let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
 
             // Basic shape check: expect list of 3 (possibly wrapped in Shared/WithAttributes)
-            fn list_len(o: &RObject) -> Option<usize> {
+            fn list_len(o: &RObject, seen: &mut std::collections::HashSet<usize>) -> Option<usize> {
                 match o {
                     RObject::List(elems) => Some(elems.len()),
-                    RObject::WithAttributes { object, .. } => list_len(object.as_ref()),
+                    RObject::WithAttributes { object, .. } => list_len(object.as_ref(), seen),
                     RObject::Shared(arc) => {
+                        let ptr = Arc::as_ptr(arc) as usize;
+                        if !seen.insert(ptr) {
+                            return None;
+                        }
                         if let Ok(inner) = arc.read() {
-                            list_len(&*inner)
+                            list_len(&*inner, seen)
                         } else {
                             None
                         }
@@ -479,8 +510,8 @@ fn test_ref_shared_expression_roundtrip() {
                 }
             }
 
-            assert_eq!(list_len(&obj), Some(3));
-            assert_eq!(list_len(&obj2), Some(3));
+            assert_eq!(list_len(&obj, &mut std::collections::HashSet::new()), Some(3));
+            assert_eq!(list_len(&obj2, &mut std::collections::HashSet::new()), Some(3));
 
             // Avoid deep drop of shared graphs in this test.
             std::mem::forget(obj);

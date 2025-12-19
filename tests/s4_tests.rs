@@ -471,7 +471,7 @@ fn test_s4_package_attribute_preserved() {
 
     let test_cases = vec![
         ("Matrix", "dgCMatrix"),
-        ("SeuratObject", "Assay"),
+        ("ExamplePkg", "ExampleClass"),
         ("methods", "signature"),
         (".GlobalEnv", "UserClass"),
     ];

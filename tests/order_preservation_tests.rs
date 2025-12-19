@@ -132,8 +132,8 @@ fn test_s4_slot_order_preservation() {
     slots.insert(Arc::from("misc"), RObject::List(vec![]));
 
     let s4 = RObject::S4Object(Box::new(S4ObjectData {
-        class: vec![Arc::from("Assay")],
-        package: Some(Arc::from("SeuratObject")),
+        class: vec![Arc::from("ExampleClass")],
+        package: Some(Arc::from("ExamplePkg")),
         slots: slots.clone(),
     }));
 
@@ -193,8 +193,8 @@ fn test_symbol_in_s4_slot() {
     slots.insert(Arc::from("data"), RObject::Integer(vec![1, 2, 3].into()));
 
     let s4 = RObject::S4Object(Box::new(S4ObjectData {
-        class: vec![Arc::from("Assay")],
-        package: Some(Arc::from("SeuratObject")),
+        class: vec![Arc::from("ExampleClass")],
+        package: Some(Arc::from("ExamplePkg")),
         slots: slots.clone(),
     }));
 

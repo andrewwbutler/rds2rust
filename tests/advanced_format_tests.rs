@@ -780,7 +780,7 @@ fn test_namespace_multiple_components() {
     use rds2rust::write_rds;
     use std::sync::Arc;
 
-    let namespace = RObject::Namespace(vec![Arc::from("SeuratObject"), Arc::from("1.0.0")]);
+    let namespace = RObject::Namespace(vec![Arc::from("ExamplePkg"), Arc::from("1.0.0")]);
 
     let serialized = write_rds(&namespace).expect("Failed to serialize");
     let deserialized = read_rds(&serialized).expect("Failed to deserialize");
@@ -788,7 +788,7 @@ fn test_namespace_multiple_components() {
     match deserialized {
         RObject::Namespace(names) => {
             assert_eq!(names.len(), 2);
-            assert_eq!(names[0].as_ref(), "SeuratObject");
+            assert_eq!(names[0].as_ref(), "ExamplePkg");
             assert_eq!(names[1].as_ref(), "1.0.0");
         }
         _ => panic!("Expected Namespace"),
@@ -884,13 +884,13 @@ fn test_namespace_serialization_format() {
 #[test]
 fn test_closure_with_namespace_environment() {
     // Test that closures with namespace environments are preserved
-    // This is critical for S4 method dispatch in packages like Seurat
+    // This is critical for S4 method dispatch in packages that rely on namespaces
     use rds2rust::write_rds;
     use std::sync::Arc;
 
     // Create a closure whose environment chain includes a namespace
-    // This mimics what happens with SeuratCommand objects
-    let namespace_env = RObject::Namespace(vec![Arc::from("SeuratObject")]);
+    // This mimics what happens with command objects that capture namespaces
+    let namespace_env = RObject::Namespace(vec![Arc::from("ExamplePkg")]);
 
     let closure = RObject::Closure {
         formals: Box::new(RObject::Null),
@@ -918,7 +918,7 @@ fn test_closure_with_namespace_environment() {
             match *environment {
                 RObject::Namespace(names) => {
                     assert_eq!(names.len(), 1);
-                    assert_eq!(names[0].as_ref(), "SeuratObject");
+                    assert_eq!(names[0].as_ref(), "ExamplePkg");
                 }
                 _ => panic!("Expected Namespace environment, got {:?}", environment),
             }

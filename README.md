@@ -10,7 +10,7 @@ A pure Rust library for reading and writing R's RDS (R Data Serialization) files
 ## Features
 
 - **Pure Rust implementation** - No R runtime required
-- **Complete RDS format support** - Reads and writes all R object types
+- **Broad RDS format support** - Reads and writes core R object types
 - **Memory efficient** - Optimized with string interning, compact attributes, and object deduplication
 - **Automatic compression** - Transparent gzip compression/decompression
 - **Type safe** - Strong Rust types for all R objects
@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let obj = RObject::Character(vec![
         Arc::from("hello"),
         Arc::from("world"),
-    ]);
+    ].into());
 
     // Serialize to RDS format (automatically gzip compressed)
     let rds_data = write_rds(&obj)?;
@@ -105,8 +105,8 @@ let obj = read_rds(&data)?;
 
 if let RObject::DataFrame(df) = obj {
     // Access columns by name
-    let sepal_length = df.columns.get(&Arc::from("Sepal.Length"));
-    let species = df.columns.get(&Arc::from("Species"));
+    let sepal_length = df.columns.get("Sepal.Length");
+    let species = df.columns.get("Species");
 
     // Access row names
     println!("First row name: {}", df.row_names[0]);
@@ -179,7 +179,7 @@ if let RObject::S4Object(s4) = obj {
     println!("S4 class: {:?}", s4.class);
 
     // Access slots
-    if let Some(slot_value) = s4.slots.get(&Arc::from("data")) {
+    if let Some(slot_value) = s4.slots.get("data") {
         println!("Data slot: {:?}", slot_value);
     }
 }
@@ -214,25 +214,34 @@ The `RObject` enum represents all possible R object types:
 ```rust
 pub enum RObject {
     Null,
-    Integer(Vec<i32>),
-    Real(Vec<f64>),
-    Logical(Vec<Logical>),
-    Character(Vec<Arc<str>>),
-    Raw(Vec<u8>),
-    Complex(Vec<Complex>),
+    Integer(VectorData<i32>),
+    Real(VectorData<f64>),
+    Logical(VectorData<Logical>),
+    Character(VectorData<Arc<str>>),
+    Symbol(Arc<str>),
+    Raw(VectorData<u8>),
+    Complex(VectorData<Complex>),
     List(Vec<RObject>),
     Pairlist(Vec<PairlistElement>),
-    Language(Vec<RObject>),
+    Language { function: Box<RObject>, args: Vec<PairlistElement> },
     Expression(Vec<RObject>),
     Closure { formals: Box<RObject>, body: Box<RObject>, environment: Box<RObject> },
     Environment { enclosing: Box<RObject>, frame: Box<RObject>, hashtab: Box<RObject> },
     Promise { value: Box<RObject>, expression: Box<RObject>, environment: Box<RObject> },
     Special { name: Arc<str> },
     Builtin { name: Arc<str> },
+    Bytecode { code: Box<RObject>, constants: Box<RObject>, expr: Box<RObject> },
     DataFrame(Box<DataFrameData>),
     Factor(Box<FactorData>),
     S3Object(Box<S3ObjectData>),
     S4Object(Box<S4ObjectData>),
+    Namespace(Vec<Arc<str>>),
+    GlobalEnv,
+    BaseEnv,
+    EmptyEnv,
+    MissingArg,
+    UnboundValue,
+    Shared(Arc<RwLock<RObject>>),
     WithAttributes { object: Box<RObject>, attributes: Attributes },
 }
 ```
@@ -297,9 +306,9 @@ let obj2 = Arc::clone(&obj);
 
 ## Development Status
 
-**Current version**: 0.1.33
+**Current version**: 0.1.36
 
-**Test coverage**: 239 passing tests covering all R object types
+**Test coverage**: extensive test suite covering core R object types and roundtrips
 
 **Completed phases**:
 - ✅ All basic R types (NULL, vectors, matrices, data frames)
