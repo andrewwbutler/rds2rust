@@ -2097,10 +2097,10 @@ fn parse_pairlist_element(
 
         let tag_obj = if tag_type == REFSXP {
             let sym_index = flags >> 8;
-            let prefer_symbol_table = ctx.parsing_attributes;
+            let prefer_symbol_table = true;
 
-            // If parsing attributes, prefer symbol table for tag resolution to avoid
-            // clashes with ref_table object indices. Otherwise, try ref_table first.
+            // TAG REFSXP indices refer to the symbol table in R serialization.
+            // Always prefer symbol table here, with ref_table as a fallback.
             if prefer_symbol_table {
                 if let Some(sym) = symbol_table.get(sym_index) {
                     if std::env::var("RDS_DEBUG_TAG").is_ok() {
