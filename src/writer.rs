@@ -2097,6 +2097,13 @@ fn write_object_with_attributes(
     symbol_tracker: &mut SymbolTracker,
     symbol_context: SymbolContext,
 ) -> Result<()> {
+    let is_s4_object = attributes.get("class").is_some_and(|class_obj| {
+        matches!(
+            class_obj,
+            RObject::WithAttributes { attributes, .. } if attributes.get("package").is_some()
+        )
+    });
+
     // Check if this has a class attribute that makes it an S3 object
     let is_s3_object = attributes.attrs.iter().any(|(k, v)| {
         k.as_ref() == "class" && matches!(**v, RObject::Character(ref vec) if !vec.is_empty())
@@ -2116,12 +2123,12 @@ fn write_object_with_attributes(
             return Ok(());
         }
         RObject::Raw(vec) => {
-            write_flags_with_object(writer, RAWSXP, true, false, false, is_s3_object)?;
+            write_flags_with_object(writer, RAWSXP, true, false, is_s4_object, is_s3_object)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             writer.write_all(vec)?;
         }
         RObject::Complex(vec) => {
-            write_flags_with_object(writer, CPLXSXP, true, false, false, is_s3_object)?;
+            write_flags_with_object(writer, CPLXSXP, true, false, is_s4_object, is_s3_object)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             for complex in vec {
                 writer.write_f64::<BigEndian>(complex.real)?;
@@ -2129,28 +2136,28 @@ fn write_object_with_attributes(
             }
         }
         RObject::Integer(vec) => {
-            write_flags_with_object(writer, INTSXP, true, false, false, is_s3_object)?;
+            write_flags_with_object(writer, INTSXP, true, false, is_s4_object, is_s3_object)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             for val in vec {
                 writer.write_i32::<BigEndian>(*val)?;
             }
         }
         RObject::Real(vec) => {
-            write_flags_with_object(writer, REALSXP, true, false, false, is_s3_object)?;
+            write_flags_with_object(writer, REALSXP, true, false, is_s4_object, is_s3_object)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             for val in vec {
                 writer.write_f64::<BigEndian>(*val)?;
             }
         }
         RObject::Character(vec) => {
-            write_flags_with_object(writer, STRSXP, true, false, false, is_s3_object)?;
+            write_flags_with_object(writer, STRSXP, true, false, is_s4_object, is_s3_object)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             for s in vec {
                 write_charsxp(writer, s)?;
             }
         }
         RObject::Logical(vec) => {
-            write_flags_with_object(writer, LGLSXP, true, false, false, is_s3_object)?;
+            write_flags_with_object(writer, LGLSXP, true, false, is_s4_object, is_s3_object)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             // NA mapping follows R spec: Logical::Na -> NA_INTEGER (i32::MIN)
             for logical in vec.as_vec() {
@@ -2163,7 +2170,7 @@ fn write_object_with_attributes(
             }
         }
         RObject::List(elements) => {
-            write_flags_with_object(writer, VECSXP, true, false, false, is_s3_object)?;
+            write_flags_with_object(writer, VECSXP, true, false, is_s4_object, is_s3_object)?;
             writer.write_u32::<BigEndian>(elements.len() as u32)?;
             for element in elements {
                 write_object_with_context(
@@ -2176,7 +2183,7 @@ fn write_object_with_attributes(
             }
         }
         RObject::Expression(elements) => {
-            write_flags_with_object(writer, EXPRSXP, true, false, false, is_s3_object)?;
+            write_flags_with_object(writer, EXPRSXP, true, false, is_s4_object, is_s3_object)?;
             writer.write_u32::<BigEndian>(elements.len() as u32)?;
             for element in elements {
                 write_object_with_context(

@@ -1,7 +1,7 @@
 //! Integration and roundtrip tests for S4 objects.
 
 use indexmap::IndexMap;
-use rds2rust::{read_rds, write_rds, Logical, RObject};
+use rds2rust::{read_rds, write_rds, Attributes, Logical, RObject};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
@@ -460,6 +460,179 @@ fn test_s4_flags_correctly_set() {
         }
         _ => panic!("Expected S4Object after deserialization"),
     }
+}
+
+#[test]
+fn test_data_part_s4_flags_on_vector() {
+    use flate2::read::GzDecoder;
+    use std::io::Read;
+
+    let logical = RObject::Logical(
+        vec![
+            Logical::True,
+            Logical::False,
+            Logical::True,
+            Logical::False,
+        ]
+        .into(),
+    );
+
+    let mut class_attrs = Attributes::new();
+    class_attrs.insert(
+        Arc::from("package"),
+        RObject::Character(vec![Arc::from("ExamplePkg")].into()),
+    );
+    let class_obj = RObject::WithAttributes {
+        object: Box::new(RObject::Character(vec![Arc::from("ExampleClass")].into())),
+        attributes: class_attrs,
+    };
+
+    let mut attrs = Attributes::new();
+    attrs.insert(Arc::from("class"), class_obj);
+    attrs.insert(Arc::from("dim"), RObject::Integer(vec![2, 2].into()));
+
+    let obj = RObject::WithAttributes {
+        object: Box::new(logical),
+        attributes: attrs,
+    };
+
+    let serialized = write_rds(&obj).expect("Failed to serialize data-part S4 object");
+
+    let mut decoder = GzDecoder::new(&serialized[..]);
+    let mut decompressed = Vec::new();
+    decoder
+        .read_to_end(&mut decompressed)
+        .expect("Failed to decompress");
+
+    let mut found_flags = false;
+    for i in 0..decompressed.len().saturating_sub(4) {
+        let flags = u32::from_be_bytes([
+            decompressed[i],
+            decompressed[i + 1],
+            decompressed[i + 2],
+            decompressed[i + 3],
+        ]);
+
+        // LGLSXP type is 10 (0x0a)
+        if (flags & 0xFF) == 10 {
+            let is_object = (flags & 0x100) != 0;
+            let has_attr = (flags & 0x200) != 0;
+            let has_s4_levels = (flags & 0x10000) != 0;
+
+            if has_attr {
+                assert!(
+                    is_object,
+                    "Data-part S4 must set IS_OBJECT_BIT (bit 8). Flags: 0x{:08x}",
+                    flags
+                );
+                assert!(
+                    has_s4_levels,
+                    "Data-part S4 must set S4_LEVELS (0x10000). Flags: 0x{:08x}",
+                    flags
+                );
+                found_flags = true;
+                break;
+            }
+        }
+    }
+
+    assert!(
+        found_flags,
+        "Could not find logical vector flags with S4 bits set"
+    );
+}
+
+#[test]
+fn test_data_part_s4_roundtrip_preserves_class_attributes() {
+    let logical = RObject::Logical(
+        vec![
+            Logical::True,
+            Logical::False,
+            Logical::True,
+            Logical::False,
+        ]
+        .into(),
+    );
+
+    let mut class_attrs = Attributes::new();
+    class_attrs.insert(
+        Arc::from("package"),
+        RObject::Character(vec![Arc::from("ExamplePkg")].into()),
+    );
+    let class_obj = RObject::WithAttributes {
+        object: Box::new(RObject::Character(vec![Arc::from("ExampleClass")].into())),
+        attributes: class_attrs,
+    };
+
+    let mut attrs = Attributes::new();
+    attrs.insert(Arc::from("class"), class_obj);
+    attrs.insert(Arc::from("dim"), RObject::Integer(vec![2, 2].into()));
+    attrs.insert(
+        Arc::from("dimnames"),
+        RObject::List(vec![
+            RObject::Character(vec![Arc::from("r1"), Arc::from("r2")].into()),
+            RObject::Character(vec![Arc::from("c1"), Arc::from("c2")].into()),
+        ]),
+    );
+
+    let obj = RObject::WithAttributes {
+        object: Box::new(logical),
+        attributes: attrs,
+    };
+
+    let serialized = write_rds(&obj).expect("Failed to serialize data-part S4 object");
+    let deserialized = read_rds(&serialized).expect("Failed to deserialize data-part S4 object");
+
+    let (base, attributes) = match deserialized {
+        RObject::WithAttributes { object, attributes } => (object, attributes),
+        other => panic!(
+            "Expected WithAttributes for data-part S4 object, got {}",
+            other.variant_name()
+        ),
+    };
+
+    assert!(
+        matches!(*base, RObject::Logical(_)),
+        "Data-part S4 base should be logical"
+    );
+
+    let class_obj = attributes
+        .get("class")
+        .expect("Expected class attribute");
+    let (class_data, class_attrs) = match class_obj {
+        RObject::WithAttributes { object, attributes } => (object.as_ref(), attributes),
+        _ => panic!("Expected class attribute with package"),
+    };
+
+    let class_vec = match class_data {
+        RObject::Character(vec) => vec,
+        _ => panic!("Expected class attribute to be character"),
+    };
+    assert!(
+        class_vec.iter().any(|name| name.as_ref() == "ExampleClass"),
+        "Class name should be preserved"
+    );
+
+    let package_obj = class_attrs
+        .get("package")
+        .expect("Expected package attribute on class");
+    let package_vec = match package_obj {
+        RObject::Character(vec) => vec,
+        _ => panic!("Expected package attribute to be character"),
+    };
+    assert!(
+        package_vec.iter().any(|name| name.as_ref() == "ExamplePkg"),
+        "Package attribute should be preserved"
+    );
+
+    assert!(
+        matches!(attributes.get("dim"), Some(RObject::Integer(_))),
+        "Expected dim attribute to be integer"
+    );
+    assert!(
+        matches!(attributes.get("dimnames"), Some(RObject::List(_))),
+        "Expected dimnames attribute to be list"
+    );
 }
 
 #[test]

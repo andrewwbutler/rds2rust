@@ -990,8 +990,21 @@ fn parse_object(
             } else {
                 // Check if this has a class attribute (for S3 objects)
                 let has_class = attributes.get("class").is_some();
+                let has_s4_class = attributes.get("class").is_some_and(|class_obj| {
+                    let class_obj = class_obj.as_concrete();
+                    matches!(
+                        class_obj,
+                        RObject::WithAttributes { attributes, .. } if attributes.get("package").is_some()
+                    )
+                });
 
-                if has_class {
+                if has_s4_class {
+                    // Data-part S4 objects should remain as a vector with attributes.
+                    obj = RObject::WithAttributes {
+                        object: Box::new(obj),
+                        attributes,
+                    };
+                } else if has_class {
                     // Check if this is a data.frame (special S3 object)
                     if let Some(dataframe) = try_convert_to_dataframe(&obj, &attributes) {
                         obj = dataframe;
