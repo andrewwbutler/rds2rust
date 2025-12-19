@@ -541,6 +541,7 @@ fn test_s4_default_package_fallback() {
     }
 }
 
+
 /// Test that parsing multiple S4 objects in sequence doesn't leak state.
 /// This is a regression test for the PENDING_CLASS_ATTRS thread-local bug
 /// where attributes from one parse could contaminate subsequent parses.

@@ -95,8 +95,9 @@ struct SharedInfo {
 /// Context for symbol writing - determines which index space to use for REFSXP
 #[derive(Copy, Clone, Debug)]
 enum SymbolContext {
-    Tag,    // TAG position (formals, attributes) - use symbol REFSXP
-    NonTag, // Non-TAG position (Language func, closure body) - use object REFSXP
+    Tag,                 // TAG position (formals, attributes) - use symbol REFSXP
+    NonTag,              // General non-TAG position - use object REFSXP
+    NonTagPreferSymbol,  // Language/closure symbol positions - use symbol REFSXP
 }
 
 /// Coordinates symbol tracking across both index spaces (object and symbol).
@@ -248,11 +249,12 @@ fn write_symbol_with_tracking(
     // Check if this symbol was already written
     if let Some((obj_idx, sym_idx)) = symbol_tracker.lookup(shared_ptr, name.as_ref()) {
         // Already written - emit appropriate REFSXP based on context
-        // Use the symbol index for both TAG and non-TAG contexts. Symbols are
-        // interned by name, and R's serializer uses the symbol table ordering
-        // for REFSXP that point to symbols. Using the symbol index avoids
-        // drifting object indices when symbols are reused by value.
-        let refsxp_idx = sym_idx;
+        // TAG positions use the symbol table index; non-TAG uses the object ref index.
+        let refsxp_idx = match context {
+            SymbolContext::Tag => sym_idx,
+            SymbolContext::NonTag => obj_idx,
+            SymbolContext::NonTagPreferSymbol => sym_idx,
+        };
 
         // Debug logging
         if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
@@ -269,10 +271,13 @@ fn write_symbol_with_tracking(
 
         // Debug assertion: enforce context rules
         debug_assert!(
-            refsxp_idx == sym_idx,
-            "REFSXP index mismatch for context {:?}: emitting {}, expected sym_idx {}",
+            (matches!(context, SymbolContext::Tag) && refsxp_idx == sym_idx)
+                || (matches!(context, SymbolContext::NonTag) && refsxp_idx == obj_idx)
+                || (matches!(context, SymbolContext::NonTagPreferSymbol) && refsxp_idx == sym_idx),
+            "REFSXP index mismatch for context {:?}: emitting {}, expected obj_idx {} sym_idx {}",
             context,
             refsxp_idx,
+            obj_idx,
             sym_idx
         );
 
@@ -309,22 +314,39 @@ fn write_symbol_with_tracking(
     Ok(indices)
 }
 
+/// Extract symbol name and Shared pointer (if any) from an object.
+fn symbol_name_and_ptr(obj: &RObject) -> Option<(Arc<str>, Option<usize>)> {
+    match obj {
+        RObject::Symbol(name) => Some((name.clone(), None)),
+        RObject::Shared(arc) => {
+            let inner = arc.read().unwrap();
+            match &*inner {
+                RObject::Symbol(name) => Some((name.clone(), Some(Arc::as_ptr(arc) as usize))),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Determine if an object type should be tracked for references.
 /// This matches the same logic used in the parser.
 #[allow(dead_code)]
 fn should_track_reference_type(obj: &RObject) -> bool {
     match obj {
-        // Plain primitives without attributes are not reference-tracked.
+        // Singletons and non-heap values are not reference-tracked.
         RObject::Null
-        | RObject::Integer(_)
+        | RObject::Symbol(_)
+        | RObject::Special { .. }
+        | RObject::Builtin { .. } => false,
+
+        // Atomic vectors should be tracked to keep REFSXP indices aligned with the parser.
+        RObject::Integer(_)
         | RObject::Real(_)
         | RObject::Logical(_)
         | RObject::Character(_)
-        | RObject::Symbol(_)
         | RObject::Raw(_)
-        | RObject::Complex(_)
-        | RObject::Special { .. }
-        | RObject::Builtin { .. } => false,
+        | RObject::Complex(_) => true,
 
         // WithAttributes must be tracked to maintain index alignment with parser.
         // However, DO NOT deduplicate by pointer - see ref_key() below.
@@ -360,6 +382,16 @@ fn should_track_reference_type(obj: &RObject) -> bool {
 fn ref_key(obj: &RObject) -> Option<usize> {
     match obj {
         RObject::Shared(inner) => Some(Arc::as_ptr(inner) as usize),
+        // S4 objects are often constructed as temporaries; avoid pointer-based dedup.
+        RObject::S4Object(_) => None,
+        // Atomic vectors should increment ref indices, but should NOT use pointer-based
+        // deduplication since temporary vectors can reuse stack addresses.
+        RObject::Integer(_)
+        | RObject::Real(_)
+        | RObject::Logical(_)
+        | RObject::Character(_)
+        | RObject::Raw(_)
+        | RObject::Complex(_) => None,
         // WithAttributes should NOT use pointer-based deduplication because
         // stack-allocated instances can have the same address (see write_s4_object).
         // Return None to prevent deduplication while still allowing index tracking.
@@ -577,6 +609,19 @@ fn write_object_inner(
             }
 
             // fallthrough to write body with tracking already registered
+        } else if should_track_reference_type(obj) {
+            // Track the object to keep ref indices aligned with the parser,
+            // but without pointer-based deduplication.
+            let idx = ref_table.next_index;
+            ref_table.next_index += 1;
+            current_ref_idx = Some(idx);
+            if std::env::var("RDS_DEBUG").is_ok() {
+                eprintln!(
+                    "[WRITE] DEFINE (anon) idx={} type={}",
+                    idx,
+                    obj.variant_name()
+                );
+            }
         }
     }
 
@@ -987,9 +1032,20 @@ fn write_language(
     write_flags(writer, LANGSXP, false, has_tag, false)?;
 
     // Write the function (CAR)
-    // If it's a single-element Character, write it as a symbol (function name)
-    match function {
-        RObject::Character(vec) if vec.len() == 1 => {
+    // Prefer symbols when possible (closure bodies expect symbol-table REFSXP)
+    if let Some((name, ptr)) = symbol_name_and_ptr(function) {
+        write_symbol_with_tracking(
+            writer,
+            name,
+            ptr,
+            SymbolContext::NonTagPreferSymbol,
+            ref_table,
+            symbol_tracker,
+        )?;
+    } else {
+        // If it's a single-element Character, write it as a symbol (function name)
+        match function {
+            RObject::Character(vec) if vec.len() == 1 => {
             if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
                 eprintln!("[LANGUAGE] Writing function as symbol: '{}'", vec[0]);
             }
@@ -997,12 +1053,12 @@ fn write_language(
                 writer,
                 Arc::from(vec[0].as_ref()),
                 None, // Plain string, not Shared
-                SymbolContext::NonTag,
+                SymbolContext::NonTagPreferSymbol,
                 ref_table,
                 symbol_tracker,
             )?;
-        }
-        _ => {
+            }
+            _ => {
             if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
                 eprintln!(
                     "[LANGUAGE] Writing function via write_object: {:?}",
@@ -1011,6 +1067,7 @@ fn write_language(
             }
             // For Shared(Symbol), SharedInfo will be propagated via write_object_inner
             write_object(writer, function, ref_table, symbol_tracker)?;
+            }
         }
     }
 
@@ -1093,19 +1150,30 @@ fn write_pairlist_internal(
 
         // If values_are_symbols and value is single-element Character, write as symbol
         if values_are_symbols {
-            match &element.value {
-                RObject::Character(vec) if vec.len() == 1 => {
-                    write_symbol_with_tracking(
-                        writer,
-                        Arc::from(vec[0].as_ref()),
-                        None, // Plain string, not Shared
-                        SymbolContext::NonTag,
-                        ref_table,
-                        symbol_tracker,
-                    )?;
-                }
-                _ => {
-                    write_object(writer, &element.value, ref_table, symbol_tracker)?;
+            if let Some((name, ptr)) = symbol_name_and_ptr(&element.value) {
+                write_symbol_with_tracking(
+                    writer,
+                    name,
+                    ptr,
+                    SymbolContext::NonTagPreferSymbol,
+                    ref_table,
+                    symbol_tracker,
+                )?;
+            } else {
+                match &element.value {
+                    RObject::Character(vec) if vec.len() == 1 => {
+                        write_symbol_with_tracking(
+                            writer,
+                            Arc::from(vec[0].as_ref()),
+                            None, // Plain string, not Shared
+                            SymbolContext::NonTagPreferSymbol,
+                            ref_table,
+                            symbol_tracker,
+                        )?;
+                    }
+                    _ => {
+                        write_object(writer, &element.value, ref_table, symbol_tracker)?;
+                    }
                 }
             }
         } else {
@@ -1157,6 +1225,10 @@ fn write_pairlist_as_args(
     symbol_tracker: &mut SymbolTracker,
 ) -> Result<()> {
     // For Language arguments, convert single-element Character values to symbols
+    // The arguments list is a LISTSXP and should be reference-tracked.
+    if !elements.is_empty() {
+        ref_table.next_index += 1;
+    }
     write_pairlist_internal(writer, elements, ref_table, symbol_tracker, true)
 }
 
@@ -1496,7 +1568,7 @@ fn write_s3_object(
                                 writer,
                                 vec[0].clone(),
                                 Some(ptr), // Track by Shared pointer
-                                SymbolContext::NonTag,
+                                SymbolContext::NonTagPreferSymbol,
                                 ref_table,
                                 symbol_tracker,
                             )?;
@@ -1514,7 +1586,7 @@ fn write_s3_object(
                                 writer,
                                 name.clone(),
                                 Some(ptr), // Track by Shared pointer
-                                SymbolContext::NonTag,
+                                SymbolContext::NonTagPreferSymbol,
                                 ref_table,
                                 symbol_tracker,
                             )?;
@@ -1550,7 +1622,7 @@ fn write_s3_object(
                         writer,
                         vec[0].clone(),
                         None, // Plain, not Shared
-                        SymbolContext::NonTag,
+                        SymbolContext::NonTagPreferSymbol,
                         ref_table,
                         symbol_tracker,
                     )?;
@@ -1761,6 +1833,11 @@ fn write_attributes(
         return Ok(());
     }
 
+    // Attributes are serialized as a LISTSXP pairlist and are reference-tracked
+    // by the parser. Reserve a reference index here to keep ref_table alignment.
+    let attr_ref_idx = ref_table.next_index;
+    ref_table.next_index += 1;
+
     // Convert to pairlist elements
     let mut elements = Vec::new();
 
@@ -1789,9 +1866,10 @@ fn write_attributes(
     let debug_attrs = std::env::var("RDS_DEBUG_ATTRS").is_ok();
     if debug_attrs {
         eprintln!(
-            "[ATTRS] Writing {} attributes, is_s4={}",
+            "[ATTRS] Writing {} attributes, is_s4={}, attr_ref_idx={}",
             attrs_iter.len(),
-            is_s4_object
+            is_s4_object,
+            attr_ref_idx
         );
     }
 
