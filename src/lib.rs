@@ -439,7 +439,11 @@ pub fn write_rds(obj: &RObject) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn test_placeholder() {
         // Placeholder test - will be replaced with actual tests
         assert!(true);

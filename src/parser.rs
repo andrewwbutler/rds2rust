@@ -3445,8 +3445,11 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test;
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn test_parse_header() {
         // This is a minimal RDS header for format version 2
         let header = vec![
@@ -3461,7 +3464,8 @@ mod tests {
         assert_eq!(version, 2);
     }
 
-    #[test]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn test_invalid_magic() {
         let header = vec![b'Y', b'\n', 0, 0, 0, 2];
         let mut cursor = Cursor::new(header.as_slice());
