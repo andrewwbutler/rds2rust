@@ -271,13 +271,17 @@ dependencies = [
  "byteorder",
  "flate2",
  "indexmap",
+ "js-sys",
  "memmap2",
  "serde",
  "serde_json",
  "smallvec",
  "tempfile",
  "thiserror",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
+ "web-sys",
 ]
 
 [[package]]

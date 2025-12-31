@@ -13,6 +13,9 @@ use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, RwLock};
 
+#[cfg(target_arch = "wasm32")]
+use crate::wasm::{AsyncBufferedCursor, AsyncCursorConfig, AsyncRdsInput};
+
 struct RdsCursor<'a> {
     position: u64,
     len: u64,
@@ -557,6 +560,118 @@ fn parse_rds_internal_cursor(cursor: &mut RdsCursor<'_>, ctx: &mut ParserContext
     result
 }
 
+#[cfg(target_arch = "wasm32")]
+pub async fn parse_rds_with_async_input(
+    input: &dyn AsyncRdsInput,
+    config: crate::ParseConfig,
+    cursor_config: AsyncCursorConfig,
+) -> Result<RObject> {
+    let mut ctx = ParserContext::from_config(config);
+    let mut cursor = AsyncBufferedCursor::new(input, cursor_config).await?;
+    parse_rds_internal_async(&mut cursor, &mut ctx).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn parse_rds_internal_async(
+    cursor: &mut AsyncBufferedCursor<'_>,
+    ctx: &mut ParserContext,
+) -> Result<RObject> {
+    let format_version =
+        parse_with_sync_cursor_retry(cursor, 14, 14, |c| parse_header(c)).await?;
+
+    if format_version >= 3 {
+        let enc_len = read_u32_async(cursor).await? as usize;
+        guard_allocation_common(ctx, enc_len, 1, "header encoding")?;
+        let _enc_bytes = read_bytes_async(cursor, enc_len).await?;
+    }
+
+    let mut ref_table = RefTable::new();
+    let mut symbol_table = SymbolTable::new();
+    let mut dedup_table = DedupTable::new();
+
+    parse_object_async(ctx, cursor, &mut ref_table, &mut symbol_table, &mut dedup_table).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn parse_object_async(
+    ctx: &mut ParserContext,
+    cursor: &mut AsyncBufferedCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+) -> Result<RObject> {
+    cursor.ensure_available(8).await?;
+    let estimate = crate::estimate_parse_size(cursor).unwrap_or(cursor.buffer_size());
+    let total_len = cursor.total_len().ok_or_else(|| {
+        Error::InvalidFormat("async cursor requires length".to_string())
+    })?;
+    let remaining = (total_len - cursor.position()) as usize;
+    let max_size = std::cmp::min(cursor.max_buffer_size(), remaining);
+    let size = estimate.clamp(4, max_size.max(4));
+
+    parse_with_sync_cursor_retry(cursor, size, max_size, |sync_cursor| {
+        parse_object(ctx, sync_cursor, ref_table, symbol_table, dedup_table)
+    })
+    .await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn parse_with_sync_cursor_retry<T, F>(
+    cursor: &mut AsyncBufferedCursor<'_>,
+    initial: usize,
+    max_size: usize,
+    mut f: F,
+) -> Result<T>
+where
+    F: FnMut(&mut RdsCursor<'_>) -> Result<T>,
+{
+    let mut size = initial.max(4);
+    let max_size = max_size.max(4);
+
+    loop {
+        cursor.ensure_available(size).await?;
+        let slice = cursor.as_sync_slice(size)?;
+        let mut sync_cursor = RdsCursor::new_slice(slice);
+        let result = f(&mut sync_cursor);
+
+        match result {
+            Ok(value) => {
+                cursor.advance(sync_cursor.position())?;
+                return Ok(value);
+            }
+            Err(Error::UnexpectedEof) | Err(Error::UnexpectedEofDetail { .. }) => {
+                if size >= max_size {
+                    return result;
+                }
+                size = std::cmp::min(max_size, size.saturating_mul(2));
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_u32_async(cursor: &mut AsyncBufferedCursor<'_>) -> Result<u32> {
+    cursor.ensure_available(4).await?;
+    let slice = cursor.as_sync_slice(4)?;
+    let mut reader = std::io::Cursor::new(slice);
+    let value = reader.read_u32::<BigEndian>()?;
+    cursor.advance(4)?;
+    Ok(value)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_bytes_async(cursor: &mut AsyncBufferedCursor<'_>, len: usize) -> Result<Vec<u8>> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    cursor.ensure_available(len).await?;
+    let slice = cursor.as_sync_slice(len)?;
+    let bytes = slice.to_vec();
+    cursor.advance(len as u64)?;
+    Ok(bytes)
+}
 /// Parse the RDS file header.
 fn parse_header(cursor: &mut RdsCursor<'_>) -> Result<u32> {
     // RDS files start with specific magic bytes

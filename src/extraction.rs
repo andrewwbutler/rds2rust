@@ -1674,7 +1674,7 @@ enum PathToken {
 }
 
 #[derive(Debug)]
-enum VectorTarget<'a> {
+pub(crate) enum VectorTarget<'a> {
     Integer(Cow<'a, [i32]>),
     Real(Cow<'a, [f64]>),
     Logical(Cow<'a, [Logical]>),
@@ -1689,7 +1689,10 @@ enum VectorTarget<'a> {
     LazyCharacter(LazyVector),
 }
 
-fn find_vector_at_path<'a>(obj: &'a RObject, path: &str) -> Result<Option<VectorTarget<'a>>> {
+pub(crate) fn find_vector_at_path<'a>(
+    obj: &'a RObject,
+    path: &str,
+) -> Result<Option<VectorTarget<'a>>> {
     let tokens = parse_path_tokens(path)?;
     find_vector_tokens(obj, &tokens)
 }

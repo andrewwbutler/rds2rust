@@ -123,6 +123,17 @@ if let RObject::DataFrame(df) = obj {
 For very large files, you can extract vectors without materializing the whole object in memory.
 The `rds-extract` CLI writes one file per vector plus an optional JSON manifest.
 
+### WASM Support (Large Files)
+
+The WASM path uses async input, a Blob-backed chunk source, and worker-friendly helpers.
+Decompression uses a size-based strategy:
+
+- **<500MB**: in-memory buffer
+- **500MB–10GB**: Blob-backed chunked reads
+- **>10GB**: streaming mode (future)
+
+See `docs/wasm_decompression.md` for the JS helper, worker wrapper, and validation targets.
+
 ### CLI
 
 ```bash
@@ -145,6 +156,13 @@ Streaming is the default and avoids materializing large lazy vectors; it streams
 from the backing store. Use `--no-streaming` to force materialization if needed. Use
 `--chunk-size-mb` to cap per-read buffer size when streaming. Streaming is best paired with
 `--chunked` to avoid mmap'ing large decompressed streams.
+
+### WASM Extraction APIs
+
+WASM exposes async extraction helpers that return JS typed arrays or call a callback per chunk:
+
+- `extract_vector_to_js(obj, source, path) -> JsValue`
+- `extract_vector_chunked(obj, source, path, chunk_size, callback)`
 
 ### Raw Dump Format
 
@@ -454,4 +472,5 @@ Licensed under:
 - [RDS Format Documentation](RDS_FORMAT.md)
 - [Project Plan](PROJECT_PLAN.md)
 - [Test Generation Guide](tests/README.md)
+- [WASM Decompression Guide](docs/wasm_decompression.md)
 - [R Internals Manual](https://cran.r-project.org/doc/manuals/r-release/R-ints.html)

@@ -13,6 +13,8 @@ mod materialization;
 mod parser;
 #[cfg(not(target_arch = "wasm32"))]
 mod source;
+#[cfg(target_arch = "wasm32")]
+mod wasm;
 mod types;
 mod writer;
 
@@ -47,6 +49,13 @@ pub use manifest::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use source::{ChunkedCacheMetrics, ChunkedRdsSource, MmapRdsSource, RdsInput};
+#[cfg(target_arch = "wasm32")]
+pub use wasm::{
+    estimate_parse_size, extract_vector_chunked, extract_vector_to_js, memory_warning,
+    read_rds_async, recommend_decompression_mode, AsyncBufferedCursor, AsyncCursorConfig,
+    AsyncParseConfig, AsyncRdsInput, AsyncReadFuture, BlobChunkedSource, CacheConfig, CacheMetrics,
+    WasmDecompressedSource, WasmDecompressionMode, WasmDecompressionThresholds,
+};
 pub use types::{
     Attributes, Complex, DataFrameData, FactorData, LazyVector, Logical, PairlistElement, RObject,
     S3ObjectData, S4ObjectData, VectorData,

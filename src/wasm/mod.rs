@@ -1,0 +1,26 @@
+#[cfg(target_arch = "wasm32")]
+mod async;
+#[cfg(target_arch = "wasm32")]
+mod async_parse;
+#[cfg(target_arch = "wasm32")]
+mod blob_source;
+#[cfg(target_arch = "wasm32")]
+mod decompression;
+#[cfg(target_arch = "wasm32")]
+mod extract;
+
+#[cfg(target_arch = "wasm32")]
+pub use async::{
+    estimate_parse_size, AsyncBufferedCursor, AsyncCursorConfig, AsyncRdsInput, AsyncReadFuture,
+};
+#[cfg(target_arch = "wasm32")]
+pub use async_parse::{read_rds_async, AsyncParseConfig};
+#[cfg(target_arch = "wasm32")]
+pub use blob_source::{BlobChunkedSource, CacheConfig, CacheMetrics};
+#[cfg(target_arch = "wasm32")]
+pub use decompression::{
+    memory_warning, recommend_decompression_mode, WasmDecompressedSource,
+    WasmDecompressionMode, WasmDecompressionThresholds,
+};
+#[cfg(target_arch = "wasm32")]
+pub use extract::{extract_vector_chunked, extract_vector_to_js};
