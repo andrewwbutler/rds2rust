@@ -10,16 +10,112 @@ use byteorder::{BigEndian, ReadBytesExt};
 use flate2::read::GzDecoder;
 use indexmap::IndexMap;
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, RwLock};
+
+struct RdsCursor<'a> {
+    position: u64,
+    len: u64,
+    inner: RdsCursorInner<'a>,
+}
+
+enum RdsCursorInner<'a> {
+    Slice(&'a [u8]),
+    #[cfg(not(target_arch = "wasm32"))]
+    Input(&'a dyn crate::RdsInput),
+}
+
+impl<'a> RdsCursor<'a> {
+    fn new_slice(data: &'a [u8]) -> Self {
+        Self {
+            position: 0,
+            len: data.len() as u64,
+            inner: RdsCursorInner::Slice(data),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn new_input(input: &'a dyn crate::RdsInput) -> Result<Self> {
+        let len = input.len().ok_or_else(|| {
+            Error::InvalidFormat("input length is required for parsing".to_string())
+        })?;
+        Ok(Self {
+            position: 0,
+            len,
+            inner: RdsCursorInner::Input(input),
+        })
+    }
+
+    fn position(&self) -> u64 {
+        self.position
+    }
+
+    fn set_position(&mut self, pos: u64) {
+        self.position = pos.min(self.len);
+    }
+
+    fn len(&self) -> u64 {
+        self.len
+    }
+}
+
+impl Read for RdsCursor<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.position >= self.len {
+            return Ok(0);
+        }
+        let remaining = (self.len - self.position) as usize;
+        let to_read = remaining.min(buf.len());
+        match &self.inner {
+            RdsCursorInner::Slice(data) => {
+                let start = self.position as usize;
+                let end = start + to_read;
+                buf[..to_read].copy_from_slice(&data[start..end]);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            RdsCursorInner::Input(input) => {
+                let chunk = input
+                    .read_at(self.position, to_read)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                if chunk.len() != to_read {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "short read from input",
+                    ));
+                }
+                buf[..to_read].copy_from_slice(&chunk);
+            }
+        }
+        self.position += to_read as u64;
+        Ok(to_read)
+    }
+}
+
+impl Seek for RdsCursor<'_> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        let next = match pos {
+            SeekFrom::Start(offset) => offset as i128,
+            SeekFrom::End(offset) => self.len as i128 + offset as i128,
+            SeekFrom::Current(offset) => self.position as i128 + offset as i128,
+        };
+        if next < 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid seek to a negative position",
+            ));
+        }
+        self.position = (next as u64).min(self.len);
+        Ok(self.position)
+    }
+}
 
 fn debug_enabled() -> bool {
     std::env::var("RDS_DEBUG").is_ok()
 }
 
-fn ensure_bytes_available(cursor: &Cursor<&[u8]>, needed: usize, context: &str) -> Result<()> {
+fn ensure_bytes_available(cursor: &RdsCursor<'_>, needed: usize, context: &str) -> Result<()> {
     let pos = cursor.position() as usize;
-    let total = cursor.get_ref().len();
+    let total = cursor.len() as usize;
     let available = total.saturating_sub(pos);
     if available < needed {
         if debug_enabled() {
@@ -91,16 +187,13 @@ fn guard_allocation(
     ctx: &mut ParserContext,
     length: usize,
     elem_size: usize,
-    cursor: &Cursor<&[u8]>,
+    cursor: &RdsCursor<'_>,
     context: &str,
 ) -> Result<()> {
     guard_allocation_common(ctx, length, elem_size, context)?;
 
     let needed = length * elem_size;
-    let remaining = cursor
-        .get_ref()
-        .len()
-        .saturating_sub(cursor.position() as usize);
+    let remaining = (cursor.len() as usize).saturating_sub(cursor.position() as usize);
     if needed > remaining.saturating_add(16) {
         return Err(Error::InvalidFormat(format!(
             "Length {} ({} bytes) exceeds remaining {} bytes while parsing {}",
@@ -396,10 +489,21 @@ fn parse_rds_internal(data: &[u8], ctx: &mut ParserContext) -> Result<RObject> {
         data.to_vec()
     };
 
-    let mut cursor = Cursor::new(decompressed_data.as_slice());
+    let mut cursor = RdsCursor::new_slice(decompressed_data.as_slice());
+    parse_rds_internal_cursor(&mut cursor, ctx)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn parse_rds_with_input(input: &dyn crate::RdsInput, config: crate::ParseConfig) -> Result<RObject> {
+    let mut ctx = ParserContext::from_config(config);
+    let mut cursor = RdsCursor::new_input(input)?;
+    parse_rds_internal_cursor(&mut cursor, &mut ctx)
+}
+
+fn parse_rds_internal_cursor(cursor: &mut RdsCursor<'_>, ctx: &mut ParserContext) -> Result<RObject> {
 
     // Parse header
-    let format_version = parse_header(&mut cursor)?;
+    let format_version = parse_header(cursor)?;
 
     // Format version 3 includes native encoding information in the header
     if format_version >= 3 {
@@ -431,7 +535,7 @@ fn parse_rds_internal(data: &[u8], ctx: &mut ParserContext) -> Result<RObject> {
     }
     let result = parse_object(
         ctx,
-        &mut cursor,
+        cursor,
         &mut ref_table,
         &mut symbol_table,
         &mut dedup_table,
@@ -446,7 +550,7 @@ fn parse_rds_internal(data: &[u8], ctx: &mut ParserContext) -> Result<RObject> {
                 "[PARSE_RDS] Root object parse FAILED: {} (pos={}, remaining={})",
                 e,
                 cursor.position(),
-                cursor.get_ref().len() as u64 - cursor.position()
+                cursor.len().saturating_sub(cursor.position())
             ),
         }
     }
@@ -454,7 +558,7 @@ fn parse_rds_internal(data: &[u8], ctx: &mut ParserContext) -> Result<RObject> {
 }
 
 /// Parse the RDS file header.
-fn parse_header(cursor: &mut Cursor<&[u8]>) -> Result<u32> {
+fn parse_header(cursor: &mut RdsCursor<'_>) -> Result<u32> {
     // RDS files start with specific magic bytes
     let mut magic = [0u8; 2];
     ensure_bytes_available(cursor, 2, "parse_header:magic")?;
@@ -489,7 +593,7 @@ fn parse_header(cursor: &mut Cursor<&[u8]>) -> Result<u32> {
 /// Parse an R object from the stream.
 fn parse_object(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -497,7 +601,7 @@ fn parse_object(
     // Peek at the first byte to check for packaged/pseudo types
     let pos = cursor.position();
     if debug_enabled() {
-        let stream_len = cursor.get_ref().len() as u64;
+        let stream_len = cursor.len();
         if pos + 16 >= stream_len {
             eprintln!(
                 "[PARSE_OBJECT] Near EOF: pos={}, total={}, remaining={}",
@@ -512,7 +616,7 @@ fn parse_object(
         Ok(b) => b,
         Err(e) => {
             // Check if we're at EOF - this is expected in some cases
-            let stream_len = cursor.get_ref().len() as u64;
+            let stream_len = cursor.len();
             if pos >= stream_len {
                 return Err(Error::UnexpectedEofDetail {
                     position: pos as usize,
@@ -883,7 +987,7 @@ fn parse_object(
     } else if has_attr {
         let pos_before_attr = cursor.position();
         let mut attr_obj = None;
-        let stream_len = cursor.get_ref().len() as u64;
+        let stream_len = cursor.len();
         let remaining = stream_len.saturating_sub(cursor.position());
         if remaining == 0 {
             attr_obj = Some(RObject::Null);
@@ -904,7 +1008,7 @@ fn parse_object(
                 sexp_type,
                 pos_before_attr,
                 cursor.position(),
-                cursor.get_ref().len() as u64 - cursor.position()
+                cursor.len().saturating_sub(cursor.position())
             );
         }
         if sexp_type == S4SXP && std::env::var("RDS_DEBUG_S4_ATTR_OBJ").is_ok() {
@@ -1079,7 +1183,7 @@ fn parse_object(
 }
 
 /// Parse an integer vector.
-fn parse_integer_vector(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+fn parse_integer_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(
         ctx,
@@ -1121,7 +1225,7 @@ fn parse_integer_vector(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> 
 }
 
 /// Parse a real (double) vector.
-fn parse_real_vector(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+fn parse_real_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(
         ctx,
@@ -1162,7 +1266,7 @@ fn parse_real_vector(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> Res
 }
 
 /// Parse a logical vector.
-fn parse_logical_vector(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+fn parse_logical_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(
         ctx,
@@ -1211,14 +1315,14 @@ fn parse_logical_vector(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> 
 }
 
 /// Read an integer - always reads 4 bytes in big-endian format.
-fn read_int_flexible(cursor: &mut Cursor<&[u8]>) -> Result<i32> {
+fn read_int_flexible(cursor: &mut RdsCursor<'_>) -> Result<i32> {
     Ok(cursor.read_i32::<BigEndian>()?)
 }
 
 /// Parse a character vector (STRSXP - a vector of CHARSXP).
 fn parse_character_vector(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -1287,14 +1391,14 @@ fn parse_character_vector(
 // Helper function for full character vector parsing
 fn parse_character_vector_full(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
     length: usize,
 ) -> Result<RObject> {
     if debug_enabled() {
-        let remaining = cursor.get_ref().len() as u64 - cursor.position();
+        let remaining = cursor.len().saturating_sub(cursor.position());
         eprintln!(
             "[STRSXP] Parsing character vector of length {} (now at pos {}), remaining={}",
             length,
@@ -1432,7 +1536,7 @@ fn parse_character_vector_full(
 }
 
 /// Parse a raw vector (RAWSXP - a vector of bytes).
-fn parse_raw_vector(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+fn parse_raw_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(ctx, length, 1, cursor, "raw vector")?;
 
@@ -1463,7 +1567,7 @@ fn parse_raw_vector(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> Resu
 }
 
 /// Parse a complex vector (CPLXSXP).
-fn parse_complex_vector(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<RObject> {
+fn parse_complex_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<RObject> {
     use crate::types::Complex;
 
     let length = cursor.read_u32::<BigEndian>()? as usize;
@@ -1513,7 +1617,7 @@ fn parse_complex_vector(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> 
 /// We return a placeholder NULL and let the attribute parsing handle it.
 fn parse_s4_object(
     _ctx: &mut ParserContext,
-    _cursor: &mut Cursor<&[u8]>,
+    _cursor: &mut RdsCursor<'_>,
     _ref_table: &mut RefTable,
     _symbol_table: &mut SymbolTable,
     _dedup_table: &mut DedupTable,
@@ -1526,7 +1630,7 @@ fn parse_s4_object(
 /// Parse a symbol (SYMSXP).
 fn parse_symbol(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -1559,7 +1663,7 @@ fn parse_symbol(
 /// Parse a generic list (VECSXP).
 fn parse_list(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -1571,7 +1675,7 @@ fn parse_list(
     let mut elements = Vec::with_capacity(length);
 
     if debug_enabled() {
-        let remaining = cursor.get_ref().len() as u64 - cursor.position();
+        let remaining = cursor.len().saturating_sub(cursor.position());
         eprintln!(
             "[PARSE_LIST] At pos={}, length={}, remaining bytes={}",
             pos_before_length, length, remaining
@@ -1582,7 +1686,7 @@ fn parse_list(
         // Defensive EOF check before attempting to parse the next element so we can
         // surface a structured error instead of a generic IO failure.
         let pos = cursor.position() as usize;
-        let total = cursor.get_ref().len();
+        let total = cursor.len() as usize;
         let remaining = total.saturating_sub(pos);
         if debug_enabled() {
             eprintln!(
@@ -1645,7 +1749,7 @@ fn parse_list(
 /// of unevaluated expressions (e.g., the result of parse()).
 fn parse_expression(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -1665,7 +1769,7 @@ fn parse_expression(
 /// Parse bytecode (BCODESXP) using R's ReadBC/ReadBC1 structure.
 fn parse_bytecode(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -1684,7 +1788,7 @@ fn parse_bytecode(
 
 fn parse_bytecode_body(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -1702,7 +1806,7 @@ fn parse_bytecode_body(
 
 fn parse_bc_constants(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -1741,7 +1845,7 @@ fn parse_bc_constants(
 
 fn parse_bc_lang(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -1818,7 +1922,7 @@ fn parse_bc_lang(
 
 fn parse_bc_lang_struct(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -1939,7 +2043,7 @@ fn build_pairlist_from_bc(tag_obj: RObject, car: RObject, cdr: RObject) -> RObje
 /// and returned separately for the caller to handle.
 fn parse_closure(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     _has_tag: bool,
     track_reference: bool,
     ref_table: &mut RefTable,
@@ -2003,7 +2107,7 @@ fn parse_closure(
 /// Environments consist of: locked flag, enclosing environment, frame (pairlist), hashtab
 fn parse_environment(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -2035,7 +2139,7 @@ fn parse_environment(
 /// They trigger automatic package loading when the RDS file is read in R.
 fn parse_namespace(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -2066,7 +2170,7 @@ fn parse_namespace(
 /// They're structured like pairlists: TAG (if present), CAR (function), CDR (arguments).
 fn parse_language(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     has_tag: bool,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -2115,7 +2219,7 @@ fn parse_language(
 /// Returns (tag_name, tag_object, car_value).
 fn parse_pairlist_element(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     has_tag: bool,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -2240,7 +2344,7 @@ fn parse_pairlist_element(
 /// If next FLAGS indicate LISTSXP/LANGSXP/etc., it's a continuation; otherwise it's the CDR terminator.
 fn parse_pairlist(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     has_tag: bool,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -2271,7 +2375,7 @@ fn parse_pairlist(
     loop {
         // Peek at next flags to determine if we continue or terminate
         let pos = cursor.position();
-        let remaining = cursor.get_ref().len() as u64 - pos;
+        let remaining = cursor.len() - pos;
         iterations += 1;
         if iterations > MAX_VECTOR_LENGTH {
             return Err(Error::InvalidFormat(
@@ -2375,7 +2479,7 @@ fn parse_pairlist(
                     // Normal list termination
                     // INSTRUMENTATION: Check if there's more data after NULL terminator
                     if std::env::var("RDS_DEBUG_PAIRLIST_AFTER_NULL").is_ok() {
-                        let remaining = cursor.get_ref().len() as u64 - cursor.position();
+                        let remaining = cursor.len().saturating_sub(cursor.position());
                         eprintln!("[PAIRLIST_AFTER_NULL] {} elements parsed, {} bytes remaining at pos={}",
                             elements.len(), remaining, cursor.position());
                         if remaining >= 4 {
@@ -2450,7 +2554,7 @@ fn extract_tag_name(tag_obj: RObject) -> Option<Arc<str>> {
 /// Promises are lazy evaluation constructs containing: value, expression, environment
 fn parse_promise(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     has_tag: bool,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
@@ -2478,7 +2582,7 @@ fn parse_promise(
 /// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
 fn parse_special(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     _ref_table: &mut RefTable,
     _symbol_table: &mut SymbolTable,
     _dedup_table: &mut DedupTable,
@@ -2512,7 +2616,7 @@ fn parse_special(
 /// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
 fn parse_builtin(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     _ref_table: &mut RefTable,
     _symbol_table: &mut SymbolTable,
     _dedup_table: &mut DedupTable,
@@ -2782,7 +2886,7 @@ fn convert_compact_intseq(ctx: &mut ParserContext, state: RObject) -> Result<ROb
 }
 
 /// Parse a CHARSXP (internal character string).
-fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<String> {
+fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<String> {
     // Read the CHARSXP header
     let flags = cursor.read_u32::<BigEndian>()?;
     let type_from_0_7 = flags & 0xFF;
@@ -2851,7 +2955,7 @@ fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut Cursor<&[u8]>) -> Result<
 /// The compact encoding is detected by checking bits 24-31 of the flags field.
 fn parse_charsxp_content(
     ctx: &mut ParserContext,
-    cursor: &mut Cursor<&[u8]>,
+    cursor: &mut RdsCursor<'_>,
     flags: u32,
 ) -> Result<String> {
     let pos_before = cursor.position();
@@ -3459,7 +3563,7 @@ mod tests {
             0, 3, 0, 0, // Min R version 3.0.0
         ];
 
-        let mut cursor = Cursor::new(header.as_slice());
+        let mut cursor = RdsCursor::new_slice(header.as_slice());
         let version = parse_header(&mut cursor).unwrap();
         assert_eq!(version, 2);
     }
@@ -3468,7 +3572,7 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn test_invalid_magic() {
         let header = vec![b'Y', b'\n', 0, 0, 0, 2];
-        let mut cursor = Cursor::new(header.as_slice());
+        let mut cursor = RdsCursor::new_slice(header.as_slice());
         assert!(parse_header(&mut cursor).is_err());
     }
 }

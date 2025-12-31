@@ -55,6 +55,14 @@ impl<T> VectorData<T> {
         matches!(self, VectorData::Owned(_))
     }
 
+    /// Get the lazy span if this vector is not yet materialized.
+    pub fn lazy_span(&self) -> Option<LazyVector> {
+        match self {
+            VectorData::Lazy(span) => Some(*span),
+            VectorData::Owned(_) => None,
+        }
+    }
+
     /// Get the length of the vector regardless of load state.
     pub fn len(&self) -> usize {
         match self {

@@ -7,11 +7,46 @@ use std::sync::Arc;
 
 mod constants;
 mod error;
+mod extraction;
+mod manifest;
+mod materialization;
 mod parser;
+#[cfg(not(target_arch = "wasm32"))]
+mod source;
 mod types;
 mod writer;
 
 pub use error::{Error, Result};
+pub use extraction::{
+    expand_dataframe_paths, expand_list_index_paths, expand_s4_slot_paths,
+    expand_dense_matrix_paths, expand_object_paths, expand_object_paths_for_kind,
+    expand_sparse_matrix_paths, extract_object_to_raw_files, extract_object_to_raw_files_with_kind,
+    extract_vectors_to_raw_files, write_extraction_manifest, write_extraction_manifest_with_kind,
+    convert_object_to_raw_dump, convert_object_to_raw_dump_at_path, Endian, ExtractedVectorInfo,
+    ExtractionResult, ObjectExtractionOutput, ObjectKind, VectorKind,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use extraction::{
+    extract_object_from_path, extract_object_from_path_chunked, extract_object_from_path_with_kind,
+    extract_object_from_path_with_kind_chunked, extract_vectors_from_path,
+    extract_vectors_from_path_chunked, extract_raw_vector_streaming,
+    extract_integer_vector_streaming, extract_logical_vector_streaming,
+    extract_real_vector_streaming, extract_complex_vector_streaming,
+    extract_vectors_streaming, extract_object_to_raw_files_with_input_streaming,
+    extract_object_to_raw_files_with_kind_and_input_streaming, ExtractionOutput,
+};
+pub use materialization::{
+    materialize_complex_data, materialize_complex_vector, materialize_integer_data,
+    materialize_integer_vector, materialize_logical_data, materialize_logical_vector,
+    materialize_path, materialize_paths_with_budget, materialize_raw_data, materialize_raw_vector,
+    materialize_real_data, materialize_real_vector, MaterializationContext,
+};
+pub use manifest::{
+    read_extraction_manifest, read_vector_file_header, validate_vector_file_header, Manifest,
+    ManifestVector, VectorFileHeader,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use source::{ChunkedCacheMetrics, ChunkedRdsSource, MmapRdsSource, RdsInput};
 pub use types::{
     Attributes, Complex, DataFrameData, FactorData, LazyVector, Logical, PairlistElement, RObject,
     S3ObjectData, S4ObjectData, VectorData,
@@ -124,6 +159,11 @@ pub struct ParseConfig {
     /// - If a tag exceeds this threshold, it will be skipped gracefully (placeholder used)
     /// - This prevents failures when parsing S4 objects with embedded command history
     pub bytecode_lazy_threshold: usize,
+
+    /// Optional hard cap on total materialized bytes during conversion/materialization.
+    ///
+    /// None means no budget enforcement at this layer.
+    pub memory_budget_bytes: Option<usize>,
 }
 
 impl Default for ParseConfig {
@@ -134,6 +174,7 @@ impl Default for ParseConfig {
             mode: ParseMode::default(),
             lazy_threshold: 10, // Load vectors with <= 10 elements even in lazy mode
             bytecode_lazy_threshold: 1000, // Load bytecode constants with <= 1000 elements
+            memory_budget_bytes: None,
         }
     }
 }
@@ -174,6 +215,12 @@ impl ParseConfig {
         self
     }
 
+    /// Set a memory budget for materialization/conversion.
+    pub fn with_memory_budget_bytes(mut self, budget: Option<usize>) -> Self {
+        self.memory_budget_bytes = budget;
+        self
+    }
+
     /// Create a config for lazy metadata parsing.
     ///
     /// This mode parses only structure and metadata without allocating
@@ -205,6 +252,7 @@ impl ParseConfig {
             mode: ParseMode::default(),
             lazy_threshold: 100,
             bytecode_lazy_threshold: 1000,
+            memory_budget_bytes: None,
         }
     }
 
@@ -218,6 +266,48 @@ impl ParseConfig {
             mode: ParseMode::default(),
             lazy_threshold: 100,
             bytecode_lazy_threshold: 1000,
+            memory_budget_bytes: None,
+        }
+    }
+
+    /// Create a config for trusted, large files.
+    ///
+    /// Keeps guardrails but raises limits and stays in lazy metadata mode.
+    pub fn for_trusted_large_file() -> Self {
+        Self {
+            max_vector_length: 1_000_000_000,
+            max_allocation_bytes: 4 * 1024 * 1024 * 1024, // 4 GB
+            mode: ParseMode::LazyMetadata,
+            lazy_threshold: 100,
+            bytecode_lazy_threshold: 10_000,
+            memory_budget_bytes: None,
+        }
+    }
+
+    /// Create a config for inspection-only parsing.
+    ///
+    /// Forces all vectors lazy to avoid allocations.
+    pub fn for_inspection_only() -> Self {
+        Self {
+            mode: ParseMode::LazyMetadata,
+            lazy_threshold: 0,
+            bytecode_lazy_threshold: 0,
+            memory_budget_bytes: None,
+            ..Default::default()
+        }
+    }
+
+    /// Create a config suitable for constrained conversions.
+    ///
+    /// Use with explicit materialization budgeting in higher-level code.
+    pub fn for_constrained_conversion(budget_mb: usize) -> Self {
+        Self {
+            max_vector_length: 1_000_000_000,
+            max_allocation_bytes: 4 * 1024 * 1024 * 1024, // 4 GB
+            mode: ParseMode::LazyMetadata,
+            lazy_threshold: 100,
+            bytecode_lazy_threshold: 1000,
+            memory_budget_bytes: Some(budget_mb * 1024 * 1024),
         }
     }
 }
@@ -289,6 +379,69 @@ pub fn read_rds_lazy(data: &[u8]) -> Result<RObject> {
 pub fn read_rds_with_config(data: &[u8], config: ParseConfig) -> Result<RObject> {
     let obj = parser::parse_rds_with_config(data, config)?;
     Ok(unwrap_top_level_shared(obj))
+}
+
+/// Read an RDS file from an input source with custom configuration.
+///
+/// This uses `RdsInput` to support chunked backing stores.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_rds_with_input(input: &dyn RdsInput, config: ParseConfig) -> Result<RObject> {
+    let obj = parser::parse_rds_with_input(input, config)?;
+    Ok(unwrap_top_level_shared(obj))
+}
+
+/// Read an RDS file from an input source in lazy metadata mode.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_rds_lazy_with_input(input: &dyn RdsInput) -> Result<RObject> {
+    read_rds_with_input(input, ParseConfig::lazy_metadata())
+}
+
+/// Read an RDS file from a file path with custom configuration.
+///
+/// This uses a temp file + mmap for gzip-compressed inputs to avoid
+/// holding the full decompressed payload in memory.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_rds_from_path_with_config<P: AsRef<std::path::Path>>(
+    path: P,
+    config: ParseConfig,
+) -> Result<RObject> {
+    let source = MmapRdsSource::from_path(path.as_ref())?;
+    read_rds_with_config(source.as_slice(), config)
+}
+
+/// Read an RDS file from a file path with custom configuration, backed by chunked reads.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_rds_from_path_chunked_with_config<P: AsRef<std::path::Path>>(
+    path: P,
+    config: ParseConfig,
+) -> Result<RObject> {
+    let source = ChunkedRdsSource::from_path(path.as_ref())?;
+    read_rds_with_input(&source, config)
+}
+
+/// Read an RDS file from a file path with default configuration.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_rds_from_path<P: AsRef<std::path::Path>>(path: P) -> Result<RObject> {
+    read_rds_from_path_with_config(path, ParseConfig::default())
+}
+
+/// Read an RDS file from a file path with default configuration, backed by chunked reads.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_rds_from_path_chunked<P: AsRef<std::path::Path>>(path: P) -> Result<RObject> {
+    read_rds_from_path_chunked_with_config(path, ParseConfig::default())
+}
+
+/// Read an RDS file from a file path in lazy metadata mode, backed by chunked reads.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_rds_lazy_from_path_chunked<P: AsRef<std::path::Path>>(path: P) -> Result<RObject> {
+    let source = ChunkedRdsSource::from_path(path.as_ref())?;
+    read_rds_lazy_with_input(&source)
+}
+
+/// Read an RDS file from a file path in lazy metadata mode.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_rds_lazy_from_path<P: AsRef<std::path::Path>>(path: P) -> Result<RObject> {
+    read_rds_from_path_with_config(path, ParseConfig::lazy_metadata())
 }
 
 /// Unwrap Shared wrappers added by the parser for reference tracking.

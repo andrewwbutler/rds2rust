@@ -118,6 +118,130 @@ if let RObject::DataFrame(df) = obj {
 }
 ```
 
+## Large-File Extraction (Streaming-Oriented)
+
+For very large files, you can extract vectors without materializing the whole object in memory.
+The `rds-extract` CLI writes one file per vector plus an optional JSON manifest.
+
+### CLI
+
+```bash
+rds-extract data.rds out/ data.matrix meta.data --budget-mb 512 --manifest manifest.json
+rds-extract data.rds out/ --object-path data --manifest manifest.json
+rds-extract data.rds out/ --object-kind dataframe --object-path data
+rds-extract convert data.rds out/ --object-kind dataframe --object-path data
+rds-extract convert data.rds out/ --object-kind dataframe --chunked
+rds-extract convert data.rds out/ --object-kind sparse-matrix --object-path data.matrix --chunked --chunk-size-mb 4
+```
+
+If no paths are provided, the root object is extracted. Use `--object-path` to expand higher-level
+objects (data.frames, dense matrices, sparse matrices, lists) into their component vectors.
+Use `--object-kind` to enforce the expected object type and emit a clearer error on mismatch.
+Use `--chunked` to avoid mapping the full decompressed stream in memory; it trades some
+performance for a lower steady-state memory footprint on huge files.
+When field names contain dots (e.g., `slot.value`), use quoted segments:
+`data["slot.value"]`.
+Streaming is the default and avoids materializing large lazy vectors; it streams spans directly
+from the backing store. Use `--no-streaming` to force materialization if needed. Use
+`--chunk-size-mb` to cap per-read buffer size when streaming. Streaming is best paired with
+`--chunked` to avoid mmap'ing large decompressed streams.
+
+### Raw Dump Format
+
+Each output file contains:
+- Header: `RDS2VEC1` + version + kind + endian + reserved + length(u64) + elem_size(u32)
+- Payload:
+  - Numeric/logical/complex/raw: element bytes (big-endian for numeric types)
+  - Character: repeated records of `i32 length` + UTF-8 bytes
+
+The manifest JSON lists each extracted vector with its `path`, `file`, `kind`, `length`,
+`elem_size`, and `endian`, plus a top-level `object_kind`. This allows a reader to map files
+back to R object paths.
+
+### Manifest Versioning
+
+The manifest includes a top-level `version` field. Version 1 is the initial schema:
+`{ "version": 1, "object_kind": "...", "vectors": [...], "missing": [...] }`. Future schema
+changes will increment this number and preserve backward compatibility where possible.
+
+### Reader Guidance
+
+Recommended reader flow:
+1. Load the manifest JSON.
+2. For each entry, open the referenced `.rdsvec` file.
+3. Validate the header (`RDS2VEC1`, version, kind, endian, length, elem_size).
+4. Read payload:
+   - Numeric/logical/complex/raw: fixed-size element bytes.
+   - Character: repeated `i32 length` + UTF-8 bytes records.
+
+Example validation helper:
+
+```rust
+use rds2rust::{read_extraction_manifest, validate_vector_file_header};
+
+let manifest = read_extraction_manifest("out/manifest.json")?;
+for entry in &manifest.vectors {
+    let path = format!("out/{}", entry.file);
+    validate_vector_file_header(&path, entry)?;
+}
+```
+
+### High-Level Conversion Helpers
+
+Library callers can use the higher-level conversion helpers to expand objects and emit raw dumps
+plus manifests without manually enumerating paths:
+
+```rust
+use rds2rust::{
+    extract_object_to_raw_files_with_input_streaming,
+    extract_object_to_raw_files_with_kind_and_input_streaming,
+    ChunkedRdsSource, ObjectKind, ParseConfig,
+};
+
+let source = ChunkedRdsSource::from_path("data.rds")?;
+let obj = rds2rust::read_rds_with_input(&source, ParseConfig::for_trusted_large_file())?;
+let output = extract_object_to_raw_files_with_input_streaming(
+    &obj,
+    &source,
+    "data",
+    Some(4 * 1024 * 1024),
+    std::path::Path::new("out"),
+    Some("manifest.json"),
+)?;
+let output = extract_object_to_raw_files_with_kind_and_input_streaming(
+    &obj,
+    &source,
+    "data",
+    ObjectKind::DataFrame,
+    Some(4 * 1024 * 1024),
+    std::path::Path::new("out"),
+    Some("manifest.json"),
+)?;
+```
+
+### Chunked Read APIs
+
+If you want chunked reads in library code, use the chunked path helpers:
+
+```rust
+use rds2rust::{read_rds_from_path_chunked, ParseConfig};
+
+let obj = read_rds_from_path_chunked("data.rds")?;
+let obj = rds2rust::read_rds_from_path_chunked_with_config(
+    "data.rds",
+    ParseConfig::for_trusted_large_file(),
+)?;
+```
+
+Lazy metadata parsing with chunked reads:
+
+```rust
+use rds2rust::read_rds_lazy_from_path_chunked;
+
+let obj = read_rds_lazy_from_path_chunked("data.rds")?;
+assert!(!obj.is_fully_loaded());
+```
+
 ### Working with Factors
 
 ```rust
@@ -306,7 +430,7 @@ let obj2 = Arc::clone(&obj);
 
 ## Development Status
 
-**Current version**: 0.1.36
+**Current version**: 0.1.39
 
 **Test coverage**: extensive test suite covering core R object types and roundtrips
 
@@ -321,9 +445,9 @@ let obj2 = Arc::clone(&obj);
 
 ## License
 
-Licensed under: 
+Licensed under:
 
-- MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
+- MIT license ([LICENSE](LICENSE) or http://opensource.org/licenses/MIT)
 
 ## Resources
 

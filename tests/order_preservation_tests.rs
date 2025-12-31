@@ -123,10 +123,10 @@ fn test_s4_slot_order_preservation() {
     let mut slots = IndexMap::new();
     slots.insert(Arc::from("counts"), RObject::Integer(vec![1, 2, 3].into()));
     slots.insert(Arc::from("data"), RObject::Real(vec![1.0, 2.0, 3.0].into()));
-    slots.insert(Arc::from("scale.data"), RObject::List(vec![]));
+    slots.insert(Arc::from("slot.value"), RObject::List(vec![]));
     slots.insert(
-        Arc::from("assay.orig"),
-        RObject::Character(vec![Arc::from("RNA")].into()),
+        Arc::from("slot.orig"),
+        RObject::Character(vec![Arc::from("payload")].into()),
     );
     slots.insert(Arc::from("meta.features"), RObject::List(vec![]));
     slots.insert(Arc::from("misc"), RObject::List(vec![]));
@@ -148,8 +148,8 @@ fn test_s4_slot_order_preservation() {
             assert_eq!(slot_names.len(), 6);
             assert_eq!(slot_names[0], "counts");
             assert_eq!(slot_names[1], "data");
-            assert_eq!(slot_names[2], "scale.data");
-            assert_eq!(slot_names[3], "assay.orig");
+            assert_eq!(slot_names[2], "slot.value");
+            assert_eq!(slot_names[3], "slot.orig");
             assert_eq!(slot_names[4], "meta.features");
             assert_eq!(slot_names[5], "misc");
         }
@@ -184,10 +184,10 @@ fn test_symbol_null_marker() {
 
 #[test]
 fn test_symbol_in_s4_slot() {
-    // Test Symbol variant in an S4 object slot (like assay.orig)
+    // Test Symbol variant in an S4 object slot (like slot.orig)
     let mut slots = IndexMap::new();
     slots.insert(
-        Arc::from("assay.orig"),
+        Arc::from("slot.orig"),
         RObject::Symbol(Arc::from("\x01NULL\x01")),
     );
     slots.insert(Arc::from("data"), RObject::Integer(vec![1, 2, 3].into()));
@@ -205,12 +205,12 @@ fn test_symbol_in_s4_slot() {
 
     // Verify Symbol is preserved in slot
     match deserialized {
-        RObject::S4Object(data) => match data.slots.get(&Arc::from("assay.orig")) {
+        RObject::S4Object(data) => match data.slots.get(&Arc::from("slot.orig")) {
             Some(RObject::Symbol(name)) => {
                 assert_eq!(name.as_ref(), "\x01NULL\x01");
             }
-            Some(other) => panic!("Expected Symbol in assay.orig slot, got {:?}", other),
-            None => panic!("Missing assay.orig slot"),
+            Some(other) => panic!("Expected Symbol in slot.orig slot, got {:?}", other),
+            None => panic!("Missing slot.orig slot"),
         },
         _ => panic!("Expected S4Object after deserialization"),
     }
@@ -271,7 +271,7 @@ fn test_dataframe_with_ordered_columns_as_s4_slot() {
     let mut slots = IndexMap::new();
     slots.insert(Arc::from("meta.features"), df);
     slots.insert(
-        Arc::from("assay.orig"),
+        Arc::from("slot.orig"),
         RObject::Symbol(Arc::from("\x01NULL\x01")),
     );
 
@@ -291,7 +291,7 @@ fn test_dataframe_with_ordered_columns_as_s4_slot() {
             // Check slot order
             let slot_names: Vec<_> = data.slots.keys().map(|k| k.as_ref()).collect();
             assert_eq!(slot_names[0], "meta.features");
-            assert_eq!(slot_names[1], "assay.orig");
+            assert_eq!(slot_names[1], "slot.orig");
 
             // Check DataFrame column order
             match data.slots.get(&Arc::from("meta.features")) {
@@ -305,12 +305,12 @@ fn test_dataframe_with_ordered_columns_as_s4_slot() {
                 _ => panic!("Expected DataFrame in meta.features slot"),
             }
 
-            // Check Symbol in assay.orig
-            match data.slots.get(&Arc::from("assay.orig")) {
+            // Check Symbol in slot.orig
+            match data.slots.get(&Arc::from("slot.orig")) {
                 Some(RObject::Symbol(name)) => {
                     assert_eq!(name.as_ref(), "\x01NULL\x01");
                 }
-                _ => panic!("Expected Symbol in assay.orig slot"),
+                _ => panic!("Expected Symbol in slot.orig slot"),
             }
         }
         _ => panic!("Expected S4Object after deserialization"),
