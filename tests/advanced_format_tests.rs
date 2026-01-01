@@ -494,7 +494,7 @@ fn test_custom_attributes() {
     match obj {
         RObject::WithAttributes { object, attributes } => {
             match object.as_ref() {
-                RObject::Real(vec) => assert!(vec.len() > 0),
+                RObject::Real(vec) => assert!(!vec.is_empty()),
                 _ => panic!("Expected Real vector"),
             }
 

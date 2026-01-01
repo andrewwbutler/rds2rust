@@ -1,5 +1,5 @@
 #[cfg(target_arch = "wasm32")]
-use crate::{ParseConfig, Result, RObject};
+use crate::{ParseConfig, RObject, Result};
 
 #[cfg(target_arch = "wasm32")]
 use crate::wasm::{AsyncCursorConfig, AsyncRdsInput};

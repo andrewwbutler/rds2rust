@@ -373,10 +373,7 @@ impl RObject {
     ///
     /// When a cycle is detected (Shared object already visited), we break the cycle by
     /// returning a clone of the already-processed concrete object.
-    fn into_concrete_deep_impl(
-        self,
-        visited: &mut HashMap<usize, RObject>,
-    ) -> RObject {
+    fn into_concrete_deep_impl(self, visited: &mut HashMap<usize, RObject>) -> RObject {
         use RObject::*;
 
         // First unwrap top-level Shared
@@ -412,7 +409,9 @@ impl RObject {
                     .map(|e| PairlistElement {
                         tag: e.tag,
                         value: e.value.into_concrete_deep_impl(visited),
-                        tag_object: e.tag_object.map(|t| Box::new(t.into_concrete_deep_impl(visited))),
+                        tag_object: e
+                            .tag_object
+                            .map(|t| Box::new(t.into_concrete_deep_impl(visited))),
                     })
                     .collect(),
             ),
@@ -423,7 +422,9 @@ impl RObject {
                     .map(|e| PairlistElement {
                         tag: e.tag,
                         value: e.value.into_concrete_deep_impl(visited),
-                        tag_object: e.tag_object.map(|t| Box::new(t.into_concrete_deep_impl(visited))),
+                        tag_object: e
+                            .tag_object
+                            .map(|t| Box::new(t.into_concrete_deep_impl(visited))),
                     })
                     .collect(),
             },
@@ -476,16 +477,16 @@ impl RObject {
                     .map(|(name, obj)| (name, obj.into_concrete_deep_impl(visited)))
                     .collect();
                 DataFrame(df)
-            },
+            }
             Factor(f) => {
                 // FactorData only contains primitive types, no nested RObjects
                 Factor(f)
-            },
+            }
             S3Object(mut s3) => {
                 s3.base = Box::new(s3.base.into_concrete_deep_impl(visited));
                 s3.attributes = s3.attributes.into_concrete_deep_impl(visited);
                 S3Object(s3)
-            },
+            }
             S4Object(mut s4) => {
                 s4.slots = s4
                     .slots
@@ -493,18 +494,15 @@ impl RObject {
                     .map(|(k, v)| (k, v.into_concrete_deep_impl(visited)))
                     .collect();
                 S4Object(s4)
-            },
-            WithAttributes {
-                object,
-                attributes,
-            } => WithAttributes {
+            }
+            WithAttributes { object, attributes } => WithAttributes {
                 object: Box::new(object.into_concrete_deep_impl(visited)),
                 attributes: attributes.into_concrete_deep_impl(visited),
             },
             Namespace(ns) => {
                 // Namespace is Vec<Arc<str>>, no nested RObjects
                 Namespace(ns)
-            },
+            }
             // All other variants don't contain nested RObjects
             other => other,
         }
@@ -591,7 +589,7 @@ impl RObject {
                     && elem
                         .tag_object
                         .as_ref()
-                        .map_or(true, |t| t.is_fully_loaded_impl(visited))
+                        .is_none_or(|t| t.is_fully_loaded_impl(visited))
             }),
             Language { function, args } => {
                 function.is_fully_loaded_impl(visited)
@@ -600,7 +598,7 @@ impl RObject {
                             && elem
                                 .tag_object
                                 .as_ref()
-                                .map_or(true, |t| t.is_fully_loaded_impl(visited))
+                                .is_none_or(|t| t.is_fully_loaded_impl(visited))
                     })
             }
 
@@ -1206,10 +1204,7 @@ impl Attributes {
     ///
     /// This is called from RObject::into_concrete_deep_impl to ensure attributes
     /// are also fully concrete.
-    pub(crate) fn into_concrete_deep_impl(
-        mut self,
-        visited: &mut HashMap<usize, RObject>,
-    ) -> Self {
+    pub(crate) fn into_concrete_deep_impl(mut self, visited: &mut HashMap<usize, RObject>) -> Self {
         self.attrs = self
             .attrs
             .into_iter()

@@ -153,8 +153,7 @@ fn main() {
             "." | "root" => "",
             _ => path,
         };
-        let manifest_name = manifest_name
-            .or_else(|| Some(String::from("manifest.json")));
+        let manifest_name = manifest_name.or_else(|| Some(String::from("manifest.json")));
         match (object_kind, use_chunked, use_streaming) {
             (Some(kind), true, true) => {
                 let source = ChunkedRdsSource::from_path(std::path::Path::new(&input))
@@ -164,8 +163,7 @@ fn main() {
                 } else {
                     rds2rust::ParseConfig::for_trusted_large_file()
                 };
-                let obj = rds2rust::read_rds_with_input(&source, config)
-                    .expect("parse rds");
+                let obj = rds2rust::read_rds_with_input(&source, config).expect("parse rds");
                 let chunk_bytes = chunk_size_mb.map(|mb| mb * 1024 * 1024);
                 rds2rust::extract_object_to_raw_files_with_kind_and_input_streaming(
                     &obj,
@@ -186,8 +184,7 @@ fn main() {
                 } else {
                     rds2rust::ParseConfig::for_trusted_large_file()
                 };
-                let obj = rds2rust::read_rds_with_input(&source, config)
-                    .expect("parse rds");
+                let obj = rds2rust::read_rds_with_input(&source, config).expect("parse rds");
                 let chunk_bytes = chunk_size_mb.map(|mb| mb * 1024 * 1024);
                 rds2rust::extract_object_to_raw_files_with_kind_and_input_streaming(
                     &obj,
@@ -226,8 +223,7 @@ fn main() {
                 } else {
                     rds2rust::ParseConfig::for_trusted_large_file()
                 };
-                let obj = rds2rust::read_rds_with_input(&source, config)
-                    .expect("parse rds");
+                let obj = rds2rust::read_rds_with_input(&source, config).expect("parse rds");
                 let chunk_bytes = chunk_size_mb.map(|mb| mb * 1024 * 1024);
                 rds2rust::extract_object_to_raw_files_with_input_streaming(
                     &obj,
@@ -247,8 +243,7 @@ fn main() {
                 } else {
                     rds2rust::ParseConfig::for_trusted_large_file()
                 };
-                let obj = rds2rust::read_rds_with_input(&source, config)
-                    .expect("parse rds");
+                let obj = rds2rust::read_rds_with_input(&source, config).expect("parse rds");
                 let chunk_bytes = chunk_size_mb.map(|mb| mb * 1024 * 1024);
                 rds2rust::extract_object_to_raw_files_with_input_streaming(
                     &obj,
@@ -296,8 +291,7 @@ fn main() {
             } else {
                 rds2rust::ParseConfig::for_trusted_large_file()
             };
-            let obj = rds2rust::read_rds_with_input(source.as_ref(), config)
-                .expect("parse rds");
+            let obj = rds2rust::read_rds_with_input(source.as_ref(), config).expect("parse rds");
             let chunk_bytes = chunk_size_mb.map(|mb| mb * 1024 * 1024);
             let result = extract_vectors_streaming(
                 &obj,
@@ -308,12 +302,8 @@ fn main() {
             )
             .expect("stream extract");
             if let Some(name) = manifest_name.as_deref() {
-                let _ = rds2rust::write_extraction_manifest(
-                    PathBuf::from(&out_dir),
-                    &result,
-                    name,
-                )
-                .expect("write manifest");
+                let _ = rds2rust::write_extraction_manifest(PathBuf::from(&out_dir), &result, name)
+                    .expect("write manifest");
             }
             Ok(result)
         } else if use_chunked {

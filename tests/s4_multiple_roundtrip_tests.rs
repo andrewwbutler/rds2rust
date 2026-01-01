@@ -128,17 +128,13 @@ fn test_multiple_s4_with_matrices_roundtrip() {
                             }
 
                             // Check it has dimnames with correct row labels
-                            if let Some(dimnames_obj) = attributes.get("dimnames") {
-                                if let RObject::List(dimnames) = dimnames_obj {
-                                    if dimnames.len() >= 1 {
-                                        if let RObject::Character(rownames) = &dimnames[0] {
-                                            assert!(
-                                                rownames[0].as_ref().starts_with("Row"),
-                                                "Item {} primary_matrix rownames should be Row1, Row2",
-                                                i
-                                            );
-                                        }
-                                    }
+                            if let Some(RObject::List(dimnames)) = attributes.get("dimnames") {
+                                if let Some(RObject::Character(rownames)) = dimnames.first() {
+                                    assert!(
+                                        rownames[0].as_ref().starts_with("Row"),
+                                        "Item {} primary_matrix rownames should be Row1, Row2",
+                                        i
+                                    );
                                 }
                             }
                         }
@@ -157,17 +153,13 @@ fn test_multiple_s4_with_matrices_roundtrip() {
                 // Check secondary_matrix has different row labels (ItemA, ItemB)
                 if let Some(secondary) = s4.slots.get(&Arc::from("secondary_matrix")) {
                     if let RObject::WithAttributes { attributes, .. } = secondary {
-                        if let Some(dimnames_obj) = attributes.get("dimnames") {
-                            if let RObject::List(dimnames) = dimnames_obj {
-                                if dimnames.len() >= 1 {
-                                    if let RObject::Character(rownames) = &dimnames[0] {
-                                        assert!(
-                                            rownames[0].as_ref().starts_with("Item"),
-                                            "Item {} secondary_matrix rownames should be ItemA, ItemB",
-                                            i
-                                        );
-                                    }
-                                }
+                        if let Some(RObject::List(dimnames)) = attributes.get("dimnames") {
+                            if let Some(RObject::Character(rownames)) = dimnames.first() {
+                                assert!(
+                                    rownames[0].as_ref().starts_with("Item"),
+                                    "Item {} secondary_matrix rownames should be ItemA, ItemB",
+                                    i
+                                );
                             }
                         }
                     }

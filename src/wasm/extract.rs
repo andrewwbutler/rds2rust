@@ -15,9 +15,9 @@ use crate::extraction::find_vector_at_path;
 #[cfg(target_arch = "wasm32")]
 use crate::extraction::VectorTarget;
 #[cfg(target_arch = "wasm32")]
-use crate::{Complex, Error, LazyVector, Logical, Result, RObject};
-#[cfg(target_arch = "wasm32")]
 use crate::wasm::AsyncRdsInput;
+#[cfg(target_arch = "wasm32")]
+use crate::{Complex, Error, LazyVector, Logical, RObject, Result};
 
 #[cfg(target_arch = "wasm32")]
 pub async fn extract_vector_to_js(
@@ -306,7 +306,9 @@ fn emit_i32_chunks(data: &[i32], chunk_size: usize, callback: &Function) -> Resu
         let slice = &data[offset..end];
         let js_chunk = Int32Array::from(slice).into();
         let progress = JsValue::from_f64(end as f64 / total as f64);
-        callback.call2(&JsValue::NULL, &js_chunk, &progress).map_err(map_js_error)?;
+        callback
+            .call2(&JsValue::NULL, &js_chunk, &progress)
+            .map_err(map_js_error)?;
         offset = end;
     }
     Ok(())
@@ -324,7 +326,9 @@ fn emit_f64_chunks(data: &[f64], chunk_size: usize, callback: &Function) -> Resu
         let slice = &data[offset..end];
         let js_chunk = Float64Array::from(slice).into();
         let progress = JsValue::from_f64(end as f64 / total as f64);
-        callback.call2(&JsValue::NULL, &js_chunk, &progress).map_err(map_js_error)?;
+        callback
+            .call2(&JsValue::NULL, &js_chunk, &progress)
+            .map_err(map_js_error)?;
         offset = end;
     }
     Ok(())
@@ -341,7 +345,9 @@ fn emit_u8_chunks(data: &[u8], chunk_size: usize, callback: &Function) -> Result
         let slice = &data[offset..end];
         let js_chunk = Uint8Array::from(slice).into();
         let progress = JsValue::from_f64(end as f64 / total as f64);
-        callback.call2(&JsValue::NULL, &js_chunk, &progress).map_err(map_js_error)?;
+        callback
+            .call2(&JsValue::NULL, &js_chunk, &progress)
+            .map_err(map_js_error)?;
         offset = end;
     }
     Ok(())
@@ -364,7 +370,9 @@ fn emit_complex_chunks(data: &[Complex], chunk_size: usize, callback: &Function)
         }
         let js_chunk = Float64Array::from(packed.as_slice()).into();
         let progress = JsValue::from_f64(end as f64 / total as f64);
-        callback.call2(&JsValue::NULL, &js_chunk, &progress).map_err(map_js_error)?;
+        callback
+            .call2(&JsValue::NULL, &js_chunk, &progress)
+            .map_err(map_js_error)?;
         offset = end;
     }
     Ok(())
@@ -381,7 +389,7 @@ fn emit_string_chunks(
     let total = data.len();
 
     while offset < total {
-        let mut arr = Array::new();
+        let arr = Array::new();
         let mut bytes = 0usize;
         let mut end = offset;
         while end < total {
@@ -395,7 +403,9 @@ fn emit_string_chunks(
             end += 1;
         }
         let progress = JsValue::from_f64(end as f64 / total as f64);
-        callback.call2(&JsValue::NULL, &arr.into(), &progress).map_err(map_js_error)?;
+        callback
+            .call2(&JsValue::NULL, &arr.into(), &progress)
+            .map_err(map_js_error)?;
         offset = end;
     }
     Ok(())
@@ -438,9 +448,7 @@ where
 
         if split > 0 {
             let parsed = parse(&buf[..split])?;
-            let progress = JsValue::from_f64(
-                (processed + split) as f64 / total_bytes as f64,
-            );
+            let progress = JsValue::from_f64((processed + split) as f64 / total_bytes as f64);
             callback
                 .call2(&JsValue::NULL, &parsed.into(), &progress)
                 .map_err(map_js_error)?;
@@ -476,10 +484,10 @@ async fn stream_raw_chunks(
             });
         }
         let js_chunk = Uint8Array::from(chunk.as_slice()).into();
-        let progress = JsValue::from_f64(
-            (processed + to_read) as f64 / total_bytes as f64,
-        );
-        callback.call2(&JsValue::NULL, &js_chunk, &progress).map_err(map_js_error)?;
+        let progress = JsValue::from_f64((processed + to_read) as f64 / total_bytes as f64);
+        callback
+            .call2(&JsValue::NULL, &js_chunk, &progress)
+            .map_err(map_js_error)?;
         processed += to_read;
         remaining -= to_read;
         offset += to_read as u64;
@@ -495,15 +503,7 @@ async fn stream_complex_chunks(
     chunk_size: usize,
     callback: &Function,
 ) -> Result<()> {
-    stream_numeric_chunks(
-        input,
-        span,
-        16,
-        chunk_size,
-        callback,
-        parse_complex_chunk,
-    )
-    .await
+    stream_numeric_chunks(input, span, 16, chunk_size, callback, parse_complex_chunk).await
 }
 
 #[cfg(target_arch = "wasm32")]

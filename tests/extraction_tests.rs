@@ -1,21 +1,20 @@
+use byteorder::{BigEndian, WriteBytesExt};
 use std::fs::File;
 use std::io::Read;
-use byteorder::{BigEndian, WriteBytesExt};
 
 use rds2rust::{
-    expand_dataframe_paths, expand_list_index_paths, expand_s4_slot_paths,
-    expand_dense_matrix_paths, expand_object_paths, expand_sparse_matrix_paths,
-    expand_object_paths_for_kind, extract_object_from_path, extract_object_from_path_with_kind,
-    extract_object_from_path_chunked, extract_object_from_path_with_kind_chunked,
+    convert_object_to_raw_dump, convert_object_to_raw_dump_at_path, expand_dataframe_paths,
+    expand_dense_matrix_paths, expand_list_index_paths, expand_object_paths,
+    expand_object_paths_for_kind, expand_s4_slot_paths, expand_sparse_matrix_paths,
+    extract_complex_vector_streaming, extract_integer_vector_streaming,
+    extract_logical_vector_streaming, extract_object_from_path, extract_object_from_path_chunked,
+    extract_object_from_path_with_kind, extract_object_from_path_with_kind_chunked,
     extract_object_to_raw_files, extract_object_to_raw_files_with_kind,
-    extract_object_to_raw_files_with_kind_and_input_streaming,
-    extract_vectors_from_path_chunked,
-    extract_vectors_to_raw_files, extract_raw_vector_streaming,
-    extract_integer_vector_streaming, extract_logical_vector_streaming, extract_vectors_streaming,
-    extract_real_vector_streaming, extract_complex_vector_streaming,
-    convert_object_to_raw_dump, convert_object_to_raw_dump_at_path, read_extraction_manifest,
-    read_vector_file_header, validate_vector_file_header, write_extraction_manifest, DataFrameData,
-    LazyVector, ObjectKind, RObject, S4ObjectData, VectorData,
+    extract_object_to_raw_files_with_kind_and_input_streaming, extract_raw_vector_streaming,
+    extract_real_vector_streaming, extract_vectors_from_path_chunked, extract_vectors_streaming,
+    extract_vectors_to_raw_files, read_extraction_manifest, read_vector_file_header,
+    validate_vector_file_header, write_extraction_manifest, DataFrameData, LazyVector, ObjectKind,
+    RObject, S4ObjectData, VectorData,
 };
 use std::sync::Arc;
 use tempfile::tempdir;
@@ -31,20 +30,14 @@ fn extract_integer_vector_to_raw_file() {
     let obj = RObject::Integer(VectorData::Lazy(span));
     let dir = tempdir().expect("tempdir");
 
-    let result = extract_vectors_to_raw_files(
-        &obj,
-        &data,
-        &[""],
-        Some(4),
-        dir.path(),
-    )
-    .expect("extract");
+    let result =
+        extract_vectors_to_raw_files(&obj, &data, &[""], Some(4), dir.path()).expect("extract");
 
     assert!(result.missing.is_empty());
     assert_eq!(result.extracted.len(), 1);
 
-    let manifest_path = write_extraction_manifest(dir.path(), &result, "manifest.json")
-        .expect("write manifest");
+    let manifest_path =
+        write_extraction_manifest(dir.path(), &result, "manifest.json").expect("write manifest");
 
     let file_path = &result.extracted[0].file_path;
     let mut file = File::open(file_path).expect("open output");
@@ -77,8 +70,8 @@ fn read_manifest_and_validate_vector_header() {
     let obj = RObject::Integer(VectorData::Lazy(span));
     let dir = tempdir().expect("tempdir");
 
-    let result = extract_vectors_to_raw_files(&obj, &data, &[""], Some(4), dir.path())
-        .expect("extract");
+    let result =
+        extract_vectors_to_raw_files(&obj, &data, &[""], Some(4), dir.path()).expect("extract");
     let manifest_path =
         write_extraction_manifest(dir.path(), &result, "manifest.json").expect("write manifest");
     let manifest = read_extraction_manifest(&manifest_path).expect("read manifest");
@@ -92,14 +85,10 @@ fn read_manifest_and_validate_vector_header() {
 
 #[test]
 fn extract_character_vector_to_raw_file() {
-    let obj = RObject::Character(VectorData::Owned(vec![
-        Arc::from("hi"),
-        Arc::from("there"),
-    ]));
+    let obj = RObject::Character(VectorData::Owned(vec![Arc::from("hi"), Arc::from("there")]));
     let dir = tempdir().expect("tempdir");
 
-    let result =
-        extract_vectors_to_raw_files(&obj, &[], &[""], None, dir.path()).expect("extract");
+    let result = extract_vectors_to_raw_files(&obj, &[], &[""], None, dir.path()).expect("extract");
     assert!(result.missing.is_empty());
     assert_eq!(result.extracted.len(), 1);
 
@@ -139,9 +128,8 @@ fn extract_lazy_character_vector_to_raw_file() {
     let obj = RObject::Character(VectorData::Lazy(span));
     let dir = tempdir().expect("tempdir");
 
-    let result =
-        extract_vectors_to_raw_files(&obj, &data, &[""], Some(data.len()), dir.path())
-            .expect("extract");
+    let result = extract_vectors_to_raw_files(&obj, &data, &[""], Some(data.len()), dir.path())
+        .expect("extract");
     assert!(result.missing.is_empty());
 
     let file_path = &result.extracted[0].file_path;
@@ -221,10 +209,7 @@ fn extract_object_from_path_expands_and_writes_manifest() {
         Arc::from("a"),
         RObject::Integer(VectorData::Owned(vec![1, 2, 3])),
     );
-    columns.insert(
-        Arc::from("b"),
-        RObject::Real(VectorData::Owned(vec![1.0])),
-    );
+    columns.insert(Arc::from("b"), RObject::Real(VectorData::Owned(vec![1.0])));
     let df = DataFrameData {
         columns,
         row_names: Vec::new(),
@@ -295,10 +280,7 @@ fn extract_object_to_raw_files_with_kind_and_input_streaming_writes_manifest() {
         Arc::from("a"),
         RObject::Integer(VectorData::Owned(vec![1, 2, 3])),
     );
-    columns.insert(
-        Arc::from("b"),
-        RObject::Real(VectorData::Owned(vec![1.0])),
-    );
+    columns.insert(Arc::from("b"), RObject::Real(VectorData::Owned(vec![1.0])));
     let df = DataFrameData {
         columns,
         row_names: Vec::new(),
@@ -408,10 +390,7 @@ fn expand_dataframe_paths_root() {
         Arc::from("a"),
         RObject::Integer(VectorData::Owned(vec![1, 2, 3])),
     );
-    columns.insert(
-        Arc::from("b"),
-        RObject::Real(VectorData::Owned(vec![1.0])),
-    );
+    columns.insert(Arc::from("b"), RObject::Real(VectorData::Owned(vec![1.0])));
     let df = DataFrameData {
         columns,
         row_names: Vec::new(),
@@ -430,10 +409,7 @@ fn expand_object_paths_dataframe_root() {
         Arc::from("a"),
         RObject::Integer(VectorData::Owned(vec![1, 2, 3])),
     );
-    columns.insert(
-        Arc::from("b"),
-        RObject::Real(VectorData::Owned(vec![1.0])),
-    );
+    columns.insert(Arc::from("b"), RObject::Real(VectorData::Owned(vec![1.0])));
     let df = DataFrameData {
         columns,
         row_names: Vec::new(),
@@ -458,8 +434,7 @@ fn expand_object_paths_for_kind_dataframe() {
     };
     let obj = RObject::DataFrame(Box::new(df));
 
-    let paths =
-        expand_object_paths_for_kind(&obj, "", ObjectKind::DataFrame).expect("expand kind");
+    let paths = expand_object_paths_for_kind(&obj, "", ObjectKind::DataFrame).expect("expand kind");
     assert_eq!(paths, vec!["a".to_string()]);
 }
 
@@ -492,10 +467,7 @@ fn extract_object_to_raw_files_dataframe_manifest() {
         Arc::from("a"),
         RObject::Integer(VectorData::Owned(vec![1, 2, 3])),
     );
-    columns.insert(
-        Arc::from("b"),
-        RObject::Real(VectorData::Owned(vec![1.0])),
-    );
+    columns.insert(Arc::from("b"), RObject::Real(VectorData::Owned(vec![1.0])));
     let df = DataFrameData {
         columns,
         row_names: Vec::new(),
@@ -503,15 +475,9 @@ fn extract_object_to_raw_files_dataframe_manifest() {
     let obj = RObject::DataFrame(Box::new(df));
 
     let dir = tempdir().expect("tempdir");
-    let output = extract_object_to_raw_files(
-        &obj,
-        &[],
-        "",
-        None,
-        dir.path(),
-        Some("manifest.json"),
-    )
-    .expect("extract object");
+    let output =
+        extract_object_to_raw_files(&obj, &[], "", None, dir.path(), Some("manifest.json"))
+            .expect("extract object");
 
     assert_eq!(output.paths.len(), 2);
     assert_eq!(output.result.extracted.len(), 2);
@@ -623,8 +589,8 @@ fn extract_raw_vector_streaming_writes_payload() {
     std::fs::write(&input_path, &bytes).expect("write input");
     let source = rds2rust::ChunkedRdsSource::from_path(&input_path).expect("chunked source");
 
-    let info = extract_raw_vector_streaming(&obj, &source, "", dir.path(), None)
-        .expect("stream raw");
+    let info =
+        extract_raw_vector_streaming(&obj, &source, "", dir.path(), None).expect("stream raw");
     let output = std::fs::read(info.file_path).expect("read output");
     assert!(output.starts_with(b"RDS2VEC1"));
     assert_eq!(&output[24..], bytes.as_slice());
@@ -769,8 +735,8 @@ fn extract_real_vector_streaming_writes_payload() {
     std::fs::write(&input_path, &bytes).expect("write input");
     let source = rds2rust::ChunkedRdsSource::from_path(&input_path).expect("chunked source");
 
-    let info = extract_real_vector_streaming(&obj, &source, "", dir.path(), None)
-        .expect("stream real");
+    let info =
+        extract_real_vector_streaming(&obj, &source, "", dir.path(), None).expect("stream real");
     let output = std::fs::read(info.file_path).expect("read output");
     assert!(output.starts_with(b"RDS2VEC1"));
     assert_eq!(&output[24..], bytes.as_slice());
@@ -960,10 +926,7 @@ fn expand_sparse_matrix_paths_root() {
         Arc::from("Dim"),
         RObject::Integer(VectorData::Owned(vec![2, 2])),
     );
-    slots.insert(
-        Arc::from("Dimnames"),
-        RObject::List(vec![]),
-    );
+    slots.insert(Arc::from("Dimnames"), RObject::List(vec![]));
     slots.insert(
         Arc::from("other"),
         RObject::Integer(VectorData::Owned(vec![1])),
@@ -1005,5 +968,8 @@ fn expand_dense_matrix_paths_root() {
     };
 
     let paths = expand_dense_matrix_paths(&obj, "").expect("expand dense matrix");
-    assert_eq!(paths, vec!["".to_string(), "dim".to_string(), "dimnames".to_string()]);
+    assert_eq!(
+        paths,
+        vec!["".to_string(), "dim".to_string(), "dimnames".to_string()]
+    );
 }

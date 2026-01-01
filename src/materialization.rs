@@ -1,7 +1,7 @@
 use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Cursor;
 
-use crate::{Complex, Error, LazyVector, Logical, Result, RObject, VectorData};
+use crate::{Complex, Error, LazyVector, Logical, RObject, Result, VectorData};
 
 #[derive(Debug, PartialEq)]
 enum PathToken {
@@ -173,12 +173,13 @@ pub fn materialize_paths_with_budget(
     Ok(missing)
 }
 
-fn slice_for_span<'a>(data: &'a [u8], span: LazyVector) -> Result<&'a [u8]> {
+fn slice_for_span(data: &[u8], span: LazyVector) -> Result<&[u8]> {
     let start = span.offset as usize;
     let end = span
         .offset
         .checked_add(span.byte_len)
-        .ok_or_else(|| Error::InvalidFormat("lazy span overflow".to_string()))? as usize;
+        .ok_or_else(|| Error::InvalidFormat("lazy span overflow".to_string()))?
+        as usize;
 
     if start > data.len() {
         return Err(Error::TruncatedLazyPayload {
@@ -391,10 +392,7 @@ fn materialize_pairlist_index(
     }
 }
 
-fn materialize_vector(
-    obj: &mut RObject,
-    ctx: &mut MaterializationContext<'_>,
-) -> Result<bool> {
+fn materialize_vector(obj: &mut RObject, ctx: &mut MaterializationContext<'_>) -> Result<bool> {
     use RObject::*;
 
     match obj {

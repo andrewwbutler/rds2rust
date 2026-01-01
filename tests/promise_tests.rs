@@ -45,7 +45,7 @@ fn test_promise_in_env() {
         rds2rust::RObject::Shared(inner) => {
             let guard = inner.read().unwrap();
             assert!(
-                is_env_like(&*guard),
+                is_env_like(&guard),
                 "Shared wrapper should wrap Environment, got {:?}",
                 std::mem::discriminant(&*guard)
             );
@@ -79,7 +79,7 @@ fn test_promise_in_env_roundtrip() {
             rds2rust::RObject::WithAttributes { object, .. } => env_like(object.as_ref()),
             rds2rust::RObject::Shared(inner) => {
                 let guard = inner.read().unwrap();
-                env_like(&*guard)
+                env_like(&guard)
             }
             _ => false,
         }

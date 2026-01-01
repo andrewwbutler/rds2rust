@@ -15,9 +15,9 @@ use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_sys::Blob;
 
 #[cfg(target_arch = "wasm32")]
-use crate::{Error, Result};
+use crate::wasm::{AsyncRdsInput, AsyncReadFuture};
 #[cfg(target_arch = "wasm32")]
-use crate::wasm::{AsyncReadFuture, AsyncRdsInput};
+use crate::{Error, Result};
 
 #[cfg(target_arch = "wasm32")]
 #[derive(Debug, Clone, Copy)]
@@ -176,7 +176,9 @@ impl BlobChunkedSource {
                 continue;
             }
 
-            let chunk = self.load_chunk(chunk_idx as u64, chunk_start, chunk_end).await?;
+            let chunk = self
+                .load_chunk(chunk_idx as u64, chunk_start, chunk_end)
+                .await?;
             out[out_start..out_end].copy_from_slice(&chunk[slice_start..slice_end]);
             self.insert_chunk(chunk_idx as u64, chunk);
         }
@@ -203,7 +205,7 @@ impl BlobChunkedSource {
         }
     }
 
-    async fn load_chunk(&self, idx: u64, start: usize, end: usize) -> Result<Vec<u8>> {
+    async fn load_chunk(&self, _idx: u64, start: usize, end: usize) -> Result<Vec<u8>> {
         let slice = self
             .inner
             .blob

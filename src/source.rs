@@ -1,11 +1,11 @@
 #[cfg(not(target_arch = "wasm32"))]
+use std::collections::{HashMap, VecDeque};
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs::File;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
-#[cfg(not(target_arch = "wasm32"))]
-use std::collections::{HashMap, VecDeque};
 
 #[cfg(not(target_arch = "wasm32"))]
 use flate2::read::GzDecoder;
@@ -71,6 +71,9 @@ impl MmapRdsSource {
 pub trait RdsInput {
     fn read_at(&self, offset: u64, len: usize) -> Result<Vec<u8>>;
     fn len(&self) -> Option<u64>;
+    fn is_empty(&self) -> Option<bool> {
+        self.len().map(|len| len == 0)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -211,13 +214,7 @@ impl RdsInput for ChunkedRdsSource {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ChunkedRdsSource {
-    fn copy_cached_slice(
-        &self,
-        chunk_idx: u64,
-        start: usize,
-        end: usize,
-        out: &mut [u8],
-    ) -> bool {
+    fn copy_cached_slice(&self, chunk_idx: u64, start: usize, end: usize, out: &mut [u8]) -> bool {
         let mut state = self.cache.lock().unwrap();
         {
             let Some(chunk) = state.map.get(&chunk_idx) else {

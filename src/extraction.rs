@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::{Error, LazyVector, Logical, Result, RObject, VectorData};
 use crate::constants::{CHARSXP, REFSXP};
+use crate::{Error, LazyVector, Logical, RObject, Result, VectorData};
 
 const DEFAULT_STREAM_CHUNK_BYTES: usize = 1024 * 1024;
 
@@ -91,7 +91,8 @@ pub fn extract_vectors_from_path<P: AsRef<Path>>(
     };
     let obj = crate::read_rds_with_config(source.as_slice(), config)?;
     let budget_bytes = budget_mb.map(|mb| mb * 1024 * 1024);
-    let result = extract_vectors_to_raw_files(&obj, source.as_slice(), paths, budget_bytes, &out_dir)?;
+    let result =
+        extract_vectors_to_raw_files(&obj, source.as_slice(), paths, budget_bytes, &out_dir)?;
 
     let manifest_path = if let Some(name) = manifest_name {
         Some(write_extraction_manifest(&out_dir, &result, name)?)
@@ -121,7 +122,8 @@ pub fn extract_vectors_from_path_chunked<P: AsRef<Path>>(
     };
     let obj = crate::read_rds_with_input(&source, config)?;
     let budget_bytes = budget_mb.map(|mb| mb * 1024 * 1024);
-    let result = extract_vectors_to_raw_files_with_input(&obj, &source, paths, budget_bytes, &out_dir)?;
+    let result =
+        extract_vectors_to_raw_files_with_input(&obj, &source, paths, budget_bytes, &out_dir)?;
 
     let manifest_path = if let Some(name) = manifest_name {
         Some(write_extraction_manifest(&out_dir, &result, name)?)
@@ -152,7 +154,14 @@ pub fn extract_object_from_path<P: AsRef<Path>>(
     let obj = crate::read_rds_with_config(source.as_slice(), config)?;
     let budget_bytes = budget_mb.map(|mb| mb * 1024 * 1024);
 
-    extract_object_to_raw_files(&obj, source.as_slice(), path, budget_bytes, &out_dir, manifest_name)
+    extract_object_to_raw_files(
+        &obj,
+        source.as_slice(),
+        path,
+        budget_bytes,
+        &out_dir,
+        manifest_name,
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -172,7 +181,14 @@ pub fn extract_object_from_path_chunked<P: AsRef<Path>>(
     let obj = crate::read_rds_with_input(&source, config)?;
     let budget_bytes = budget_mb.map(|mb| mb * 1024 * 1024);
 
-    extract_object_to_raw_files_with_input(&obj, &source, path, budget_bytes, &out_dir, manifest_name)
+    extract_object_to_raw_files_with_input(
+        &obj,
+        &source,
+        path,
+        budget_bytes,
+        &out_dir,
+        manifest_name,
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -322,7 +338,8 @@ pub fn extract_object_to_raw_files_with_input(
     std::fs::create_dir_all(out_dir)?;
     let paths = expand_object_paths(obj, path)?;
     let path_refs: Vec<&str> = paths.iter().map(|p| p.as_str()).collect();
-    let result = extract_vectors_to_raw_files_with_input(obj, input, &path_refs, budget_bytes, out_dir)?;
+    let result =
+        extract_vectors_to_raw_files_with_input(obj, input, &path_refs, budget_bytes, out_dir)?;
     let manifest_path = if let Some(name) = manifest_name {
         Some(write_extraction_manifest(out_dir, &result, name)?)
     } else {
@@ -406,7 +423,8 @@ pub fn extract_object_to_raw_files_with_kind_and_input(
     std::fs::create_dir_all(out_dir)?;
     let paths = expand_object_paths_for_kind(obj, path, kind)?;
     let path_refs: Vec<&str> = paths.iter().map(|p| p.as_str()).collect();
-    let result = extract_vectors_to_raw_files_with_input(obj, input, &path_refs, budget_bytes, out_dir)?;
+    let result =
+        extract_vectors_to_raw_files_with_input(obj, input, &path_refs, budget_bytes, out_dir)?;
     let manifest_path = if let Some(name) = manifest_name {
         Some(write_extraction_manifest_with_kind(
             out_dir,
@@ -464,15 +482,7 @@ pub fn convert_object_to_raw_dump(
     out_dir: &Path,
     manifest_name: Option<&str>,
 ) -> Result<ObjectExtractionOutput> {
-    extract_object_to_raw_files_with_kind(
-        obj,
-        data,
-        "",
-        kind,
-        budget_bytes,
-        out_dir,
-        manifest_name,
-    )
+    extract_object_to_raw_files_with_kind(obj, data, "", kind, budget_bytes, out_dir, manifest_name)
 }
 
 pub fn convert_object_to_raw_dump_at_path(
@@ -536,7 +546,8 @@ pub fn expand_sparse_matrix_paths(obj: &RObject, path: &str) -> Result<Vec<Strin
 
 pub fn expand_dense_matrix_paths(obj: &RObject, path: &str) -> Result<Vec<String>> {
     let tokens = parse_path_tokens(path)?;
-    let Some(ObjectInfo::WithAttributes(attribute_keys)) = collect_object_info(obj, &tokens)? else {
+    let Some(ObjectInfo::WithAttributes(attribute_keys)) = collect_object_info(obj, &tokens)?
+    else {
         return Ok(Vec::new());
     };
 
@@ -1016,7 +1027,7 @@ fn extract_vectors_to_raw_files_internal(
     obj: &RObject,
     data: &[u8],
     #[cfg(not(target_arch = "wasm32"))] input: Option<&dyn crate::RdsInput>,
-    #[cfg(target_arch = "wasm32")] _input: Option<&dyn std::any::Any>,
+    #[cfg(target_arch = "wasm32")] input: Option<&dyn std::any::Any>,
     paths: &[&str],
     budget_bytes: Option<usize>,
     out_dir: &Path,
@@ -1187,10 +1198,11 @@ fn extract_vectors_to_raw_files_internal(
     Ok(ExtractionResult { extracted, missing })
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
 fn stream_span_bytes_with_optional_input(
     data: &[u8],
     #[cfg(not(target_arch = "wasm32"))] input: Option<&dyn crate::RdsInput>,
-    #[cfg(target_arch = "wasm32")] _input: Option<&dyn std::any::Any>,
+    #[cfg(target_arch = "wasm32")] input: Option<&dyn std::any::Any>,
     span: LazyVector,
     file: &mut File,
     budget_bytes: Option<usize>,
@@ -1213,7 +1225,8 @@ fn stream_span_bytes_from_slice(
     let end = span
         .offset
         .checked_add(span.byte_len)
-        .ok_or_else(|| Error::InvalidFormat("lazy span overflow".to_string()))? as usize;
+        .ok_or_else(|| Error::InvalidFormat("lazy span overflow".to_string()))?
+        as usize;
     if end > data.len() {
         return Err(Error::TruncatedLazyPayload {
             expected: span.byte_len,
@@ -1385,12 +1398,13 @@ fn write_json_string(file: &mut File, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn slice_for_span<'a>(data: &'a [u8], span: LazyVector) -> Result<&'a [u8]> {
+fn slice_for_span(data: &[u8], span: LazyVector) -> Result<&[u8]> {
     let start = span.offset as usize;
     let end = span
         .offset
         .checked_add(span.byte_len)
-        .ok_or_else(|| Error::InvalidFormat("lazy span overflow".to_string()))? as usize;
+        .ok_or_else(|| Error::InvalidFormat("lazy span overflow".to_string()))?
+        as usize;
 
     if start > data.len() {
         return Err(Error::TruncatedLazyPayload {
@@ -1452,10 +1466,7 @@ fn write_string_record(file: &mut File, value: &Arc<str>) -> Result<()> {
     Ok(())
 }
 
-fn parse_charsxp_content_raw(
-    cursor: &mut std::io::Cursor<&[u8]>,
-    flags: u32,
-) -> Result<Arc<str>> {
+fn parse_charsxp_content_raw(cursor: &mut std::io::Cursor<&[u8]>, flags: u32) -> Result<Arc<str>> {
     let compact_length = (flags >> 24) & 0xFF;
     let use_compact = compact_length > 0;
 
@@ -1531,9 +1542,7 @@ impl<'a> SpanReader<'a> {
                 actual: self.pos - self.start,
             });
         }
-        let to_read = self
-            .remaining()
-            .min(self.chunk_size as u64) as usize;
+        let to_read = self.remaining().min(self.chunk_size as u64) as usize;
         let chunk = self.input.read_at(self.pos, to_read)?;
         if chunk.len() != to_read {
             return Err(Error::TruncatedLazyPayload {
@@ -1743,9 +1752,9 @@ fn parse_path_tokens(path: &str) -> Result<Vec<PathToken>> {
                             path
                         )));
                     }
-                    let index: usize = path[start..i]
-                        .parse()
-                        .map_err(|_| Error::InvalidFormat(format!("invalid index in '{}'", path)))?;
+                    let index: usize = path[start..i].parse().map_err(|_| {
+                        Error::InvalidFormat(format!("invalid index in '{}'", path))
+                    })?;
                     tokens.push(PathToken::Index(index));
                     i += 1;
                 }
@@ -1782,7 +1791,11 @@ fn collect_object_info(obj: &RObject, tokens: &[PathToken]) -> Result<Option<Obj
                 Some(ObjectInfo::ListIndices((0..items.len()).collect()))
             }
             WithAttributes { attributes, .. } => Some(ObjectInfo::WithAttributes(
-                attributes.attrs.iter().map(|(k, _)| k.to_string()).collect(),
+                attributes
+                    .attrs
+                    .iter()
+                    .map(|(k, _)| k.to_string())
+                    .collect(),
             )),
             Shared(inner) => {
                 let inner = inner.read().unwrap();
@@ -1876,7 +1889,9 @@ fn collect_object_info(obj: &RObject, tokens: &[PathToken]) -> Result<Option<Obj
                 Some(item) => collect_object_info(item, &tokens[1..]),
                 None => Ok(None),
             },
-            Pairlist(elements) => collect_object_info_pairlist_index(elements, *index, &tokens[1..]),
+            Pairlist(elements) => {
+                collect_object_info_pairlist_index(elements, *index, &tokens[1..])
+            }
             _ => Ok(None),
         },
     }
@@ -1917,9 +1932,9 @@ fn list_name_index(attributes: &crate::Attributes, name: &str) -> Option<usize> 
 
 fn list_name_index_from_obj(obj: &RObject, name: &str) -> Option<usize> {
     match obj {
-        RObject::Character(VectorData::Owned(values)) => values
-            .iter()
-            .position(|value| value.as_ref() == name),
+        RObject::Character(VectorData::Owned(values)) => {
+            values.iter().position(|value| value.as_ref() == name)
+        }
         RObject::WithAttributes { object, .. } => list_name_index_from_obj(object, name),
         RObject::Shared(inner) => {
             let inner = inner.read().ok()?;
@@ -1954,7 +1969,9 @@ fn collect_object_info_pairlist(
         return Ok(None);
     }
     match &tokens[0] {
-        PathToken::Index(index) => collect_object_info_pairlist_index(elements, *index, &tokens[1..]),
+        PathToken::Index(index) => {
+            collect_object_info_pairlist_index(elements, *index, &tokens[1..])
+        }
         _ => Ok(None),
     }
 }
@@ -2008,7 +2025,10 @@ fn prefix_indices(prefix: &str, indices: Vec<usize>) -> Vec<String> {
     paths
 }
 
-fn find_vector_tokens<'a>(obj: &'a RObject, tokens: &[PathToken]) -> Result<Option<VectorTarget<'a>>> {
+fn find_vector_tokens<'a>(
+    obj: &'a RObject,
+    tokens: &[PathToken],
+) -> Result<Option<VectorTarget<'a>>> {
     use RObject::*;
 
     if tokens.is_empty() {
@@ -2085,8 +2105,7 @@ fn find_vector_tokens<'a>(obj: &'a RObject, tokens: &[PathToken]) -> Result<Opti
                 Some(attr) => find_vector_tokens(attr, &tokens[1..]),
                 None => {
                     if let Some(index) = list_name_index(attributes, name) {
-                        if let RObject::List(items) | RObject::Expression(items) = object.as_ref()
-                        {
+                        if let RObject::List(items) | RObject::Expression(items) = object.as_ref() {
                             if let Some(item) = items.get(index) {
                                 return find_vector_tokens(item, &tokens[1..]);
                             }
@@ -2112,7 +2131,10 @@ fn find_vector_tokens<'a>(obj: &'a RObject, tokens: &[PathToken]) -> Result<Opti
     }
 }
 
-fn find_vector_tokens_owned<'a>(obj: &RObject, tokens: &[PathToken]) -> Result<Option<VectorTarget<'a>>> {
+fn find_vector_tokens_owned<'a>(
+    obj: &RObject,
+    tokens: &[PathToken],
+) -> Result<Option<VectorTarget<'a>>> {
     use RObject::*;
 
     if tokens.is_empty() {
@@ -2189,8 +2211,7 @@ fn find_vector_tokens_owned<'a>(obj: &RObject, tokens: &[PathToken]) -> Result<O
                 Some(attr) => find_vector_tokens_owned(attr, &tokens[1..]),
                 None => {
                     if let Some(index) = list_name_index(attributes, name) {
-                        if let RObject::List(items) | RObject::Expression(items) = object.as_ref()
-                        {
+                        if let RObject::List(items) | RObject::Expression(items) = object.as_ref() {
                             if let Some(item) = items.get(index) {
                                 return find_vector_tokens_owned(item, &tokens[1..]);
                             }

@@ -7,18 +7,18 @@ use byteorder::{BigEndian, WriteBytesExt};
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use indexmap::IndexMap;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::Write;
 use std::mem;
 use std::sync::Arc;
-use std::cell::{Cell, RefCell};
 
 // Note: Thread-local state (WRITE_STACK, WRITE_DEPTH, WRITE_CALLS) removed for thread safety.
 // These were only used for debugging and cycle detection.
 // Cycle detection is now handled by ref_table which already tracks object pointers.
 thread_local! {
-    static WRITE_DEPTH: Cell<usize> = Cell::new(0);
-    static WRITE_STACK: RefCell<Vec<usize>> = RefCell::new(Vec::new());
+    static WRITE_DEPTH: Cell<usize> = const { Cell::new(0) };
+    static WRITE_STACK: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
 struct WriteDepthGuard;
@@ -30,7 +30,10 @@ impl WriteDepthGuard {
                 let next = depth.get() + 1;
                 depth.set(next);
                 if next > 2000 {
-                    panic!("write_rds recursion depth exceeded on {}", obj.variant_name());
+                    panic!(
+                        "write_rds recursion depth exceeded on {}",
+                        obj.variant_name()
+                    );
                 }
             });
         }
@@ -164,9 +167,9 @@ struct SharedInfo {
 /// Context for symbol writing - determines which index space to use for REFSXP
 #[derive(Copy, Clone, Debug)]
 enum SymbolContext {
-    Tag,                 // TAG position (formals, attributes) - use symbol REFSXP
-    NonTag,              // General non-TAG position - use object REFSXP
-    NonTagPreferSymbol,  // Language/closure symbol positions - use symbol REFSXP
+    Tag,                // TAG position (formals, attributes) - use symbol REFSXP
+    NonTag,             // General non-TAG position - use object REFSXP
+    NonTagPreferSymbol, // Language/closure symbol positions - use symbol REFSXP
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -230,9 +233,7 @@ impl SymbolTracker {
             // Debug assertion: pointer and value mappings must agree
             // If value map already has this name, indices should match
             debug_assert!(
-                self.value_symbols
-                    .get(&name)
-                    .map_or(true, |v| v == &indices),
+                self.value_symbols.get(&name).is_none_or(|v| v == &indices),
                 "Pointer and value mappings disagree for symbol '{}': ptr={:?}, value={:?}",
                 name,
                 Some(indices),
@@ -428,7 +429,10 @@ fn ref_key(obj: &RObject) -> Option<usize> {
     match obj {
         RObject::Shared(inner) => {
             let guard = inner.read().unwrap();
-            if matches!(&*guard, RObject::Symbol(_) | RObject::Environment { .. } | RObject::Namespace(_)) {
+            if matches!(
+                &*guard,
+                RObject::Symbol(_) | RObject::Environment { .. } | RObject::Namespace(_)
+            ) {
                 Some(Arc::as_ptr(inner) as usize)
             } else {
                 None
@@ -567,7 +571,7 @@ fn write_object_inner(
                 let guard = inner.read().unwrap();
                 return write_object_inner(
                     writer,
-                    &*guard,
+                    &guard,
                     ref_table,
                     symbol_tracker,
                     symbol_context,
@@ -725,7 +729,7 @@ fn write_object_inner(
                 // The SharedInfo propagation ensures this.
                 return write_object_inner(
                     writer,
-                    &*guard,
+                    &guard,
                     ref_table,
                     symbol_tracker,
                     symbol_context,
@@ -771,7 +775,7 @@ fn write_object_inner(
             let guard = inner.read().unwrap();
             return write_object_inner(
                 writer,
-                &*guard,
+                &guard,
                 ref_table,
                 symbol_tracker,
                 symbol_context,
@@ -826,16 +830,14 @@ fn write_object_inner(
         RObject::Pairlist(elements) => {
             write_pairlist(writer, elements, ref_table, symbol_tracker, symbol_context)
         }
-        RObject::Language { function, args } => {
-            write_language(
-                writer,
-                function,
-                args,
-                ref_table,
-                symbol_tracker,
-                symbol_context,
-            )
-        }
+        RObject::Language { function, args } => write_language(
+            writer,
+            function,
+            args,
+            ref_table,
+            symbol_tracker,
+            symbol_context,
+        ),
         RObject::Closure {
             formals,
             body,
@@ -897,7 +899,9 @@ fn write_object_inner(
             symbol_tracker,
             symbol_context,
         ),
-        RObject::Factor(data) => write_factor(writer, data, ref_table, symbol_tracker, symbol_context),
+        RObject::Factor(data) => {
+            write_factor(writer, data, ref_table, symbol_tracker, symbol_context)
+        }
         RObject::S3Object(data) => write_s3_object(
             writer,
             &data.base,
@@ -922,16 +926,14 @@ fn write_object_inner(
         RObject::EmptyEnv => write_empty_env(writer),
         RObject::MissingArg => write_missing_arg(writer),
         RObject::UnboundValue => write_unbound_value(writer),
-        RObject::WithAttributes { object, attributes } => {
-            write_object_with_attributes(
-                writer,
-                object,
-                attributes,
-                ref_table,
-                symbol_tracker,
-                symbol_context,
-            )
-        }
+        RObject::WithAttributes { object, attributes } => write_object_with_attributes(
+            writer,
+            object,
+            attributes,
+            ref_table,
+            symbol_tracker,
+            symbol_context,
+        ),
         RObject::Shared(_) => {
             // Shared should have been handled in the ref tracking block above.
             // If we reach here, something went wrong.
@@ -1234,40 +1236,40 @@ fn write_language(
         // If it's a single-element Character, write it as a symbol (function name)
         match function {
             RObject::Character(vec) if vec.len() == 1 => {
-            if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
-                eprintln!("[LANGUAGE] Writing function as symbol: '{}'", vec[0]);
-            }
-            write_symbol_with_tracking(
-                writer,
-                Arc::from(vec[0].as_ref()),
-                None, // Plain string, not Shared
-                SymbolContext::NonTagPreferSymbol,
-                ref_table,
-                symbol_tracker,
-            )?;
+                if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
+                    eprintln!("[LANGUAGE] Writing function as symbol: '{}'", vec[0]);
+                }
+                write_symbol_with_tracking(
+                    writer,
+                    Arc::from(vec[0].as_ref()),
+                    None, // Plain string, not Shared
+                    SymbolContext::NonTagPreferSymbol,
+                    ref_table,
+                    symbol_tracker,
+                )?;
             }
             _ => {
-            if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
-                eprintln!(
-                    "[LANGUAGE] Writing function via write_object: {:?}",
-                    std::mem::discriminant(function)
-                );
-            }
-            // For Shared(Symbol), SharedInfo will be propagated via write_object_inner
-            write_object_with_context(writer, function, ref_table, symbol_tracker, symbol_context)?;
+                if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
+                    eprintln!(
+                        "[LANGUAGE] Writing function via write_object: {:?}",
+                        std::mem::discriminant(function)
+                    );
+                }
+                // For Shared(Symbol), SharedInfo will be propagated via write_object_inner
+                write_object_with_context(
+                    writer,
+                    function,
+                    ref_table,
+                    symbol_tracker,
+                    symbol_context,
+                )?;
             }
         }
     }
 
     // Write the arguments (CDR) as a pairlist or NULL
     if !args.is_empty() {
-        write_pairlist_as_args(
-            writer,
-            args,
-            ref_table,
-            symbol_tracker,
-            symbol_context,
-        )?;
+        write_pairlist_as_args(writer, args, ref_table, symbol_tracker, symbol_context)?;
     } else {
         // No arguments
         write_null(writer)?;
@@ -1277,6 +1279,7 @@ fn write_language(
 }
 
 /// Write a language object (LANGSXP) with attributes.
+#[allow(clippy::too_many_arguments)]
 fn write_language_with_attrs(
     writer: &mut Vec<u8>,
     function: &RObject,
@@ -1293,7 +1296,13 @@ fn write_language_with_attrs(
     if attributes.is_empty() {
         write_null(writer)?;
     } else {
-        write_attributes(writer, attributes, ref_table, symbol_tracker, symbol_context)?;
+        write_attributes(
+            writer,
+            attributes,
+            ref_table,
+            symbol_tracker,
+            symbol_context,
+        )?;
     }
 
     // Write the function (CAR)
@@ -1319,19 +1328,19 @@ fn write_language_with_attrs(
                 )?;
             }
             _ => {
-                write_object_with_context(writer, function, ref_table, symbol_tracker, symbol_context)?;
+                write_object_with_context(
+                    writer,
+                    function,
+                    ref_table,
+                    symbol_tracker,
+                    symbol_context,
+                )?;
             }
         }
     }
 
     if !args.is_empty() {
-        write_pairlist_as_args(
-            writer,
-            args,
-            ref_table,
-            symbol_tracker,
-            symbol_context,
-        )?;
+        write_pairlist_as_args(writer, args, ref_table, symbol_tracker, symbol_context)?;
     } else {
         write_null(writer)?;
     }
@@ -1342,6 +1351,7 @@ fn write_language_with_attrs(
 /// Write a pairlist (LISTSXP).
 /// When `values_are_symbols` is true, single-element Character values are written as SYMSXP.
 /// This is used for Language argument lists where values may be variable references.
+#[allow(clippy::too_many_arguments)]
 fn write_pairlist_internal(
     writer: &mut Vec<u8>,
     elements: &[PairlistElement],
@@ -1380,7 +1390,14 @@ fn write_pairlist_internal(
 
         let is_first = i == 0;
         let has_attr = first_has_attr && is_first;
-        write_flags_with_object(writer, LISTSXP, has_attr, has_tag, false, is_object && is_first)?;
+        write_flags_with_object(
+            writer,
+            LISTSXP,
+            has_attr,
+            has_tag,
+            false,
+            is_object && is_first,
+        )?;
 
         if has_attr {
             if let Some(attrs) = attributes {
@@ -1635,6 +1652,7 @@ fn write_closure(
 }
 
 /// Write a closure (CLOSXP) with attributes.
+#[allow(clippy::too_many_arguments)]
 fn write_closure_with_attrs(
     writer: &mut Vec<u8>,
     formals: &RObject,
@@ -1757,6 +1775,7 @@ fn write_promise(
 }
 
 /// Write a promise (PROMSXP) with attributes.
+#[allow(clippy::too_many_arguments)]
 fn write_promise_with_attrs(
     writer: &mut Vec<u8>,
     value: &RObject,
@@ -1774,7 +1793,13 @@ fn write_promise_with_attrs(
     if attributes.is_empty() {
         write_null(writer)?;
     } else {
-        write_attributes(writer, attributes, ref_table, symbol_tracker, symbol_context)?;
+        write_attributes(
+            writer,
+            attributes,
+            ref_table,
+            symbol_tracker,
+            symbol_context,
+        )?;
     }
 
     if has_tag {
@@ -1883,7 +1908,13 @@ fn write_bytecode_body(
             }
             _ => {
                 writer.write_i32::<BigEndian>(0)?;
-                write_object_with_context(writer, value, ref_table, symbol_tracker, symbol_context)?;
+                write_object_with_context(
+                    writer,
+                    value,
+                    ref_table,
+                    symbol_tracker,
+                    symbol_context,
+                )?;
             }
         }
     }
@@ -1971,7 +2002,14 @@ fn write_factor(
     symbol_context: SymbolContext,
 ) -> Result<()> {
     let empty = Attributes::new();
-    write_factor_with_attributes(writer, data, &empty, ref_table, symbol_tracker, symbol_context)
+    write_factor_with_attributes(
+        writer,
+        data,
+        &empty,
+        ref_table,
+        symbol_tracker,
+        symbol_context,
+    )
 }
 
 fn write_factor_with_attributes(
@@ -1993,7 +2031,13 @@ fn write_factor_with_attributes(
         writer.write_i32::<BigEndian>(val)?;
     }
 
-    write_attributes(writer, &merged_attrs, ref_table, symbol_tracker, symbol_context)?;
+    write_attributes(
+        writer,
+        &merged_attrs,
+        ref_table,
+        symbol_tracker,
+        symbol_context,
+    )?;
 
     Ok(())
 }
@@ -2269,24 +2313,18 @@ fn write_object_with_attributes(
                 symbol_tracker,
                 symbol_context,
             )?;
-            write_object_with_context(
-                writer,
-                frame,
-                ref_table,
-                symbol_tracker,
-                symbol_context,
-            )?;
-            write_object_with_context(
-                writer,
-                hashtab,
-                ref_table,
-                symbol_tracker,
-                symbol_context,
-            )?;
+            write_object_with_context(writer, frame, ref_table, symbol_tracker, symbol_context)?;
+            write_object_with_context(writer, hashtab, ref_table, symbol_tracker, symbol_context)?;
             if attributes.is_empty() {
                 write_null(writer)?;
             } else {
-                write_attributes(writer, attributes, ref_table, symbol_tracker, symbol_context)?;
+                write_attributes(
+                    writer,
+                    attributes,
+                    ref_table,
+                    symbol_tracker,
+                    symbol_context,
+                )?;
             }
             return Ok(());
         }
@@ -2338,7 +2376,13 @@ fn write_object_with_attributes(
                 // If key == "class", silently ignore - S4 class is authoritative
             }
 
-            write_attributes(writer, &merged_attrs, ref_table, symbol_tracker, symbol_context)?;
+            write_attributes(
+                writer,
+                &merged_attrs,
+                ref_table,
+                symbol_tracker,
+                symbol_context,
+            )?;
             return Ok(());
         }
         _ => {
@@ -2348,7 +2392,13 @@ fn write_object_with_attributes(
         }
     }
 
-    write_attributes(writer, attributes, ref_table, symbol_tracker, symbol_context)?;
+    write_attributes(
+        writer,
+        attributes,
+        ref_table,
+        symbol_tracker,
+        symbol_context,
+    )?;
 
     Ok(())
 }
@@ -2417,13 +2467,7 @@ fn write_attributes(
     }
 
     // Write the pairlist
-    write_pairlist(
-        writer,
-        &elements,
-        ref_table,
-        symbol_tracker,
-        symbol_context,
-    )?;
+    write_pairlist(writer, &elements, ref_table, symbol_tracker, symbol_context)?;
 
     Ok(())
 }

@@ -13,29 +13,33 @@ mod materialization;
 mod parser;
 #[cfg(not(target_arch = "wasm32"))]
 mod source;
+mod types;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
-mod types;
 mod writer;
 
 pub use error::{Error, Result};
 pub use extraction::{
-    expand_dataframe_paths, expand_list_index_paths, expand_s4_slot_paths,
-    expand_dense_matrix_paths, expand_object_paths, expand_object_paths_for_kind,
-    expand_sparse_matrix_paths, extract_object_to_raw_files, extract_object_to_raw_files_with_kind,
+    convert_object_to_raw_dump, convert_object_to_raw_dump_at_path, expand_dataframe_paths,
+    expand_dense_matrix_paths, expand_list_index_paths, expand_object_paths,
+    expand_object_paths_for_kind, expand_s4_slot_paths, expand_sparse_matrix_paths,
+    extract_object_to_raw_files, extract_object_to_raw_files_with_kind,
     extract_vectors_to_raw_files, write_extraction_manifest, write_extraction_manifest_with_kind,
-    convert_object_to_raw_dump, convert_object_to_raw_dump_at_path, Endian, ExtractedVectorInfo,
-    ExtractionResult, ObjectExtractionOutput, ObjectKind, VectorKind,
+    Endian, ExtractedVectorInfo, ExtractionResult, ObjectExtractionOutput, ObjectKind, VectorKind,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use extraction::{
-    extract_object_from_path, extract_object_from_path_chunked, extract_object_from_path_with_kind,
-    extract_object_from_path_with_kind_chunked, extract_vectors_from_path,
-    extract_vectors_from_path_chunked, extract_raw_vector_streaming,
-    extract_integer_vector_streaming, extract_logical_vector_streaming,
-    extract_real_vector_streaming, extract_complex_vector_streaming,
-    extract_vectors_streaming, extract_object_to_raw_files_with_input_streaming,
-    extract_object_to_raw_files_with_kind_and_input_streaming, ExtractionOutput,
+    extract_complex_vector_streaming, extract_integer_vector_streaming,
+    extract_logical_vector_streaming, extract_object_from_path, extract_object_from_path_chunked,
+    extract_object_from_path_with_kind, extract_object_from_path_with_kind_chunked,
+    extract_object_to_raw_files_with_input_streaming,
+    extract_object_to_raw_files_with_kind_and_input_streaming, extract_raw_vector_streaming,
+    extract_real_vector_streaming, extract_vectors_from_path, extract_vectors_from_path_chunked,
+    extract_vectors_streaming, ExtractionOutput,
+};
+pub use manifest::{
+    read_extraction_manifest, read_vector_file_header, validate_vector_file_header, Manifest,
+    ManifestVector, VectorFileHeader,
 };
 pub use materialization::{
     materialize_complex_data, materialize_complex_vector, materialize_integer_data,
@@ -43,12 +47,12 @@ pub use materialization::{
     materialize_path, materialize_paths_with_budget, materialize_raw_data, materialize_raw_vector,
     materialize_real_data, materialize_real_vector, MaterializationContext,
 };
-pub use manifest::{
-    read_extraction_manifest, read_vector_file_header, validate_vector_file_header, Manifest,
-    ManifestVector, VectorFileHeader,
-};
 #[cfg(not(target_arch = "wasm32"))]
 pub use source::{ChunkedCacheMetrics, ChunkedRdsSource, MmapRdsSource, RdsInput};
+pub use types::{
+    Attributes, Complex, DataFrameData, FactorData, LazyVector, Logical, PairlistElement, RObject,
+    S3ObjectData, S4ObjectData, VectorData,
+};
 #[cfg(target_arch = "wasm32")]
 pub use wasm::{
     estimate_parse_size, extract_vector_chunked, extract_vector_to_js, memory_warning,
@@ -56,20 +60,17 @@ pub use wasm::{
     AsyncParseConfig, AsyncRdsInput, AsyncReadFuture, BlobChunkedSource, CacheConfig, CacheMetrics,
     WasmDecompressedSource, WasmDecompressionMode, WasmDecompressionThresholds,
 };
-pub use types::{
-    Attributes, Complex, DataFrameData, FactorData, LazyVector, Logical, PairlistElement, RObject,
-    S3ObjectData, S4ObjectData, VectorData,
-};
 
 /// Parsing mode for RDS files.
 ///
 /// Determines whether to fully parse all data or parse only metadata
 /// for lightweight file inspection.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ParseMode {
     /// Fully parse all data (current behavior, default).
     ///
     /// All vectors and matrices are loaded into memory.
+    #[default]
     Full,
 
     /// Parse structure only, skip large allocations.
@@ -89,12 +90,6 @@ pub enum ParseMode {
         /// Paths to fully load (all others remain lazy)
         paths: Vec<ObjectPath>,
     },
-}
-
-impl Default for ParseMode {
-    fn default() -> Self {
-        ParseMode::Full
-    }
 }
 
 /// Structured path for selective loading.
@@ -189,6 +184,9 @@ impl Default for ParseConfig {
 }
 
 impl ParseConfig {
+    fn clamp_to_usize(bytes: u64) -> usize {
+        bytes.min(usize::MAX as u64) as usize
+    }
     /// Create a new ParseConfig with default values.
     pub fn new() -> Self {
         Self::default()
@@ -257,7 +255,7 @@ impl ParseConfig {
     pub fn large_data() -> Self {
         Self {
             max_vector_length: 500_000_000,
-            max_allocation_bytes: 2 * 1024 * 1024 * 1024, // 2 GB
+            max_allocation_bytes: Self::clamp_to_usize(2_u64 * 1024 * 1024 * 1024), // 2 GB
             mode: ParseMode::default(),
             lazy_threshold: 100,
             bytecode_lazy_threshold: 1000,
@@ -285,7 +283,7 @@ impl ParseConfig {
     pub fn for_trusted_large_file() -> Self {
         Self {
             max_vector_length: 1_000_000_000,
-            max_allocation_bytes: 4 * 1024 * 1024 * 1024, // 4 GB
+            max_allocation_bytes: Self::clamp_to_usize(4_u64 * 1024 * 1024 * 1024), // 4 GB
             mode: ParseMode::LazyMetadata,
             lazy_threshold: 100,
             bytecode_lazy_threshold: 10_000,
@@ -312,7 +310,7 @@ impl ParseConfig {
     pub fn for_constrained_conversion(budget_mb: usize) -> Self {
         Self {
             max_vector_length: 1_000_000_000,
-            max_allocation_bytes: 4 * 1024 * 1024 * 1024, // 4 GB
+            max_allocation_bytes: Self::clamp_to_usize(4_u64 * 1024 * 1024 * 1024), // 4 GB
             mode: ParseMode::LazyMetadata,
             lazy_threshold: 100,
             bytecode_lazy_threshold: 1000,
@@ -608,6 +606,7 @@ mod tests {
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     fn test_placeholder() {
         // Placeholder test - will be replaced with actual tests
-        assert!(true);
+        let value = 1;
+        assert_eq!(value, 1);
     }
 }

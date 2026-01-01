@@ -52,10 +52,7 @@ pub struct AsyncBufferedCursor<'a> {
 
 #[cfg(target_arch = "wasm32")]
 impl<'a> AsyncBufferedCursor<'a> {
-    pub async fn new(
-        source: &'a dyn AsyncRdsInput,
-        config: AsyncCursorConfig,
-    ) -> Result<Self> {
+    pub async fn new(source: &'a dyn AsyncRdsInput, config: AsyncCursorConfig) -> Result<Self> {
         let mut cursor = Self {
             source,
             buffer: Vec::new(),

@@ -5,7 +5,6 @@
 
 /// SEXP type constants
 /// These represent the different types of R objects that can be serialized.
-
 /// NULL object
 pub const NILSXP: u32 = 0;
 
@@ -74,7 +73,6 @@ pub const S4SXP: u32 = 25;
 
 /// Special pseudo-types
 /// These are marker types used in the serialization format.
-
 /// ALTREP object (version 3 feature)
 pub const ALTREP_SXP: u32 = 238; // 0xEE
 
@@ -136,7 +134,6 @@ pub const NAMESPACESXP: u32 = 123; // 0x7B
 
 /// Flag bit masks
 /// These are used in the flags field of serialized objects.
-
 /// Object has attributes
 pub const HAS_ATTR_BIT: u32 = 1 << 9; // 0x00000200
 

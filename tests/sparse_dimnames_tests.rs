@@ -76,7 +76,7 @@ fn assert_dimnames_list(obj: &RObject, visited_shared: &mut HashSet<usize>, chec
             let ptr = Arc::as_ptr(arc) as usize;
             if visited_shared.insert(ptr) {
                 let guard = arc.read().unwrap();
-                assert_dimnames_list(&*guard, visited_shared, checked);
+                assert_dimnames_list(&guard, visited_shared, checked);
             }
         }
         _ => {}

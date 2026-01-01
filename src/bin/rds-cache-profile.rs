@@ -14,7 +14,7 @@ fn main() {
     }
 
     let input = PathBuf::from(args.remove(0));
-    let object_path = args.pop().unwrap_or_else(|| String::new());
+    let object_path = args.pop().unwrap_or_default();
 
     let source = ChunkedRdsSource::from_path(&input).expect("open chunked source");
     let obj = rds2rust::read_rds_with_input(&source, ParseConfig::for_trusted_large_file())

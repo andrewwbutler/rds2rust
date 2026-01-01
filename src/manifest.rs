@@ -45,7 +45,9 @@ pub fn read_vector_file_header<P: AsRef<Path>>(path: P) -> Result<VectorFileHead
     let mut magic = [0u8; 8];
     file.read_exact(&mut magic)?;
     if &magic != MAGIC {
-        return Err(Error::InvalidFormat("invalid vector header magic".to_string()));
+        return Err(Error::InvalidFormat(
+            "invalid vector header magic".to_string(),
+        ));
     }
 
     let version = file.read_u8()?;

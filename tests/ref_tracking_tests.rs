@@ -30,11 +30,11 @@ fn emit_ref_ordering_trace() {
     for filename in candidates
         .iter()
         .copied()
-        .filter(|name| debug_only.as_deref().map_or(true, |only| only == *name))
+        .filter(|name| debug_only.as_deref().is_none_or(|only| only == *name))
     {
         let data = read_test_file(filename);
-        let obj = read_rds(&data)
-            .unwrap_or_else(|e| panic!("Failed to parse {}: {:?}", filename, e));
+        let obj =
+            read_rds(&data).unwrap_or_else(|e| panic!("Failed to parse {}: {:?}", filename, e));
         let output =
             write_rds(&obj).unwrap_or_else(|e| panic!("Failed to write {}: {:?}", filename, e));
         let output_path = format!("/tmp/rds2rust_ref_order_{}", filename);
@@ -320,11 +320,11 @@ fn test_four_copies() {
     if let RObject::List(elements) = result {
         // All four should be Integer([1..10])
         assert_eq!(elements.len(), 4);
-        for i in 0..4 {
-            match &elements[i] {
+        for (i, element) in elements.iter().enumerate() {
+            match element {
                 RObject::Integer(v) => {
                     assert_eq!(v.len(), 10);
-                    assert_eq!(&*v, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+                    assert_eq!(v, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
                 }
                 other => panic!("Element {} should be Integer, got {:?}", i, other),
             }
@@ -347,11 +347,11 @@ fn test_two_copies() {
     if let RObject::List(elements) = result {
         // Both should be Integer([1..10])
         assert_eq!(elements.len(), 2);
-        for i in 0..2 {
-            match &elements[i] {
+        for (i, element) in elements.iter().enumerate() {
+            match element {
                 RObject::Integer(v) => {
                     assert_eq!(v.len(), 10);
-                    assert_eq!(&*v, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+                    assert_eq!(v, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
                 }
                 other => panic!("Element {} should be Integer, got {:?}", i, other),
             }
@@ -393,11 +393,11 @@ fn test_three_shared() {
     if let RObject::List(elements) = result {
         // All three should be Integer([1, 2, 3, 4, 5])
         assert_eq!(elements.len(), 3);
-        for i in 0..3 {
-            match &elements[i] {
+        for (i, element) in elements.iter().enumerate() {
+            match element {
                 RObject::Integer(v) => {
                     assert_eq!(v.len(), 5);
-                    assert_eq!(&*v, &[1, 2, 3, 4, 5]);
+                    assert_eq!(v, &[1, 2, 3, 4, 5]);
                 }
                 other => panic!("Element {} should be Integer, got {:?}", i, other),
             }
@@ -501,7 +501,7 @@ fn test_ref_shared_expression_roundtrip() {
                             return None;
                         }
                         if let Ok(inner) = arc.read() {
-                            list_len(&*inner, seen)
+                            list_len(&inner, seen)
                         } else {
                             None
                         }
@@ -510,8 +510,14 @@ fn test_ref_shared_expression_roundtrip() {
                 }
             }
 
-            assert_eq!(list_len(&obj, &mut std::collections::HashSet::new()), Some(3));
-            assert_eq!(list_len(&obj2, &mut std::collections::HashSet::new()), Some(3));
+            assert_eq!(
+                list_len(&obj, &mut std::collections::HashSet::new()),
+                Some(3)
+            );
+            assert_eq!(
+                list_len(&obj2, &mut std::collections::HashSet::new()),
+                Some(3)
+            );
 
             // Avoid deep drop of shared graphs in this test.
             std::mem::forget(obj);

@@ -89,8 +89,7 @@ fn validate_manifest_outputs(dir: &tempfile::TempDir, manifest: &rds2rust::Manif
     let out_dir = dir.path();
     for entry in &manifest.vectors {
         let file_path = out_dir.join(&entry.file);
-        rds2rust::validate_vector_file_header(&file_path, entry)
-            .expect("validate vector header");
+        rds2rust::validate_vector_file_header(&file_path, entry).expect("validate vector header");
     }
 }
 
@@ -116,7 +115,8 @@ fn cli_convert_streaming_chunked_writes_manifest() {
 #[test]
 fn cli_convert_streaming_chunked_sparse_matrix() {
     let fixture = std::path::Path::new("tests/data/sparse_dimnames.rds");
-    let (dir, manifest) = run_extract_convert(fixture, "sparse-matrix", "", Some(true), true, Some(1));
+    let (dir, manifest) =
+        run_extract_convert(fixture, "sparse-matrix", "", Some(true), true, Some(1));
     assert_eq!(manifest.object_kind, "SparseMatrix");
     validate_manifest_outputs(&dir, &manifest);
 }
@@ -125,7 +125,8 @@ fn cli_convert_streaming_chunked_sparse_matrix() {
 #[test]
 fn cli_convert_streaming_chunked_dense_matrix() {
     let fixture = std::path::Path::new("tests/data/matrix_real.rds");
-    let (dir, manifest) = run_extract_convert(fixture, "dense-matrix", "", Some(true), true, Some(1));
+    let (dir, manifest) =
+        run_extract_convert(fixture, "dense-matrix", "", Some(true), true, Some(1));
     assert_eq!(manifest.object_kind, "DenseMatrix");
     validate_manifest_outputs(&dir, &manifest);
 }
@@ -134,7 +135,8 @@ fn cli_convert_streaming_chunked_dense_matrix() {
 #[test]
 fn cli_convert_streaming_chunked_dense_matrix_dimnames() {
     let fixture = std::path::Path::new("tests/data/matrix_dimnames.rds");
-    let (dir, manifest) = run_extract_convert(fixture, "dense-matrix", "", Some(true), true, Some(1));
+    let (dir, manifest) =
+        run_extract_convert(fixture, "dense-matrix", "", Some(true), true, Some(1));
     assert_eq!(manifest.object_kind, "DenseMatrix");
     validate_manifest_outputs(&dir, &manifest);
 }
@@ -143,7 +145,8 @@ fn cli_convert_streaming_chunked_dense_matrix_dimnames() {
 #[test]
 fn cli_convert_no_streaming_chunked_sparse_matrix() {
     let fixture = std::path::Path::new("tests/data/sparse_dimnames.rds");
-    let (dir, manifest) = run_extract_convert(fixture, "sparse-matrix", "", Some(false), true, None);
+    let (dir, manifest) =
+        run_extract_convert(fixture, "sparse-matrix", "", Some(false), true, None);
     assert_eq!(manifest.object_kind, "SparseMatrix");
     validate_manifest_outputs(&dir, &manifest);
 }

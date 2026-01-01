@@ -88,7 +88,7 @@ fn test_s4_inheritance() {
             let slots = &s4_data.slots;
 
             // Check the class (should show inheritance)
-            assert!(class.len() >= 1);
+            assert!(!class.is_empty());
             assert_eq!(class[0].as_ref(), "Bird");
 
             // Check slots from both parent and child classes
@@ -303,7 +303,10 @@ fn test_s4_nested_as_attribute() {
 
     // Create inner S4 object
     let mut inner_slots = IndexMap::new();
-    inner_slots.insert(Arc::from("value"), RObject::Real(vec![3.14].into()));
+    inner_slots.insert(
+        Arc::from("value"),
+        RObject::Real(vec![std::f64::consts::PI].into()),
+    );
 
     let inner_s4 = RObject::S4Object(Box::new(S4ObjectData {
         class: vec![Arc::from("InnerClass")],
@@ -352,7 +355,7 @@ fn test_s4_nested_as_attribute() {
                     match inner_data.slots.get(&Arc::from("value")) {
                         Some(RObject::Real(vals)) => {
                             assert_eq!(vals.len(), 1);
-                            assert_eq!(vals[0], 3.14);
+                            assert_eq!(vals[0], std::f64::consts::PI);
                         }
                         _ => panic!("Expected 'value' slot in inner S4 object"),
                     }
@@ -467,15 +470,8 @@ fn test_data_part_s4_flags_on_vector() {
     use flate2::read::GzDecoder;
     use std::io::Read;
 
-    let logical = RObject::Logical(
-        vec![
-            Logical::True,
-            Logical::False,
-            Logical::True,
-            Logical::False,
-        ]
-        .into(),
-    );
+    let logical =
+        RObject::Logical(vec![Logical::True, Logical::False, Logical::True, Logical::False].into());
 
     let mut class_attrs = Attributes::new();
     class_attrs.insert(
@@ -544,15 +540,8 @@ fn test_data_part_s4_flags_on_vector() {
 
 #[test]
 fn test_data_part_s4_roundtrip_preserves_class_attributes() {
-    let logical = RObject::Logical(
-        vec![
-            Logical::True,
-            Logical::False,
-            Logical::True,
-            Logical::False,
-        ]
-        .into(),
-    );
+    let logical =
+        RObject::Logical(vec![Logical::True, Logical::False, Logical::True, Logical::False].into());
 
     let mut class_attrs = Attributes::new();
     class_attrs.insert(
@@ -596,9 +585,7 @@ fn test_data_part_s4_roundtrip_preserves_class_attributes() {
         "Data-part S4 base should be logical"
     );
 
-    let class_obj = attributes
-        .get("class")
-        .expect("Expected class attribute");
+    let class_obj = attributes.get("class").expect("Expected class attribute");
     let (class_data, class_attrs) = match class_obj {
         RObject::WithAttributes { object, attributes } => (object.as_ref(), attributes),
         _ => panic!("Expected class attribute with package"),
@@ -713,7 +700,6 @@ fn test_s4_default_package_fallback() {
         _ => panic!("Expected S4Object"),
     }
 }
-
 
 /// Test that parsing multiple S4 objects in sequence doesn't leak state.
 /// This is a regression test for the PENDING_CLASS_ATTRS thread-local bug

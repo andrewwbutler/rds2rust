@@ -455,12 +455,11 @@ fn test_command_closures_roundtrip_r_read() {
     for filename in candidates
         .iter()
         .copied()
-        .filter(|name| debug_only.as_deref().map_or(true, |only| only == *name))
+        .filter(|name| debug_only.as_deref().is_none_or(|only| only == *name))
     {
         let data = read_test_file(filename);
-        let obj = read_rds(&data).unwrap_or_else(|e| {
-            panic!("Failed to parse {} with rds2rust: {:?}", filename, e)
-        });
+        let obj = read_rds(&data)
+            .unwrap_or_else(|e| panic!("Failed to parse {} with rds2rust: {:?}", filename, e));
         let output = write_rds(&obj)
             .unwrap_or_else(|e| panic!("Failed to serialize {} with rds2rust: {:?}", filename, e));
 
