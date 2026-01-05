@@ -217,12 +217,13 @@ export async function decompressBlobIfNeeded(blob, options = {}) {
   } catch {
     headerOffsets = [];
   }
-  if (headerOffsets.length > 1) {
-    console.info("gzip multi-member detected", {
-      count: headerOffsets.length,
-      offsets: headerOffsets.slice(0, 5),
-    });
+  if (headerOffsets.length && headerOffsets[0] !== 0) {
+    headerOffsets.unshift(0);
   }
+  console.info("gzip header offsets detected", {
+    count: headerOffsets.length,
+    offsets: headerOffsets.slice(0, 5),
+  });
 
   if (budgetBytes) {
     const estimated = estimateDecompressedSize(blob.size, ratioEstimate);
