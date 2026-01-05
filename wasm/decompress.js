@@ -1,3 +1,4 @@
+console.info("decompress.js loaded v2");
 export const DEFAULT_IN_MEMORY_THRESHOLD = 500 * 1024 * 1024;
 export const DEFAULT_BLOB_THRESHOLD = 10 * 1024 * 1024 * 1024;
 export const DEFAULT_MAX_RATIO = 1000;

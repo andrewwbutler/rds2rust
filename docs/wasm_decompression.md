@@ -22,7 +22,7 @@ import {
   recommendedMode,
   sizeWarning,
   browserSupportWarnings,
-} from "./wasm/decompress.js";
+} from "../wasm/decompress.js";
 
 const warnings = browserSupportWarnings();
 if (warnings.length > 0) {

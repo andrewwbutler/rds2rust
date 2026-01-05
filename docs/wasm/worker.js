@@ -2,7 +2,7 @@ import {
   decompressRds,
   sizeWarning,
   browserSupportWarnings,
-} from "./decompress.js";
+} from "../../wasm/decompress.js";
 
 let currentTask = null;
 
