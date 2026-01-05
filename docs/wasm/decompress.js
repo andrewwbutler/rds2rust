@@ -54,6 +54,52 @@ export async function detectCompression(blob) {
   return "unknown";
 }
 
+function findGzipMemberOffsets(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const offsets = [];
+  for (let i = 0; i + 2 < bytes.length; i += 1) {
+    if (bytes[i] === 0x1f && bytes[i + 1] === 0x8b && bytes[i + 2] === 0x08) {
+      offsets.push(i);
+    }
+  }
+  return offsets;
+}
+
+async function decompressStreamToBlob(stream, onProgress) {
+  const reader = stream.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    chunks.push(value);
+    if (onProgress) {
+      onProgress({
+        phase: "decompressing",
+        bytesProcessed: total,
+        message: `Decompressed ${(total / (1024 ** 2)).toFixed(1)}MB`,
+      });
+    }
+  }
+  return new Blob(chunks);
+}
+
+async function decompressMultiMemberGzip(blob, offsets, options = {}) {
+  const { onProgress } = options;
+  const pieces = [];
+  for (let i = 0; i < offsets.length; i += 1) {
+    const start = offsets[i];
+    const end = offsets[i + 1] ?? blob.size;
+    const slice = blob.slice(start, end);
+    const decompressor = new DecompressionStream("gzip");
+    const stream = slice.stream().pipeThrough(decompressor);
+    const part = await decompressStreamToBlob(stream, onProgress);
+    pieces.push(part);
+  }
+  return new Blob(pieces);
+}
+
 function estimateDecompressedSize(compressedBytes, ratioEstimate = 3) {
   return compressedBytes * ratioEstimate;
 }
@@ -125,6 +171,14 @@ export async function decompressBlobIfNeeded(blob, options = {}) {
     throw new Error("Unrecognized file format. Expected gzip or RDS.");
   }
 
+  let headerOffsets = [];
+  try {
+    const buffer = await blob.slice(0, Math.min(blob.size, 4 * 1024 * 1024)).arrayBuffer();
+    headerOffsets = findGzipMemberOffsets(buffer);
+  } catch {
+    headerOffsets = [];
+  }
+
   if (budgetBytes) {
     const estimated = estimateDecompressedSize(blob.size, ratioEstimate);
     if (estimated > budgetBytes) {
@@ -134,11 +188,6 @@ export async function decompressBlobIfNeeded(blob, options = {}) {
     }
   }
 
-  const decompressor = new DecompressionStream("gzip");
-  const stream = blob.stream().pipeThrough(decompressor);
-  const reader = stream.getReader();
-  const chunks = [];
-  let total = 0;
   const maxBytes = blob.size * maxRatio;
   const effectiveTimeoutMs =
     typeof timeoutMs === "number" ? timeoutMs : calculateTimeoutMs(blob.size);
@@ -147,32 +196,30 @@ export async function decompressBlobIfNeeded(blob, options = {}) {
     if (typeof testDelayMs === "number" && testDelayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, testDelayMs));
     }
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
-      }
-      total += value.byteLength;
-      if (total > maxBytes) {
-        throw new Error(
-          `Compression ratio exceeded safety limit (${maxRatio}:1).`
-        );
-      }
-      if (budgetBytes && total > budgetBytes) {
-        throw new Error(
-          `Decompressed size exceeds budget (${total} > ${budgetBytes}).`
-        );
-      }
-      chunks.push(value);
-      if (onProgress) {
-        onProgress({
-          phase: "decompressing",
-          bytesProcessed: total,
-          message: `Decompressed ${(total / (1024 ** 2)).toFixed(1)}MB`,
-        });
+    let decompressed;
+    if (headerOffsets.length > 1) {
+      try {
+        decompressed = await decompressMultiMemberGzip(blob, headerOffsets, { onProgress });
+      } catch (error) {
+        console.warn("Multi-member gzip decompress failed; falling back to single stream.", error);
       }
     }
-    return new Blob(chunks);
+    if (!decompressed) {
+      const decompressor = new DecompressionStream("gzip");
+      const stream = blob.stream().pipeThrough(decompressor);
+      decompressed = await decompressStreamToBlob(stream, onProgress);
+    }
+    if (decompressed.size > maxBytes) {
+      throw new Error(
+        `Compression ratio exceeded safety limit (${maxRatio}:1).`
+      );
+    }
+    if (budgetBytes && decompressed.size > budgetBytes) {
+      throw new Error(
+        `Decompressed size exceeds budget (${decompressed.size} > ${budgetBytes}).`
+      );
+    }
+    return decompressed;
   })();
 
   return decompressWithTimeout(decompressPromise, effectiveTimeoutMs);
