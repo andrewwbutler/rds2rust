@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 #[cfg(not(target_arch = "wasm32"))]
 fn find_rds_extract() -> std::path::PathBuf {
     std::env::var("CARGO_BIN_EXE_rds-extract")

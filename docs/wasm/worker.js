@@ -31,11 +31,17 @@ self.onmessage = async (event) => {
       }
 
       const result = await decompressRds(payload.file, {
-        onProgress: (bytes) => {
+        onProgress: (progress) => {
           if (!currentTask || currentTask.id !== id) {
             return;
           }
-          self.postMessage({ id, type: "progress", phase: "decompress", bytes });
+          self.postMessage({
+            id,
+            type: "progress",
+            phase: "decompress",
+            bytes: progress.bytesProcessed || 0,
+            message: progress.message,
+          });
         },
       });
       self.postMessage({ id, type: "decompressed", result });

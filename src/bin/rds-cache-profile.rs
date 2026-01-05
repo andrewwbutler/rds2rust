@@ -1,11 +1,15 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
+#[cfg(not(target_arch = "wasm32"))]
 use rds2rust::{ChunkedRdsSource, ParseConfig};
 
+#[cfg(not(target_arch = "wasm32"))]
 fn print_usage() {
     eprintln!("Usage: rds-cache-profile <input.rds> [object-path]");
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
@@ -38,3 +42,6 @@ fn main() {
         metrics.hits, metrics.misses, metrics.prefetches, metrics.bytes_read
     );
 }
+
+#[cfg(target_arch = "wasm32")]
+fn main() {}

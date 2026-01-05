@@ -1,4 +1,7 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 use byteorder::{BigEndian, WriteBytesExt};
+
 use std::fs::File;
 use std::io::Read;
 

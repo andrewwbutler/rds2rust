@@ -1,4 +1,14 @@
 #[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::wasm_bindgen;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsValue;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::JsFuture;
+#[cfg(target_arch = "wasm32")]
+use js_sys::Promise;
+#[cfg(target_arch = "wasm32")]
 use web_sys::Blob;
 
 #[cfg(target_arch = "wasm32")]
@@ -59,4 +69,39 @@ pub fn memory_warning(file_size: u64, device_memory_gb: Option<f64>) -> Option<S
     } else {
         None
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(module = "/docs/wasm/decompress.js")]
+extern "C" {
+    #[wasm_bindgen(js_name = decompressBlobIfNeeded)]
+    fn decompress_blob_if_needed_js(blob: Blob, options: JsValue) -> Promise;
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn decompress_blob_if_needed(
+    blob: Blob,
+    options: Option<JsValue>,
+) -> crate::Result<Blob> {
+    let opts = options.unwrap_or(JsValue::UNDEFINED);
+    let promise = decompress_blob_if_needed_js(blob, opts);
+    let value = JsFuture::from(promise)
+        .await
+        .map_err(|err| crate::Error::Unsupported(format!("decompression error: {:?}", err)))?;
+    value
+        .dyn_into::<Blob>()
+        .map_err(|err| crate::Error::Unsupported(format!("decompression error: {:?}", err)))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn read_rds_from_blob(
+    blob: Blob,
+    parse_config: crate::ParseConfig,
+    async_config: crate::AsyncParseConfig,
+    cache_config: crate::CacheConfig,
+    options: Option<JsValue>,
+) -> crate::Result<crate::RObject> {
+    let decompressed = decompress_blob_if_needed(blob, options).await?;
+    let source = crate::BlobChunkedSource::new(decompressed, cache_config);
+    crate::read_rds_async(&source, parse_config, async_config).await
 }

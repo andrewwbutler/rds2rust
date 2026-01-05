@@ -53,6 +53,12 @@ pub struct AsyncBufferedCursor<'a> {
 #[cfg(target_arch = "wasm32")]
 impl<'a> AsyncBufferedCursor<'a> {
     pub async fn new(source: &'a dyn AsyncRdsInput, config: AsyncCursorConfig) -> Result<Self> {
+        let initial = if let Some(total_len) = source.len() {
+            let remaining = total_len.saturating_sub(0) as usize;
+            std::cmp::min(config.buffer_size, remaining)
+        } else {
+            config.buffer_size
+        };
         let mut cursor = Self {
             source,
             buffer: Vec::new(),
@@ -61,7 +67,7 @@ impl<'a> AsyncBufferedCursor<'a> {
             buffer_size: config.buffer_size,
             max_buffer_size: config.max_buffer_size,
         };
-        cursor.refill(config.buffer_size).await?;
+        cursor.refill(initial).await?;
         Ok(cursor)
     }
 
@@ -100,11 +106,29 @@ impl<'a> AsyncBufferedCursor<'a> {
             )));
         }
 
+        if let Some(total_len) = self.source.len() {
+            let remaining = total_len.saturating_sub(self.position) as usize;
+            if needed > remaining {
+                return Err(Error::UnexpectedEofDetail {
+                    position: self.position as usize,
+                    needed,
+                    available: remaining,
+                });
+            }
+        }
+
         if self.available_in_buffer() >= needed {
             return Ok(());
         }
 
-        let request = std::cmp::max(needed, self.buffer_size);
+        let mut request = std::cmp::max(needed, self.buffer_size);
+        if let Some(total_len) = self.source.len() {
+            let remaining = total_len.saturating_sub(self.position) as usize;
+            request = request.min(remaining);
+        }
+        if request == 0 {
+            return Err(Error::UnexpectedEof);
+        }
         self.refill(request).await?;
         if self.available_in_buffer() < needed {
             return Err(Error::UnexpectedEof);
@@ -132,7 +156,16 @@ impl<'a> AsyncBufferedCursor<'a> {
     }
 
     async fn refill(&mut self, len: usize) -> Result<()> {
-        let bytes = self.source.read_at(self.position, len).await?;
+        let request = if let Some(total_len) = self.source.len() {
+            let remaining = total_len.saturating_sub(self.position) as usize;
+            std::cmp::min(len, remaining)
+        } else {
+            len
+        };
+        if request == 0 {
+            return Err(Error::UnexpectedEof);
+        }
+        let bytes = self.source.read_at(self.position, request).await?;
         self.buffer_offset = self.position;
         self.buffer = bytes;
         Ok(())

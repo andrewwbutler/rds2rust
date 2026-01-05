@@ -15,7 +15,8 @@ pub use async_parse::{read_rds_async, AsyncParseConfig};
 pub use blob_source::{BlobChunkedSource, CacheConfig, CacheMetrics};
 #[cfg(target_arch = "wasm32")]
 pub use decompression::{
-    memory_warning, recommend_decompression_mode, WasmDecompressedSource, WasmDecompressionMode,
+    decompress_blob_if_needed, memory_warning, read_rds_from_blob,
+    recommend_decompression_mode, WasmDecompressedSource, WasmDecompressionMode,
     WasmDecompressionThresholds,
 };
 #[cfg(target_arch = "wasm32")]

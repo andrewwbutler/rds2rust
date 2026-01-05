@@ -1,9 +1,12 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::env;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn print_usage() {
     eprintln!("Usage: rds-read <input.rds> [--trusted]");
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     let mut args = env::args().skip(1);
     let Some(input) = args.next() else {
@@ -32,3 +35,6 @@ fn main() {
         rds2rust::read_rds(&data).expect("parse rds")
     };
 }
+
+#[cfg(target_arch = "wasm32")]
+fn main() {}

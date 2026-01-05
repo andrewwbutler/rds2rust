@@ -134,6 +134,19 @@ Decompression uses a size-based strategy:
 
 See `docs/wasm_decompression.md` for the JS helper, worker wrapper, and validation targets.
 
+Gzip-compressed `.rds.gz` files are auto-detected in the WASM helper (browser support required:
+Chrome/Edge 89+, Firefox 102+, Safari 16.4+). Unsupported formats (bzip2/xz) return helpful
+errors.
+
+#### WASM Gzip Support
+
+| Format | Extension | Status |
+| --- | --- | --- |
+| gzip | `.rds.gz`, `.rds.gzip` | Supported |
+| uncompressed | `.rds` | Supported |
+| bzip2 | `.rds.bz2` | Unsupported |
+| xz | `.rds.xz` | Unsupported |
+
 ### CLI
 
 ```bash

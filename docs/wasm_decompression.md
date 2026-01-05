@@ -18,6 +18,7 @@ If `file_size > device_memory * 2`, warn the user before attempting a Blob-based
 ```javascript
 import {
   decompressRds,
+  decompressBlobIfNeeded,
   recommendedMode,
   sizeWarning,
   browserSupportWarnings,
@@ -34,7 +35,7 @@ if (warning) {
 }
 
 const result = await decompressRds(file, {
-  onProgress: (bytes) => console.log(`decompressed: ${bytes}`),
+  onProgress: (progress) => console.log(progress.message),
 });
 
 if (result.mode === "in-memory") {
@@ -44,7 +45,20 @@ if (result.mode === "in-memory") {
 } else {
   // streaming mode (future)
 }
+
+// Decompress only (auto-detects gzip)
+const decompressed = await decompressBlobIfNeeded(file, {
+  filename: file.name,
+});
 ```
+
+Advanced options for `decompressBlobIfNeeded`:
+
+- `budgetBytes`: hard cap on decompressed bytes.
+- `maxRatio`: compression ratio limit for zip bomb protection.
+- `ratioEstimate`: conservative estimate used for budget pre-checks.
+- `timeoutMs`: override the adaptive timeout (useful for tight SLAs).
+- `testDelayMs`: test-only hook to simulate slow decompression in unit tests.
 
 ## Worker Integration (Phase 5)
 
@@ -79,3 +93,16 @@ const result = await client.run("decompress", { file }, {
 - Chrome/Edge 89+, Firefox 102+, Safari 16.4+.
 - Mobile Safari: recommend <=2GB, reduce cache to 128MB.
 - Warn when `DecompressionStream` or workers are unavailable.
+
+## Compression Format Support
+
+| Format | Extension | Status |
+| --- | --- | --- |
+| gzip | `.rds.gz`, `.rds.gzip` | Supported |
+| uncompressed | `.rds` | Supported |
+| bzip2 | `.rds.bz2` | Unsupported |
+| xz | `.rds.xz` | Unsupported |
+
+## Troubleshooting
+
+See `docs/wasm_gzip_troubleshooting.md` for common errors and fixes.

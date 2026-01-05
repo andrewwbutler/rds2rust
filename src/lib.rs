@@ -55,10 +55,11 @@ pub use types::{
 };
 #[cfg(target_arch = "wasm32")]
 pub use wasm::{
-    estimate_parse_size, extract_vector_chunked, extract_vector_to_js, memory_warning,
-    read_rds_async, recommend_decompression_mode, AsyncBufferedCursor, AsyncCursorConfig,
-    AsyncParseConfig, AsyncRdsInput, AsyncReadFuture, BlobChunkedSource, CacheConfig, CacheMetrics,
-    WasmDecompressedSource, WasmDecompressionMode, WasmDecompressionThresholds,
+    decompress_blob_if_needed, estimate_parse_size, extract_vector_chunked, extract_vector_to_js,
+    memory_warning, read_rds_async, read_rds_from_blob, recommend_decompression_mode,
+    AsyncBufferedCursor, AsyncCursorConfig, AsyncParseConfig, AsyncRdsInput, AsyncReadFuture,
+    BlobChunkedSource, CacheConfig, CacheMetrics, WasmDecompressedSource, WasmDecompressionMode,
+    WasmDecompressionThresholds,
 };
 
 /// Parsing mode for RDS files.
@@ -602,11 +603,236 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test;
 
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
     fn test_placeholder() {
-        // Placeholder test - will be replaced with actual tests
         let value = 1;
         assert_eq!(value, 1);
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn has_decompression_stream() -> bool {
+        let global = js_sys::global();
+        let value = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("DecompressionStream"))
+            .unwrap_or(wasm_bindgen::JsValue::UNDEFINED);
+        !value.is_undefined()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn blob_from_bytes(bytes: &[u8]) -> web_sys::Blob {
+        let array = js_sys::Array::new();
+        let view = js_sys::Uint8Array::from(bytes);
+        array.push(&view.buffer());
+        web_sys::Blob::new_with_u8_array_sequence(&array)
+            .expect("blob from bytes")
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn ungzip(bytes: &[u8]) -> Vec<u8> {
+        use std::io::Read;
+        let mut decoder = flate2::read::GzDecoder::new(bytes);
+        let mut out = Vec::new();
+        decoder.read_to_end(&mut out).expect("ungzip");
+        out
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn js_options(pairs: &[(&str, wasm_bindgen::JsValue)]) -> wasm_bindgen::JsValue {
+        let obj = js_sys::Object::new();
+        for (key, value) in pairs {
+            js_sys::Reflect::set(&obj, &wasm_bindgen::JsValue::from_str(key), value)
+                .expect("set option");
+        }
+        wasm_bindgen::JsValue::from(obj)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test(async)]
+    async fn wasm_read_rds_gzip_blob() {
+        if !has_decompression_stream() {
+            return;
+        }
+        let obj = crate::RObject::Integer(crate::VectorData::Owned(vec![1, 2, 3]));
+        let gzip_bytes = crate::write_rds(&obj).expect("write rds");
+        let blob = blob_from_bytes(&gzip_bytes);
+        let parsed = crate::read_rds_from_blob(
+            blob,
+            crate::ParseConfig::default(),
+            crate::AsyncParseConfig::default(),
+            crate::CacheConfig::default(),
+            None,
+        )
+        .await
+        .expect("parse gzip")
+        .into_concrete();
+        match parsed {
+            crate::RObject::Integer(vec) => {
+                assert_eq!(vec.as_vec(), &vec![1, 2, 3]);
+            }
+            other => panic!("unexpected object: {:?}", other),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test(async)]
+    async fn wasm_read_rds_uncompressed_blob() {
+        if !has_decompression_stream() {
+            return;
+        }
+        let obj = crate::RObject::Integer(crate::VectorData::Owned(vec![4, 5]));
+        let gzip_bytes = crate::write_rds(&obj).expect("write rds");
+        let raw_bytes = ungzip(&gzip_bytes);
+        let blob = blob_from_bytes(&raw_bytes);
+        let parsed = crate::read_rds_from_blob(
+            blob,
+            crate::ParseConfig::default(),
+            crate::AsyncParseConfig::default(),
+            crate::CacheConfig::default(),
+            None,
+        )
+        .await
+        .expect("parse uncompressed")
+        .into_concrete();
+        match parsed {
+            crate::RObject::Integer(vec) => {
+                assert_eq!(vec.as_vec(), &vec![4, 5]);
+            }
+            other => panic!("unexpected object: {:?}", other),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test(async)]
+    async fn wasm_read_rds_unsupported_format() {
+        if !has_decompression_stream() {
+            return;
+        }
+        let bytes = vec![0x42, 0x5a, 0x00, 0x00];
+        let blob = blob_from_bytes(&bytes);
+        let result = crate::read_rds_from_blob(
+            blob,
+            crate::ParseConfig::default(),
+            crate::AsyncParseConfig::default(),
+            crate::CacheConfig::default(),
+            None,
+        )
+        .await;
+        let err = result.expect_err("expected error");
+        assert!(err.to_string().contains("bzip2"));
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test(async)]
+    async fn wasm_read_rds_extension_mismatch() {
+        if !has_decompression_stream() {
+            return;
+        }
+        let obj = crate::RObject::Integer(crate::VectorData::Owned(vec![7]));
+        let gzip_bytes = crate::write_rds(&obj).expect("write rds");
+        let raw_bytes = ungzip(&gzip_bytes);
+        let blob = blob_from_bytes(&raw_bytes);
+        let options = js_options(&[(
+            "filename",
+            wasm_bindgen::JsValue::from_str("sample.rds.gz"),
+        )]);
+        let result = crate::read_rds_from_blob(
+            blob,
+            crate::ParseConfig::default(),
+            crate::AsyncParseConfig::default(),
+            crate::CacheConfig::default(),
+            Some(options),
+        )
+        .await;
+        let err = result.expect_err("expected error");
+        assert!(err.to_string().contains(".gz"));
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test(async)]
+    async fn wasm_read_rds_ratio_exceeded() {
+        if !has_decompression_stream() {
+            return;
+        }
+        let obj = crate::RObject::Integer(crate::VectorData::Owned(vec![1, 2, 3, 4]));
+        let gzip_bytes = crate::write_rds(&obj).expect("write rds");
+        let blob = blob_from_bytes(&gzip_bytes);
+        let options = js_options(&[("maxRatio", wasm_bindgen::JsValue::from_f64(0.1))]);
+        let result = crate::read_rds_from_blob(
+            blob,
+            crate::ParseConfig::default(),
+            crate::AsyncParseConfig::default(),
+            crate::CacheConfig::default(),
+            Some(options),
+        )
+        .await;
+        let err = result.expect_err("expected error");
+        assert!(err.to_string().contains("Compression ratio"));
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test(async)]
+    async fn wasm_read_rds_budget_precheck() {
+        if !has_decompression_stream() {
+            return;
+        }
+        let obj = crate::RObject::Integer(crate::VectorData::Owned(vec![9, 10]));
+        let gzip_bytes = crate::write_rds(&obj).expect("write rds");
+        let blob = blob_from_bytes(&gzip_bytes);
+        let options = js_options(&[("budgetBytes", wasm_bindgen::JsValue::from_f64(1.0))]);
+        let result = crate::read_rds_from_blob(
+            blob,
+            crate::ParseConfig::default(),
+            crate::AsyncParseConfig::default(),
+            crate::CacheConfig::default(),
+            Some(options),
+        )
+        .await;
+        let err = result.expect_err("expected error");
+        assert!(err.to_string().contains("budget"));
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test(async)]
+    async fn wasm_read_rds_corrupt_gzip() {
+        if !has_decompression_stream() {
+            return;
+        }
+        let bytes = vec![0x1f, 0x8b, 0x08, 0x00, 0x00];
+        let blob = blob_from_bytes(&bytes);
+        let result = crate::read_rds_from_blob(
+            blob,
+            crate::ParseConfig::default(),
+            crate::AsyncParseConfig::default(),
+            crate::CacheConfig::default(),
+            None,
+        )
+        .await;
+        let err = result.expect_err("expected error");
+        assert!(err.to_string().contains("decompression error"));
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test(async)]
+    async fn wasm_read_rds_timeout() {
+        if !has_decompression_stream() {
+            return;
+        }
+        let obj = crate::RObject::Integer(crate::VectorData::Owned(vec![11, 12]));
+        let gzip_bytes = crate::write_rds(&obj).expect("write rds");
+        let blob = blob_from_bytes(&gzip_bytes);
+        let options = js_options(&[
+            ("timeoutMs", wasm_bindgen::JsValue::from_f64(1.0)),
+            ("testDelayMs", wasm_bindgen::JsValue::from_f64(50.0)),
+        ]);
+        let result = crate::read_rds_from_blob(
+            blob,
+            crate::ParseConfig::default(),
+            crate::AsyncParseConfig::default(),
+            crate::CacheConfig::default(),
+            Some(options),
+        )
+        .await;
+        let err = result.expect_err("expected error");
+        assert!(err.to_string().to_lowercase().contains("timeout"));
     }
 }

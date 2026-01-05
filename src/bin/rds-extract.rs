@@ -1,5 +1,7 @@
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
 
+#[cfg(not(target_arch = "wasm32"))]
 use rds2rust::{
     extract_object_from_path, extract_object_from_path_chunked, extract_object_from_path_with_kind,
     extract_object_from_path_with_kind_chunked, extract_vectors_from_path,
@@ -7,12 +9,14 @@ use rds2rust::{
     ObjectKind,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
 fn print_usage() {
     eprintln!(
         "Usage: rds-extract <input.rds> <out_dir> [paths...] [--budget-mb N] [--manifest NAME] [--object-path PATH] [--object-kind KIND] [--chunked] [--no-streaming]\n       rds-extract convert <input.rds> <out_dir> --object-kind KIND [--object-path PATH] [--budget-mb N] [--manifest NAME] [--chunked] [--no-streaming]\n\nExamples:\n  rds-extract data.rds out/ data.matrix meta.data --budget-mb 512\n  rds-extract data.rds out/ --manifest manifest.json\n  rds-extract data.rds out/ --object-path data --manifest manifest.json\n  rds-extract data.rds out/ --object-kind dataframe --object-path data\n  rds-extract convert data.rds out/ --object-kind dataframe --object-path data\n  rds-extract convert data.rds out/ --object-kind dataframe --chunked"
     );
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_object_kind(input: &str) -> Option<ObjectKind> {
     match input {
         "dataframe" | "data-frame" | "data_frame" => Some(ObjectKind::DataFrame),
@@ -23,6 +27,7 @@ fn parse_object_kind(input: &str) -> Option<ObjectKind> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() < 2 {
@@ -332,3 +337,6 @@ fn main() {
         std::process::exit(1);
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+fn main() {}

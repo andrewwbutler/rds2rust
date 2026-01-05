@@ -1,3 +1,7 @@
+#![cfg(not(target_arch = "wasm32"))]
+
+#![cfg(not(target_arch = "wasm32"))]
+
 //! Tests for column order preservation and Symbol handling.
 //!
 //! These tests ensure that:
