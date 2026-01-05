@@ -72,7 +72,7 @@ pub fn memory_warning(file_size: u64, device_memory_gb: Option<f64>) -> Option<S
 }
 
 #[cfg(target_arch = "wasm32")]
-#[wasm_bindgen(module = "/docs/wasm/decompress.js")]
+#[wasm_bindgen(module = "./docs/wasm/decompress.js")]
 extern "C" {
     #[wasm_bindgen(js_name = decompressBlobIfNeeded)]
     fn decompress_blob_if_needed_js(blob: Blob, options: JsValue) -> Promise;
