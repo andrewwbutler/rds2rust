@@ -39,6 +39,7 @@ export function browserSupportWarnings() {
 export async function detectCompression(blob) {
   const header = await blob.slice(0, 4).arrayBuffer();
   const view = new Uint8Array(header);
+  console.info("decompress.js: detectCompression header", Array.from(view));
   if (view[0] === 0x1f && view[1] === 0x8b) {
     return "gzip";
   }
@@ -59,8 +60,35 @@ function findGzipMemberOffsets(buffer) {
   const offsets = [];
   for (let i = 0; i + 2 < bytes.length; i += 1) {
     if (bytes[i] === 0x1f && bytes[i + 1] === 0x8b && bytes[i + 2] === 0x08) {
-      offsets.push(i);
+      const flags = bytes[i + 3];
+      if ((flags & 0xe0) === 0) {
+        offsets.push(i);
+      }
     }
+  }
+  return offsets;
+}
+
+async function findGzipMemberOffsetsFromBlob(blob, chunkSize = 8 * 1024 * 1024) {
+  const offsets = [];
+  let offset = 0;
+  let carry = new Uint8Array(0);
+  while (offset < blob.size) {
+    const end = Math.min(blob.size, offset + chunkSize);
+    const chunk = new Uint8Array(await blob.slice(offset, end).arrayBuffer());
+    const merged = new Uint8Array(carry.length + chunk.length);
+    if (carry.length) merged.set(carry);
+    merged.set(chunk, carry.length);
+    const localOffsets = findGzipMemberOffsets(merged.buffer);
+    const base = offset - carry.length;
+    for (const local of localOffsets) {
+      const absolute = base + local;
+      if (absolute >= 0 && (offsets.length === 0 || absolute > offsets[offsets.length - 1])) {
+        offsets.push(absolute);
+      }
+    }
+    carry = merged.slice(Math.max(0, merged.length - 2));
+    offset = end;
   }
   return offsets;
 }
@@ -96,6 +124,12 @@ async function decompressMultiMemberGzip(blob, offsets, options = {}) {
     const stream = slice.stream().pipeThrough(decompressor);
     const part = await decompressStreamToBlob(stream, onProgress);
     pieces.push(part);
+  }
+  if (offsets.length > 1) {
+    console.info("gzip members decompressed", {
+      count: offsets.length,
+      totalSize: pieces.reduce((sum, part) => sum + part.size, 0),
+    });
   }
   return new Blob(pieces);
 }
@@ -142,7 +176,12 @@ export async function decompressBlobIfNeeded(blob, options = {}) {
     );
   }
 
+  console.info("decompress.js: decompressBlobIfNeeded", {
+    size: blob.size,
+    filename,
+  });
   const compression = await detectCompression(blob);
+  console.info("decompress.js: compression detected", compression);
 
   if (filename) {
     const lower = filename.toLowerCase();
@@ -173,10 +212,15 @@ export async function decompressBlobIfNeeded(blob, options = {}) {
 
   let headerOffsets = [];
   try {
-    const buffer = await blob.slice(0, Math.min(blob.size, 4 * 1024 * 1024)).arrayBuffer();
-    headerOffsets = findGzipMemberOffsets(buffer);
+    headerOffsets = await findGzipMemberOffsetsFromBlob(blob);
   } catch {
     headerOffsets = [];
+  }
+  if (headerOffsets.length > 1) {
+    console.info("gzip multi-member detected", {
+      count: headerOffsets.length,
+      offsets: headerOffsets.slice(0, 5),
+    });
   }
 
   if (budgetBytes) {
