@@ -255,6 +255,7 @@ export async function decompressBlobIfNeeded(blob, options = {}) {
       const stream = blob.stream().pipeThrough(decompressor);
       decompressed = await decompressStreamToBlob(stream, onProgress);
     }
+    console.info("decompress.js: decompressed size", decompressed.size);
     if (decompressed.size > maxBytes) {
       throw new Error(
         `Compression ratio exceeded safety limit (${maxRatio}:1).`

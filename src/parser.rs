@@ -657,6 +657,12 @@ where
                 size = std::cmp::min(max_size, size.saturating_mul(2));
                 continue;
             }
+            Err(Error::InvalidFormat(message))
+                if message.contains("exceeds remaining") && size < max_size =>
+            {
+                size = std::cmp::min(max_size, size.saturating_mul(2));
+                continue;
+            }
             Err(err) => return Err(err),
         }
     }
