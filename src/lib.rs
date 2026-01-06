@@ -56,12 +56,12 @@ pub use types::{
 #[cfg(target_arch = "wasm32")]
 pub use wasm::{
     decompress_blob_if_needed, estimate_parse_size, extract_vector_chunked, extract_vector_to_js,
-    memory_warning, read_rds_async, read_rds_from_blob, recommended_chunk_size_mb,
-    recommend_decompression_mode, write_rds_with_callback,
-    write_rds_with_callback_and_compression, write_rds_with_progress,
-    write_rds_with_progress_and_compression, AsyncBufferedCursor, AsyncCursorConfig,
-    AsyncParseConfig, AsyncRdsInput, AsyncReadFuture, BlobChunkedSource, CacheConfig,
-    CacheMetrics, WasmDecompressedSource, WasmDecompressionMode, WasmDecompressionThresholds,
+    memory_warning, read_rds_async, read_rds_from_blob, recommend_decompression_mode,
+    recommended_chunk_size_mb, write_rds_with_callback, write_rds_with_callback_and_compression,
+    write_rds_with_progress, write_rds_with_progress_and_compression, AsyncBufferedCursor,
+    AsyncCursorConfig, AsyncParseConfig, AsyncRdsInput, AsyncReadFuture, BlobChunkedSource,
+    CacheConfig, CacheMetrics, WasmDecompressedSource, WasmDecompressionMode,
+    WasmDecompressionThresholds,
 };
 
 /// Parsing mode for RDS files.
@@ -645,9 +645,9 @@ pub fn write_rds_atomic<P: AsRef<std::path::Path>>(obj: &RObject, path: P) -> Re
 #[cfg(test)]
 mod tests {
     #[cfg(target_arch = "wasm32")]
-    use wasm_bindgen_test::wasm_bindgen_test;
-    #[cfg(target_arch = "wasm32")]
     use wasm_bindgen::JsCast;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen_test::wasm_bindgen_test;
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
@@ -659,8 +659,11 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     fn has_decompression_stream() -> bool {
         let global = js_sys::global();
-        let value = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("DecompressionStream"))
-            .unwrap_or(wasm_bindgen::JsValue::UNDEFINED);
+        let value = js_sys::Reflect::get(
+            &global,
+            &wasm_bindgen::JsValue::from_str("DecompressionStream"),
+        )
+        .unwrap_or(wasm_bindgen::JsValue::UNDEFINED);
         !value.is_undefined()
     }
 
@@ -669,8 +672,7 @@ mod tests {
         let array = js_sys::Array::new();
         let view = js_sys::Uint8Array::from(bytes);
         array.push(&view.buffer());
-        web_sys::Blob::new_with_u8_array_sequence(&array)
-            .expect("blob from bytes")
+        web_sys::Blob::new_with_u8_array_sequence(&array).expect("blob from bytes")
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -749,6 +751,50 @@ mod tests {
 
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen_test(async)]
+    async fn wasm_read_rds_s4_attributes_async() {
+        if !has_decompression_stream() {
+            return;
+        }
+        let mut slots = indexmap::IndexMap::new();
+        slots.insert(
+            std::sync::Arc::from("slot1"),
+            crate::RObject::Integer(crate::VectorData::Owned(vec![1])),
+        );
+        let obj = crate::RObject::S4Object(Box::new(crate::S4ObjectData {
+            class: vec![std::sync::Arc::from("Seurat")],
+            package: Some(std::sync::Arc::from("SeuratObject")),
+            slots,
+        }));
+        let gzip_bytes = crate::write_rds(&obj).expect("write rds");
+        let blob = blob_from_bytes(&gzip_bytes);
+        let async_config = crate::AsyncParseConfig {
+            max_bytes: 1024 * 1024,
+            cursor: crate::AsyncCursorConfig {
+                buffer_size: 64,
+                max_buffer_size: 1024 * 1024,
+            },
+        };
+        let parsed = crate::read_rds_from_blob(
+            blob,
+            crate::ParseConfig::default(),
+            async_config,
+            crate::CacheConfig::default(),
+            None,
+        )
+        .await
+        .expect("parse s4")
+        .into_concrete();
+        match parsed {
+            crate::RObject::S4Object(s4) => {
+                assert_eq!(s4.class, vec![std::sync::Arc::from("Seurat")]);
+                assert_eq!(s4.package, Some(std::sync::Arc::from("SeuratObject")));
+            }
+            other => panic!("unexpected object: {:?}", other),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test(async)]
     async fn wasm_read_rds_unsupported_format() {
         if !has_decompression_stream() {
             return;
@@ -777,10 +823,7 @@ mod tests {
         let gzip_bytes = crate::write_rds(&obj).expect("write rds");
         let raw_bytes = ungzip(&gzip_bytes);
         let blob = blob_from_bytes(&raw_bytes);
-        let options = js_options(&[(
-            "filename",
-            wasm_bindgen::JsValue::from_str("sample.rds.gz"),
-        )]);
+        let options = js_options(&[("filename", wasm_bindgen::JsValue::from_str("sample.rds.gz"))]);
         let result = crate::read_rds_from_blob(
             blob,
             crate::ParseConfig::default(),
@@ -889,16 +932,18 @@ mod tests {
         let chunks = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let chunks_clone = chunks.clone();
 
-        let callback = wasm_bindgen::closure::Closure::wrap(Box::new(
-            move |chunk: js_sys::Uint8Array| {
+        let callback =
+            wasm_bindgen::closure::Closure::wrap(Box::new(move |chunk: js_sys::Uint8Array| {
                 let mut buf = vec![0u8; chunk.length() as usize];
                 chunk.copy_to(&mut buf);
                 chunks_clone.borrow_mut().push(buf);
-            },
-        ) as Box<dyn FnMut(js_sys::Uint8Array)>);
+            })
+                as Box<dyn FnMut(js_sys::Uint8Array)>);
 
-        let callback_fn: js_sys::Function =
-            callback.as_ref().unchecked_ref::<js_sys::Function>().clone();
+        let callback_fn: js_sys::Function = callback
+            .as_ref()
+            .unchecked_ref::<js_sys::Function>()
+            .clone();
         crate::write_rds_with_callback(&obj, callback_fn, Some(1))
             .expect("write_rds_with_callback");
         callback.forget();
@@ -920,22 +965,26 @@ mod tests {
         let progress = std::rc::Rc::new(std::cell::Cell::new(0f64));
         let progress_clone = progress.clone();
 
-        let on_chunk = wasm_bindgen::closure::Closure::wrap(Box::new(
-            move |chunk: js_sys::Uint8Array| {
+        let on_chunk =
+            wasm_bindgen::closure::Closure::wrap(Box::new(move |chunk: js_sys::Uint8Array| {
                 let mut buf = vec![0u8; chunk.length() as usize];
                 chunk.copy_to(&mut buf);
                 chunks_clone.borrow_mut().push(buf);
-            },
-        ) as Box<dyn FnMut(js_sys::Uint8Array)>);
+            })
+                as Box<dyn FnMut(js_sys::Uint8Array)>);
 
         let on_progress = wasm_bindgen::closure::Closure::wrap(Box::new(move |bytes: f64| {
             progress_clone.set(bytes);
         }) as Box<dyn FnMut(f64)>);
 
-        let on_chunk_fn: js_sys::Function =
-            on_chunk.as_ref().unchecked_ref::<js_sys::Function>().clone();
-        let on_progress_fn: js_sys::Function =
-            on_progress.as_ref().unchecked_ref::<js_sys::Function>().clone();
+        let on_chunk_fn: js_sys::Function = on_chunk
+            .as_ref()
+            .unchecked_ref::<js_sys::Function>()
+            .clone();
+        let on_progress_fn: js_sys::Function = on_progress
+            .as_ref()
+            .unchecked_ref::<js_sys::Function>()
+            .clone();
         crate::write_rds_with_progress(&obj, on_chunk_fn, on_progress_fn, Some(1))
             .expect("write_rds_with_progress");
         on_chunk.forget();
@@ -956,10 +1005,13 @@ mod tests {
         let obj = crate::RObject::Integer(crate::VectorData::Owned(vec![1]));
         let callback = wasm_bindgen::closure::Closure::wrap(Box::new(
             |_chunk: js_sys::Uint8Array| {},
-        ) as Box<dyn FnMut(js_sys::Uint8Array)>);
+        )
+            as Box<dyn FnMut(js_sys::Uint8Array)>);
 
-        let callback_fn: js_sys::Function =
-            callback.as_ref().unchecked_ref::<js_sys::Function>().clone();
+        let callback_fn: js_sys::Function = callback
+            .as_ref()
+            .unchecked_ref::<js_sys::Function>()
+            .clone();
         let result = crate::write_rds_with_callback(&obj, callback_fn, Some(0));
         callback.forget();
         let err = result.expect_err("expected error");

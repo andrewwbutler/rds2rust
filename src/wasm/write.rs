@@ -70,7 +70,8 @@ impl Write for CallbackWriter {
         while offset < buf.len() {
             let remaining = self.chunk_size - self.buffer.len();
             let to_copy = remaining.min(buf.len() - offset);
-            self.buffer.extend_from_slice(&buf[offset..offset + to_copy]);
+            self.buffer
+                .extend_from_slice(&buf[offset..offset + to_copy]);
             offset += to_copy;
 
             if self.buffer.len() >= self.chunk_size {
@@ -95,9 +96,7 @@ impl Drop for CallbackWriter {
             return;
         }
         if let Err(err) = self.flush_buffer() {
-            web_sys::console::warn_1(
-                &format!("CallbackWriter drop failed: {}", err).into(),
-            );
+            web_sys::console::warn_1(&format!("CallbackWriter drop failed: {}", err).into());
         }
     }
 }
@@ -112,11 +111,7 @@ pub struct ProgressWriter {
 
 #[cfg(target_arch = "wasm32")]
 impl ProgressWriter {
-    pub fn new(
-        callback: Function,
-        progress_callback: Function,
-        chunk_size: usize,
-    ) -> Result<Self> {
+    pub fn new(callback: Function, progress_callback: Function, chunk_size: usize) -> Result<Self> {
         Ok(Self {
             inner: CallbackWriter::new(callback, chunk_size)?,
             progress_callback,
@@ -127,7 +122,10 @@ impl ProgressWriter {
 
     fn report_progress(&self) -> Result<()> {
         self.progress_callback
-            .call1(&JsValue::NULL, &JsValue::from_f64(self.bytes_written as f64))
+            .call1(
+                &JsValue::NULL,
+                &JsValue::from_f64(self.bytes_written as f64),
+            )
             .map_err(map_callback_error)?;
         Ok(())
     }
@@ -169,9 +167,7 @@ impl Drop for ProgressWriter {
             return;
         }
         if let Err(err) = self.inner.flush_buffer() {
-            web_sys::console::warn_1(
-                &format!("ProgressWriter drop failed: {}", err).into(),
-            );
+            web_sys::console::warn_1(&format!("ProgressWriter drop failed: {}", err).into());
         }
     }
 }
@@ -255,9 +251,7 @@ pub fn recommended_chunk_size_mb() -> usize {
 
 #[cfg(target_arch = "wasm32")]
 fn map_callback_error(err: JsValue) -> Error {
-    let message = err
-        .as_string()
-        .unwrap_or_else(|| format!("{:?}", err));
+    let message = err.as_string().unwrap_or_else(|| format!("{:?}", err));
     Error::CallbackFailed(message)
 }
 

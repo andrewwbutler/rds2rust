@@ -158,6 +158,16 @@ struct ParserContext {
     parsing_s4_tag: bool,
 }
 
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone)]
+struct ParserContextSnapshot {
+    pending_class_attrs: Option<Attributes>,
+    parsing_attributes: bool,
+    parsing_closure_body: bool,
+    parsing_s4_tag: bool,
+    in_bytecode_context: bool,
+}
+
 impl ParserContext {
     fn from_config(config: crate::ParseConfig) -> Self {
         Self {
@@ -173,6 +183,26 @@ impl ParserContext {
             parsing_closure_body: false,
             parsing_s4_tag: false,
         }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn snapshot(&self) -> ParserContextSnapshot {
+        ParserContextSnapshot {
+            pending_class_attrs: self.pending_class_attrs.clone(),
+            parsing_attributes: self.parsing_attributes,
+            parsing_closure_body: self.parsing_closure_body,
+            parsing_s4_tag: self.parsing_s4_tag,
+            in_bytecode_context: self.in_bytecode_context,
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn restore(&mut self, snapshot: ParserContextSnapshot) {
+        self.pending_class_attrs = snapshot.pending_class_attrs;
+        self.parsing_attributes = snapshot.parsing_attributes;
+        self.parsing_closure_body = snapshot.parsing_closure_body;
+        self.parsing_s4_tag = snapshot.parsing_s4_tag;
+        self.in_bytecode_context = snapshot.in_bytecode_context;
     }
 
     /// Get the effective lazy threshold based on current context
@@ -302,6 +332,21 @@ impl RefTable {
         }
         result
     }
+
+    #[cfg(target_arch = "wasm32")]
+    fn checkpoint(&self) -> u32 {
+        self.next_index
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn rollback(&mut self, checkpoint: u32) {
+        if checkpoint < self.next_index {
+            for idx in checkpoint..self.next_index {
+                self.objects.remove(&idx);
+            }
+        }
+        self.next_index = checkpoint;
+    }
 }
 
 /// Symbol table for tracking symbols during deserialization.
@@ -336,6 +381,16 @@ impl SymbolTable {
 
     fn len(&self) -> usize {
         self.symbols.len()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn checkpoint(&self) -> usize {
+        self.symbols.len()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn rollback(&mut self, checkpoint: usize) {
+        self.symbols.truncate(checkpoint);
     }
 }
 
@@ -384,6 +439,19 @@ impl DedupTable {
         }
 
         None
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn checkpoint(&self) -> (usize, usize, usize) {
+        (self.cache.len(), self.hits, self.misses)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn rollback(&mut self, checkpoint: (usize, usize, usize)) {
+        let (len, hits, misses) = checkpoint;
+        self.cache.truncate(len);
+        self.hits = hits;
+        self.misses = misses;
     }
 
     /// Get deduplication statistics (for debugging/profiling)
@@ -618,12 +686,49 @@ async fn parse_object_async(
         .ok_or_else(|| Error::InvalidFormat("async cursor requires length".to_string()))?;
     let remaining = (total_len - cursor.position()) as usize;
     let max_size = std::cmp::min(cursor.max_buffer_size(), remaining);
-    let size = estimate.clamp(4, max_size.max(4));
+    let mut size = estimate.clamp(4, max_size.max(4));
 
-    parse_with_sync_cursor_retry(cursor, size, max_size, |sync_cursor| {
-        parse_object(ctx, sync_cursor, ref_table, symbol_table, dedup_table)
-    })
-    .await
+    loop {
+        cursor.ensure_available(size).await?;
+        let slice = cursor.as_sync_slice(size)?;
+        let mut sync_cursor = RdsCursor::new_slice(slice);
+
+        let ctx_snapshot = ctx.snapshot();
+        let ref_checkpoint = ref_table.checkpoint();
+        let symbol_checkpoint = symbol_table.checkpoint();
+        let dedup_checkpoint = dedup_table.checkpoint();
+
+        let result = parse_object(ctx, &mut sync_cursor, ref_table, symbol_table, dedup_table);
+
+        match result {
+            Ok(value) => {
+                cursor.advance(sync_cursor.position())?;
+                return Ok(value);
+            }
+            Err(Error::UnexpectedEof) | Err(Error::UnexpectedEofDetail { .. }) => {
+                ctx.restore(ctx_snapshot);
+                ref_table.rollback(ref_checkpoint);
+                symbol_table.rollback(symbol_checkpoint);
+                dedup_table.rollback(dedup_checkpoint);
+                if size >= max_size {
+                    return result;
+                }
+                size = std::cmp::min(max_size, size.saturating_mul(2));
+                continue;
+            }
+            Err(Error::InvalidFormat(message))
+                if message.contains("exceeds remaining") && size < max_size =>
+            {
+                ctx.restore(ctx_snapshot);
+                ref_table.rollback(ref_checkpoint);
+                symbol_table.rollback(symbol_checkpoint);
+                dedup_table.rollback(dedup_checkpoint);
+                size = std::cmp::min(max_size, size.saturating_mul(2));
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

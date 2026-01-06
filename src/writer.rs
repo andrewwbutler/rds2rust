@@ -1619,7 +1619,11 @@ fn write_pairlist_with_attrs<W: Write>(
 // Deprecated: Old symbol writing function replaced by write_symbol_with_tracking
 // Kept for reference but no longer used
 #[allow(dead_code)]
-fn write_symbol_with_ref<W: Write>(writer: &mut W, name: &str, ref_table: &mut RefTable) -> Result<()> {
+fn write_symbol_with_ref<W: Write>(
+    writer: &mut W,
+    name: &str,
+    ref_table: &mut RefTable,
+) -> Result<()> {
     // Check if this symbol was already written
     if let Some(ref_idx) = ref_table.check_symbol(name) {
         // Write a reference to the previous occurrence

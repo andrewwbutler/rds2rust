@@ -1,4 +1,6 @@
 #[cfg(target_arch = "wasm32")]
+use js_sys::Promise;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::wasm_bindgen;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
@@ -6,8 +8,6 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::JsValue;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::JsFuture;
-#[cfg(target_arch = "wasm32")]
-use js_sys::Promise;
 #[cfg(target_arch = "wasm32")]
 use web_sys::Blob;
 
