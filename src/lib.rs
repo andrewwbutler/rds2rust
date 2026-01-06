@@ -56,10 +56,12 @@ pub use types::{
 #[cfg(target_arch = "wasm32")]
 pub use wasm::{
     decompress_blob_if_needed, estimate_parse_size, extract_vector_chunked, extract_vector_to_js,
-    memory_warning, read_rds_async, read_rds_from_blob, recommend_decompression_mode,
-    AsyncBufferedCursor, AsyncCursorConfig, AsyncParseConfig, AsyncRdsInput, AsyncReadFuture,
-    BlobChunkedSource, CacheConfig, CacheMetrics, WasmDecompressedSource, WasmDecompressionMode,
-    WasmDecompressionThresholds,
+    memory_warning, read_rds_async, read_rds_from_blob, recommended_chunk_size_mb,
+    recommend_decompression_mode, write_rds_with_callback,
+    write_rds_with_callback_and_compression, write_rds_with_progress,
+    write_rds_with_progress_and_compression, AsyncBufferedCursor, AsyncCursorConfig,
+    AsyncParseConfig, AsyncRdsInput, AsyncReadFuture, BlobChunkedSource, CacheConfig,
+    CacheMetrics, WasmDecompressedSource, WasmDecompressionMode, WasmDecompressionThresholds,
 };
 
 /// Parsing mode for RDS files.
@@ -598,10 +600,54 @@ pub fn write_rds(obj: &RObject) -> Result<Vec<u8>> {
     writer::write_rds(obj)
 }
 
+/// Streaming writer APIs.
+///
+/// Use these for large outputs to avoid buffering the entire file in memory.
+///
+/// # Examples
+///
+/// ```rust
+/// use rds2rust::{write_rds_streaming, write_rds_atomic, RObject, VectorData};
+/// use std::fs::File;
+/// use std::io::BufWriter;
+///
+/// let obj = RObject::Integer(VectorData::Owned(vec![1, 2, 3]));
+///
+/// // Stream to a file (gzip compressed)
+/// let file = File::create("output.rds")?;
+/// write_rds_streaming(&obj, BufWriter::new(file))?;
+///
+/// // Atomic write helper (native only)
+/// write_rds_atomic(&obj, "output.rds")?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// Write an RObject to a streaming sink (gzip compressed).
+pub fn write_rds_streaming<W: std::io::Write>(obj: &RObject, sink: W) -> Result<()> {
+    writer::write_rds_streaming(obj, sink)
+}
+
+/// Write an RObject to a streaming sink with an explicit compression level.
+pub fn write_rds_streaming_with_compression<W: std::io::Write>(
+    obj: &RObject,
+    sink: W,
+    compression: flate2::Compression,
+) -> Result<()> {
+    writer::write_rds_streaming_with_compression(obj, sink, compression)
+}
+
+/// Write an RObject to disk atomically (native only).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn write_rds_atomic<P: AsRef<std::path::Path>>(obj: &RObject, path: P) -> Result<()> {
+    writer::write_rds_atomic(obj, path)
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen_test::wasm_bindgen_test;
+    #[cfg(target_arch = "wasm32")]
+    use wasm_bindgen::JsCast;
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
@@ -834,5 +880,89 @@ mod tests {
         .await;
         let err = result.expect_err("expected error");
         assert!(err.to_string().to_lowercase().contains("timeout"));
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test]
+    fn wasm_write_rds_with_callback_roundtrip() {
+        let obj = crate::RObject::Integer(crate::VectorData::Owned(vec![5, 6, 7]));
+        let chunks = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let chunks_clone = chunks.clone();
+
+        let callback = wasm_bindgen::closure::Closure::wrap(Box::new(
+            move |chunk: js_sys::Uint8Array| {
+                let mut buf = vec![0u8; chunk.length() as usize];
+                chunk.copy_to(&mut buf);
+                chunks_clone.borrow_mut().push(buf);
+            },
+        ) as Box<dyn FnMut(js_sys::Uint8Array)>);
+
+        let callback_fn: js_sys::Function =
+            callback.as_ref().unchecked_ref::<js_sys::Function>().clone();
+        crate::write_rds_with_callback(&obj, callback_fn, Some(1))
+            .expect("write_rds_with_callback");
+        callback.forget();
+
+        let bytes: Vec<u8> = chunks.borrow().iter().flatten().copied().collect();
+        let parsed = crate::read_rds(&bytes).expect("read_rds");
+        match parsed.into_concrete() {
+            crate::RObject::Integer(vec) => assert_eq!(vec.as_vec(), &vec![5, 6, 7]),
+            other => panic!("unexpected object: {:?}", other),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test]
+    fn wasm_write_rds_with_progress_reports_bytes() {
+        let obj = crate::RObject::Integer(crate::VectorData::Owned(vec![8, 9, 10, 11]));
+        let chunks = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let chunks_clone = chunks.clone();
+        let progress = std::rc::Rc::new(std::cell::Cell::new(0f64));
+        let progress_clone = progress.clone();
+
+        let on_chunk = wasm_bindgen::closure::Closure::wrap(Box::new(
+            move |chunk: js_sys::Uint8Array| {
+                let mut buf = vec![0u8; chunk.length() as usize];
+                chunk.copy_to(&mut buf);
+                chunks_clone.borrow_mut().push(buf);
+            },
+        ) as Box<dyn FnMut(js_sys::Uint8Array)>);
+
+        let on_progress = wasm_bindgen::closure::Closure::wrap(Box::new(move |bytes: f64| {
+            progress_clone.set(bytes);
+        }) as Box<dyn FnMut(f64)>);
+
+        let on_chunk_fn: js_sys::Function =
+            on_chunk.as_ref().unchecked_ref::<js_sys::Function>().clone();
+        let on_progress_fn: js_sys::Function =
+            on_progress.as_ref().unchecked_ref::<js_sys::Function>().clone();
+        crate::write_rds_with_progress(&obj, on_chunk_fn, on_progress_fn, Some(1))
+            .expect("write_rds_with_progress");
+        on_chunk.forget();
+        on_progress.forget();
+
+        assert!(progress.get() > 0.0);
+        let bytes: Vec<u8> = chunks.borrow().iter().flatten().copied().collect();
+        let parsed = crate::read_rds(&bytes).expect("read_rds");
+        match parsed.into_concrete() {
+            crate::RObject::Integer(vec) => assert_eq!(vec.as_vec(), &vec![8, 9, 10, 11]),
+            other => panic!("unexpected object: {:?}", other),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen_test]
+    fn wasm_write_rds_callback_rejects_zero_chunk_size() {
+        let obj = crate::RObject::Integer(crate::VectorData::Owned(vec![1]));
+        let callback = wasm_bindgen::closure::Closure::wrap(Box::new(
+            |_chunk: js_sys::Uint8Array| {},
+        ) as Box<dyn FnMut(js_sys::Uint8Array)>);
+
+        let callback_fn: js_sys::Function =
+            callback.as_ref().unchecked_ref::<js_sys::Function>().clone();
+        let result = crate::write_rds_with_callback(&obj, callback_fn, Some(0));
+        callback.forget();
+        let err = result.expect_err("expected error");
+        assert!(err.to_string().contains("chunk_size_mb"));
     }
 }

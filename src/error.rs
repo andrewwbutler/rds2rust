@@ -45,6 +45,9 @@ pub enum Error {
     #[error("Cannot write lazy object; materialize first or use full parse mode")]
     CannotWriteLazyObject,
 
+    #[error("JavaScript callback failed: {0}")]
+    CallbackFailed(String),
+
     #[error("Memory budget exhausted: needed {needed} bytes, {available} available")]
     MemoryBudgetExceeded { needed: usize, available: usize },
 }

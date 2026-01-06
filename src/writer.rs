@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::mem;
 use std::sync::Arc;
+#[cfg(not(target_arch = "wasm32"))]
+use std::{fs, fs::File, io::BufWriter, path::Path};
 
 // Note: Thread-local state (WRITE_STACK, WRITE_DEPTH, WRITE_CALLS) removed for thread safety.
 // These were only used for debugging and cycle detection.
@@ -318,8 +320,8 @@ fn register_symbol_atomic(
 /// Write a symbol with full tracking support
 ///
 /// Returns: (object_idx, symbol_idx) for the written symbol
-fn write_symbol_with_tracking(
-    writer: &mut Vec<u8>,
+fn write_symbol_with_tracking<W: Write>(
+    writer: &mut W,
     name: Arc<str>,
     shared_ptr: Option<usize>, // Arc pointer if from Shared(Symbol)
     context: SymbolContext,
@@ -446,35 +448,57 @@ fn ref_key(obj: &RObject) -> Option<usize> {
 /// Write an RObject to RDS format.
 /// Returns the serialized bytes (gzip compressed).
 pub fn write_rds(obj: &RObject) -> Result<Vec<u8>> {
-    // Check if object is fully loaded (no lazy vectors)
+    let mut buffer = Vec::new();
+    write_rds_streaming(obj, &mut buffer)?;
+    Ok(buffer)
+}
+
+/// Write an RObject to a streaming sink (gzip compressed).
+pub fn write_rds_streaming<W: Write>(obj: &RObject, sink: W) -> Result<()> {
+    write_rds_streaming_with_compression(obj, sink, Compression::default())
+}
+
+/// Write an RObject to a streaming sink with an explicit compression level.
+pub fn write_rds_streaming_with_compression<W: Write>(
+    obj: &RObject,
+    sink: W,
+    compression: Compression,
+) -> Result<()> {
     if !obj.is_fully_loaded() {
         return Err(Error::CannotWriteLazyObject);
     }
 
-    let mut buffer = Vec::new();
+    let mut encoder = GzEncoder::new(sink, compression);
 
-    // Write header
-    write_header(&mut buffer)?;
+    write_header(&mut encoder)?;
 
-    // Create reference table for tracking shared objects
     let mut ref_table = RefTable::new();
-
-    // Create symbol tracker for dual-index symbol tracking
     let mut symbol_tracker = SymbolTracker::new();
 
-    // Write the object
-    write_object(&mut buffer, obj, &mut ref_table, &mut symbol_tracker)?;
+    write_object(&mut encoder, obj, &mut ref_table, &mut symbol_tracker)?;
+    encoder.finish()?;
 
-    // Compress with gzip
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(&buffer)?;
-    let compressed = encoder.finish()?;
+    Ok(())
+}
 
-    Ok(compressed)
+/// Write an RObject to disk atomically (native only).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn write_rds_atomic<P: AsRef<Path>>(obj: &RObject, path: P) -> Result<()> {
+    let path = path.as_ref();
+    let temp_path = path.with_extension("tmp");
+
+    {
+        let file = File::create(&temp_path)?;
+        let writer = BufWriter::new(file);
+        write_rds_streaming(obj, writer)?;
+    }
+
+    fs::rename(&temp_path, path)?;
+    Ok(())
 }
 
 /// Write the RDS file header.
-fn write_header(writer: &mut Vec<u8>) -> Result<()> {
+fn write_header<W: Write>(writer: &mut W) -> Result<()> {
     // Magic bytes: 'X\n' for XDR format (big-endian)
     writer.write_all(b"X\n")?;
 
@@ -496,8 +520,8 @@ fn write_header(writer: &mut Vec<u8>) -> Result<()> {
 }
 
 /// Write an R object to the stream.
-fn write_object(
-    writer: &mut Vec<u8>,
+fn write_object<W: Write>(
+    writer: &mut W,
     obj: &RObject,
     ref_table: &mut RefTable,
     symbol_tracker: &mut SymbolTracker,
@@ -511,8 +535,8 @@ fn write_object(
     )
 }
 
-fn write_object_with_context(
-    writer: &mut Vec<u8>,
+fn write_object_with_context<W: Write>(
+    writer: &mut W,
     obj: &RObject,
     ref_table: &mut RefTable,
     symbol_tracker: &mut SymbolTracker,
@@ -530,8 +554,8 @@ fn write_object_with_context(
 }
 
 /// Internal helper with toggle to skip ref tracking (used when descending into Shared inner).
-fn write_object_inner(
-    writer: &mut Vec<u8>,
+fn write_object_inner<W: Write>(
+    writer: &mut W,
     obj: &RObject,
     ref_table: &mut RefTable,
     symbol_tracker: &mut SymbolTracker,
@@ -945,46 +969,46 @@ fn write_object_inner(
 }
 
 /// Write NULL.
-fn write_null(writer: &mut Vec<u8>) -> Result<()> {
+fn write_null<W: Write>(writer: &mut W) -> Result<()> {
     // Use NILVALUE_SXP (254) for singleton NULL
     write_flags(writer, NILVALUE_SXP, false, false, false)?;
     Ok(())
 }
 
 /// Write global environment reference (GLOBALENV_SXP).
-fn write_global_env(writer: &mut Vec<u8>) -> Result<()> {
+fn write_global_env<W: Write>(writer: &mut W) -> Result<()> {
     write_flags(writer, GLOBALENV_SXP, false, false, false)?;
     Ok(())
 }
 
 /// Write base environment reference (BASEENV_SXP).
-fn write_base_env(writer: &mut Vec<u8>) -> Result<()> {
+fn write_base_env<W: Write>(writer: &mut W) -> Result<()> {
     write_flags(writer, BASEENV_SXP, false, false, false)?;
     Ok(())
 }
 
 /// Write empty environment reference (EMPTYENV_SXP).
-fn write_empty_env(writer: &mut Vec<u8>) -> Result<()> {
+fn write_empty_env<W: Write>(writer: &mut W) -> Result<()> {
     write_flags(writer, EMPTYENV_SXP, false, false, false)?;
     Ok(())
 }
 
 /// Write missing argument marker (MISSINGARG_SXP).
-fn write_missing_arg(writer: &mut Vec<u8>) -> Result<()> {
+fn write_missing_arg<W: Write>(writer: &mut W) -> Result<()> {
     write_flags(writer, MISSINGARG_SXP, false, false, false)?;
     Ok(())
 }
 
 /// Write unbound value marker (UNBOUNDVALUE_SXP).
-fn write_unbound_value(writer: &mut Vec<u8>) -> Result<()> {
+fn write_unbound_value<W: Write>(writer: &mut W) -> Result<()> {
     write_flags(writer, UNBOUNDVALUE_SXP, false, false, false)?;
     Ok(())
 }
 
 /// Write a namespace reference (NAMESPACESXP).
 /// This triggers automatic package loading when the RDS file is read in R.
-fn write_namespace(
-    writer: &mut Vec<u8>,
+fn write_namespace<W: Write>(
+    writer: &mut W,
     names: &[Arc<str>],
     ref_table: &mut RefTable,
     reserved_idx: Option<u32>,
@@ -1039,7 +1063,7 @@ fn write_namespace(
 }
 
 /// Write a reference to a previously written object (REFSXP).
-fn write_refsxp(writer: &mut Vec<u8>, ref_index: u32) -> Result<()> {
+fn write_refsxp<W: Write>(writer: &mut W, ref_index: u32) -> Result<()> {
     // REFSXP encodes the reference index in the flags field
     // The format is: type=255 (REFSXP), with the index in bits 8-31
     let flags = REFSXP | (ref_index << 8);
@@ -1048,8 +1072,8 @@ fn write_refsxp(writer: &mut Vec<u8>, ref_index: u32) -> Result<()> {
 }
 
 /// Write flags (type + attribute/tag bits).
-fn write_flags(
-    writer: &mut Vec<u8>,
+fn write_flags<W: Write>(
+    writer: &mut W,
     sexp_type: u32,
     has_attr: bool,
     has_tag: bool,
@@ -1058,8 +1082,8 @@ fn write_flags(
     write_flags_with_object(writer, sexp_type, has_attr, has_tag, is_s4, false)
 }
 
-fn write_flags_with_object(
-    writer: &mut Vec<u8>,
+fn write_flags_with_object<W: Write>(
+    writer: &mut W,
     sexp_type: u32,
     has_attr: bool,
     has_tag: bool,
@@ -1086,7 +1110,7 @@ fn write_flags_with_object(
 }
 
 /// Write an integer vector.
-fn write_integer_vector(writer: &mut Vec<u8>, vec: &[i32]) -> Result<()> {
+fn write_integer_vector<W: Write>(writer: &mut W, vec: &[i32]) -> Result<()> {
     write_flags(writer, INTSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(vec.len() as u32)?;
     for &val in vec {
@@ -1096,7 +1120,7 @@ fn write_integer_vector(writer: &mut Vec<u8>, vec: &[i32]) -> Result<()> {
 }
 
 /// Write a real (double) vector.
-fn write_real_vector(writer: &mut Vec<u8>, vec: &[f64]) -> Result<()> {
+fn write_real_vector<W: Write>(writer: &mut W, vec: &[f64]) -> Result<()> {
     write_flags(writer, REALSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(vec.len() as u32)?;
     for &val in vec {
@@ -1106,7 +1130,7 @@ fn write_real_vector(writer: &mut Vec<u8>, vec: &[f64]) -> Result<()> {
 }
 
 /// Write a logical vector.
-fn write_logical_vector(writer: &mut Vec<u8>, vec: &[Logical]) -> Result<()> {
+fn write_logical_vector<W: Write>(writer: &mut W, vec: &[Logical]) -> Result<()> {
     write_flags(writer, LGLSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(vec.len() as u32)?;
     for logical in vec {
@@ -1121,7 +1145,7 @@ fn write_logical_vector(writer: &mut Vec<u8>, vec: &[Logical]) -> Result<()> {
 }
 
 /// Write a character vector.
-fn write_character_vector(writer: &mut Vec<u8>, vec: &[Arc<str>]) -> Result<()> {
+fn write_character_vector<W: Write>(writer: &mut W, vec: &[Arc<str>]) -> Result<()> {
     write_flags(writer, STRSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(vec.len() as u32)?;
     for s in vec {
@@ -1131,7 +1155,7 @@ fn write_character_vector(writer: &mut Vec<u8>, vec: &[Arc<str>]) -> Result<()> 
 }
 
 /// Write a CHARSXP (internal string).
-fn write_charsxp(writer: &mut Vec<u8>, s: &str) -> Result<()> {
+fn write_charsxp<W: Write>(writer: &mut W, s: &str) -> Result<()> {
     let bytes = s.as_bytes();
     // Check if the string is ASCII
     let is_ascii = bytes.iter().all(|&b| b < 128);
@@ -1147,7 +1171,7 @@ fn write_charsxp(writer: &mut Vec<u8>, s: &str) -> Result<()> {
 }
 
 /// Write a raw vector.
-fn write_raw_vector(writer: &mut Vec<u8>, vec: &[u8]) -> Result<()> {
+fn write_raw_vector<W: Write>(writer: &mut W, vec: &[u8]) -> Result<()> {
     write_flags(writer, RAWSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(vec.len() as u32)?;
     writer.write_all(vec)?;
@@ -1155,7 +1179,7 @@ fn write_raw_vector(writer: &mut Vec<u8>, vec: &[u8]) -> Result<()> {
 }
 
 /// Write a complex vector.
-fn write_complex_vector(writer: &mut Vec<u8>, vec: &[Complex]) -> Result<()> {
+fn write_complex_vector<W: Write>(writer: &mut W, vec: &[Complex]) -> Result<()> {
     write_flags(writer, CPLXSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(vec.len() as u32)?;
     for complex in vec {
@@ -1166,8 +1190,8 @@ fn write_complex_vector(writer: &mut Vec<u8>, vec: &[Complex]) -> Result<()> {
 }
 
 /// Write a list (VECSXP).
-fn write_list(
-    writer: &mut Vec<u8>,
+fn write_list<W: Write>(
+    writer: &mut W,
     elements: &[RObject],
     ref_table: &mut RefTable,
     symbol_tracker: &mut SymbolTracker,
@@ -1184,8 +1208,8 @@ fn write_list(
 /// Write an expression vector (EXPRSXP).
 /// Expression vectors are structurally identical to VECSXP, but semantically represent
 /// collections of unevaluated expressions (typically language objects).
-fn write_expression(
-    writer: &mut Vec<u8>,
+fn write_expression<W: Write>(
+    writer: &mut W,
     elements: &[RObject],
     ref_table: &mut RefTable,
     symbol_tracker: &mut SymbolTracker,
@@ -1201,8 +1225,8 @@ fn write_expression(
 
 /// Write a language object (LANGSXP).
 /// Language objects represent unevaluated calls: function + arguments.
-fn write_language(
-    writer: &mut Vec<u8>,
+fn write_language<W: Write>(
+    writer: &mut W,
     function: &RObject,
     args: &[PairlistElement],
     ref_table: &mut RefTable,
@@ -1280,8 +1304,8 @@ fn write_language(
 
 /// Write a language object (LANGSXP) with attributes.
 #[allow(clippy::too_many_arguments)]
-fn write_language_with_attrs(
-    writer: &mut Vec<u8>,
+fn write_language_with_attrs<W: Write>(
+    writer: &mut W,
     function: &RObject,
     args: &[PairlistElement],
     attributes: &Attributes,
@@ -1352,8 +1376,8 @@ fn write_language_with_attrs(
 /// When `values_are_symbols` is true, single-element Character values are written as SYMSXP.
 /// This is used for Language argument lists where values may be variable references.
 #[allow(clippy::too_many_arguments)]
-fn write_pairlist_internal(
-    writer: &mut Vec<u8>,
+fn write_pairlist_internal<W: Write>(
+    writer: &mut W,
     elements: &[PairlistElement],
     ref_table: &mut RefTable,
     symbol_tracker: &mut SymbolTracker,
@@ -1525,8 +1549,8 @@ fn write_pairlist_internal(
 }
 
 /// Write a pairlist (LISTSXP) for general use.
-fn write_pairlist(
-    writer: &mut Vec<u8>,
+fn write_pairlist<W: Write>(
+    writer: &mut W,
     elements: &[PairlistElement],
     ref_table: &mut RefTable,
     symbol_tracker: &mut SymbolTracker,
@@ -1547,8 +1571,8 @@ fn write_pairlist(
 }
 
 /// Write a pairlist for Language arguments where single-element Characters are symbols.
-fn write_pairlist_as_args(
-    writer: &mut Vec<u8>,
+fn write_pairlist_as_args<W: Write>(
+    writer: &mut W,
     elements: &[PairlistElement],
     ref_table: &mut RefTable,
     symbol_tracker: &mut SymbolTracker,
@@ -1570,8 +1594,8 @@ fn write_pairlist_as_args(
 }
 
 /// Write a pairlist (LISTSXP) with attributes.
-fn write_pairlist_with_attrs(
-    writer: &mut Vec<u8>,
+fn write_pairlist_with_attrs<W: Write>(
+    writer: &mut W,
     elements: &[PairlistElement],
     attributes: &Attributes,
     ref_table: &mut RefTable,
@@ -1595,7 +1619,7 @@ fn write_pairlist_with_attrs(
 // Deprecated: Old symbol writing function replaced by write_symbol_with_tracking
 // Kept for reference but no longer used
 #[allow(dead_code)]
-fn write_symbol_with_ref(writer: &mut Vec<u8>, name: &str, ref_table: &mut RefTable) -> Result<()> {
+fn write_symbol_with_ref<W: Write>(writer: &mut W, name: &str, ref_table: &mut RefTable) -> Result<()> {
     // Check if this symbol was already written
     if let Some(ref_idx) = ref_table.check_symbol(name) {
         // Write a reference to the previous occurrence
@@ -1609,8 +1633,8 @@ fn write_symbol_with_ref(writer: &mut Vec<u8>, name: &str, ref_table: &mut RefTa
 }
 
 /// Write a closure (CLOSXP).
-fn write_closure(
-    writer: &mut Vec<u8>,
+fn write_closure<W: Write>(
+    writer: &mut W,
     formals: &RObject,
     body: &RObject,
     environment: &RObject,
@@ -1653,8 +1677,8 @@ fn write_closure(
 
 /// Write a closure (CLOSXP) with attributes.
 #[allow(clippy::too_many_arguments)]
-fn write_closure_with_attrs(
-    writer: &mut Vec<u8>,
+fn write_closure_with_attrs<W: Write>(
+    writer: &mut W,
     formals: &RObject,
     body: &RObject,
     environment: &RObject,
@@ -1703,8 +1727,8 @@ fn write_closure_with_attrs(
 }
 
 /// Write an environment (ENVSXP).
-fn write_environment(
-    writer: &mut Vec<u8>,
+fn write_environment<W: Write>(
+    writer: &mut W,
     enclosing: &RObject,
     frame: &RObject,
     hashtab: &RObject,
@@ -1739,8 +1763,8 @@ fn write_environment(
 }
 
 /// Write a promise (PROMSXP).
-fn write_promise(
-    writer: &mut Vec<u8>,
+fn write_promise<W: Write>(
+    writer: &mut W,
     value: &RObject,
     expression: &RObject,
     environment: &RObject,
@@ -1776,8 +1800,8 @@ fn write_promise(
 
 /// Write a promise (PROMSXP) with attributes.
 #[allow(clippy::too_many_arguments)]
-fn write_promise_with_attrs(
-    writer: &mut Vec<u8>,
+fn write_promise_with_attrs<W: Write>(
+    writer: &mut W,
     value: &RObject,
     expression: &RObject,
     environment: &RObject,
@@ -1826,7 +1850,7 @@ fn write_promise_with_attrs(
 
 /// Write a special primitive function (SPECIALSXP).
 /// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
-fn write_special(writer: &mut Vec<u8>, name: &str) -> Result<()> {
+fn write_special<W: Write>(writer: &mut W, name: &str) -> Result<()> {
     write_flags(writer, SPECIALSXP, false, false, false)?;
     // Write the string length
     let bytes = name.as_bytes();
@@ -1838,7 +1862,7 @@ fn write_special(writer: &mut Vec<u8>, name: &str) -> Result<()> {
 
 /// Write a builtin primitive function (BUILTINSXP).
 /// Format: type flag, then length (i32), then name bytes (no SYMSXP wrapper)
-fn write_builtin(writer: &mut Vec<u8>, name: &str) -> Result<()> {
+fn write_builtin<W: Write>(writer: &mut W, name: &str) -> Result<()> {
     write_flags(writer, BUILTINSXP, false, false, false)?;
     // Write the string length
     let bytes = name.as_bytes();
@@ -1849,8 +1873,8 @@ fn write_builtin(writer: &mut Vec<u8>, name: &str) -> Result<()> {
 }
 
 /// Write bytecode (compiled R function).
-fn write_bytecode(
-    writer: &mut Vec<u8>,
+fn write_bytecode<W: Write>(
+    writer: &mut W,
     code: &RObject,
     constants: &RObject,
     _expr: &RObject,
@@ -1871,8 +1895,8 @@ fn write_bytecode(
     )
 }
 
-fn write_bytecode_body(
-    writer: &mut Vec<u8>,
+fn write_bytecode_body<W: Write>(
+    writer: &mut W,
     code: &RObject,
     constants: &RObject,
     ref_table: &mut RefTable,
@@ -1923,8 +1947,8 @@ fn write_bytecode_body(
 }
 
 /// Write a data frame.
-fn write_dataframe(
-    writer: &mut Vec<u8>,
+fn write_dataframe<W: Write>(
+    writer: &mut W,
     columns: &IndexMap<Arc<str>, RObject>,
     row_names: &[Arc<str>],
     ref_table: &mut RefTable,
@@ -1994,8 +2018,8 @@ fn validate_factor_attributes(attributes: &Attributes, value_len: usize) -> Resu
 }
 
 /// Write a factor.
-fn write_factor(
-    writer: &mut Vec<u8>,
+fn write_factor<W: Write>(
+    writer: &mut W,
     data: &FactorData,
     ref_table: &mut RefTable,
     symbol_tracker: &mut SymbolTracker,
@@ -2012,8 +2036,8 @@ fn write_factor(
     )
 }
 
-fn write_factor_with_attributes(
-    writer: &mut Vec<u8>,
+fn write_factor_with_attributes<W: Write>(
+    writer: &mut W,
     data: &FactorData,
     attributes: &Attributes,
     ref_table: &mut RefTable,
@@ -2043,8 +2067,8 @@ fn write_factor_with_attributes(
 }
 
 /// Write an S3 object.
-fn write_s3_object(
-    writer: &mut Vec<u8>,
+fn write_s3_object<W: Write>(
+    writer: &mut W,
     base: &RObject,
     class: &[Arc<str>],
     attributes: &Attributes,
@@ -2103,8 +2127,8 @@ fn build_s4_attributes(
 }
 
 /// Write an S4 object.
-fn write_s4_object(
-    writer: &mut Vec<u8>,
+fn write_s4_object<W: Write>(
+    writer: &mut W,
     class: &[Arc<str>],
     package: Option<&Arc<str>>,
     slots: &IndexMap<Arc<str>, RObject>,
@@ -2133,8 +2157,8 @@ fn write_s4_object(
 /// - Character vectors
 /// - Lists (generic vectors)
 /// - S4 objects (merges outer attributes with class and slots)
-fn write_object_with_attributes(
-    writer: &mut Vec<u8>,
+fn write_object_with_attributes<W: Write>(
+    writer: &mut W,
     object: &RObject,
     attributes: &Attributes,
     ref_table: &mut RefTable,
@@ -2404,8 +2428,8 @@ fn write_object_with_attributes(
 }
 
 /// Write attributes as a pairlist.
-fn write_attributes(
-    writer: &mut Vec<u8>,
+fn write_attributes<W: Write>(
+    writer: &mut W,
     attributes: &Attributes,
     ref_table: &mut RefTable,
     symbol_tracker: &mut SymbolTracker,

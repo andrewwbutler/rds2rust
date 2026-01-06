@@ -8,6 +8,8 @@ mod blob_source;
 mod decompression;
 #[cfg(target_arch = "wasm32")]
 mod extract;
+#[cfg(target_arch = "wasm32")]
+mod write;
 
 #[cfg(target_arch = "wasm32")]
 pub use async_parse::{read_rds_async, AsyncParseConfig};
@@ -21,6 +23,11 @@ pub use decompression::{
 };
 #[cfg(target_arch = "wasm32")]
 pub use extract::{extract_vector_chunked, extract_vector_to_js};
+#[cfg(target_arch = "wasm32")]
+pub use write::{
+    recommended_chunk_size_mb, write_rds_with_callback, write_rds_with_callback_and_compression,
+    write_rds_with_progress, write_rds_with_progress_and_compression,
+};
 #[cfg(target_arch = "wasm32")]
 pub use r#async::{
     estimate_parse_size, AsyncBufferedCursor, AsyncCursorConfig, AsyncRdsInput, AsyncReadFuture,

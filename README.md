@@ -93,6 +93,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### Streaming RDS writes (native)
+
+For large outputs, stream directly to a `Write` sink to avoid buffering the whole file in memory.
+
+```rust
+use rds2rust::{write_rds_streaming, write_rds_atomic, RObject};
+use std::fs::File;
+use std::io::BufWriter;
+use std::sync::Arc;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let obj = RObject::Character(vec![
+        Arc::from("hello"),
+        Arc::from("streaming"),
+    ].into());
+
+    // Stream to a file (gzip compressed)
+    let file = File::create("output.rds")?;
+    write_rds_streaming(&obj, BufWriter::new(file))?;
+
+    // Or write atomically (safe replace on success)
+    write_rds_atomic(&obj, "output.rds")?;
+
+    Ok(())
+}
+```
+
 ### Working with Data Frames
 
 ```rust
@@ -137,6 +164,39 @@ See `docs/wasm_decompression.md` for the JS helper, worker wrapper, and validati
 Gzip-compressed `.rds.gz` files are auto-detected in the WASM helper (browser support required:
 Chrome/Edge 89+, Firefox 102+, Safari 16.4+). Unsupported formats (bzip2/xz) return helpful
 errors.
+
+### WASM Streaming Writer
+
+WASM exposes chunked writer helpers that avoid large allocations in Rust. These emit
+`Uint8Array` chunks to a JS callback.
+
+```javascript
+import {
+  writeRdsWithCallback,
+  writeRdsWithProgress,
+  recommendedChunkSizeMb,
+} from "./rds2rust_wasm.js";
+
+const chunks = [];
+const chunkSizeMb = recommendedChunkSizeMb(); // 1, 4, 8, or 16
+
+writeRdsWithCallback(obj, (chunk) => {
+  chunks.push(chunk);
+}, chunkSizeMb);
+
+const blob = new Blob(chunks, { type: "application/octet-stream" });
+```
+
+Progress callback reports bytes written (not percent):
+
+```javascript
+writeRdsWithProgress(
+  obj,
+  (chunk) => chunks.push(chunk),
+  (bytesWritten) => console.log(`wrote ${bytesWritten} bytes`),
+  chunkSizeMb
+);
+```
 
 #### WASM Gzip Support
 

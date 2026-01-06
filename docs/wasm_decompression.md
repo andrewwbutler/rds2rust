@@ -52,6 +52,36 @@ const decompressed = await decompressBlobIfNeeded(file, {
 });
 ```
 
+## WASM Streaming Writer
+
+The WASM bundle exposes streaming writer helpers that emit `Uint8Array` chunks.
+
+```javascript
+import {
+  writeRdsWithCallback,
+  writeRdsWithProgress,
+  recommendedChunkSizeMb,
+} from "./rds2rust_wasm.js";
+
+const chunks = [];
+const chunkSizeMb = recommendedChunkSizeMb();
+
+writeRdsWithCallback(obj, (chunk) => {
+  chunks.push(chunk);
+}, chunkSizeMb);
+```
+
+Progress reports bytes written (not percent):
+
+```javascript
+writeRdsWithProgress(
+  obj,
+  (chunk) => chunks.push(chunk),
+  (bytesWritten) => console.log(`wrote ${bytesWritten} bytes`),
+  chunkSizeMb
+);
+```
+
 Advanced options for `decompressBlobIfNeeded`:
 
 - `budgetBytes`: hard cap on decompressed bytes.
