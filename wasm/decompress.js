@@ -1,4 +1,3 @@
-console.info("decompress.js loaded v2");
 export const DEFAULT_IN_MEMORY_THRESHOLD = 500 * 1024 * 1024;
 export const DEFAULT_BLOB_THRESHOLD = 10 * 1024 * 1024 * 1024;
 export const DEFAULT_MAX_RATIO = 1000;
@@ -40,7 +39,6 @@ export function browserSupportWarnings() {
 export async function detectCompression(blob) {
   const header = await blob.slice(0, 4).arrayBuffer();
   const view = new Uint8Array(header);
-  console.info("decompress.js: detectCompression header", Array.from(view));
   if (view[0] === 0x1f && view[1] === 0x8b) {
     return "gzip";
   }
@@ -126,12 +124,6 @@ async function decompressMultiMemberGzip(blob, offsets, options = {}) {
     const part = await decompressStreamToBlob(stream, onProgress);
     pieces.push(part);
   }
-  if (offsets.length > 1) {
-    console.info("gzip members decompressed", {
-      count: offsets.length,
-      totalSize: pieces.reduce((sum, part) => sum + part.size, 0),
-    });
-  }
   return new Blob(pieces);
 }
 
@@ -177,12 +169,7 @@ export async function decompressBlobIfNeeded(blob, options = {}) {
     );
   }
 
-  console.info("decompress.js: decompressBlobIfNeeded", {
-    size: blob.size,
-    filename,
-  });
   const compression = await detectCompression(blob);
-  console.info("decompress.js: compression detected", compression);
 
   if (filename) {
     const lower = filename.toLowerCase();
@@ -220,10 +207,6 @@ export async function decompressBlobIfNeeded(blob, options = {}) {
   if (headerOffsets.length && headerOffsets[0] !== 0) {
     headerOffsets.unshift(0);
   }
-  console.info("gzip header offsets detected", {
-    count: headerOffsets.length,
-    offsets: headerOffsets.slice(0, 5),
-  });
 
   if (budgetBytes) {
     const estimated = estimateDecompressedSize(blob.size, ratioEstimate);
@@ -246,8 +229,8 @@ export async function decompressBlobIfNeeded(blob, options = {}) {
     if (headerOffsets.length > 1) {
       try {
         decompressed = await decompressMultiMemberGzip(blob, headerOffsets, { onProgress });
-      } catch (error) {
-        console.warn("Multi-member gzip decompress failed; falling back to single stream.", error);
+      } catch {
+        // Fallback to single-stream gzip decompression below.
       }
     }
     if (!decompressed) {
@@ -255,7 +238,6 @@ export async function decompressBlobIfNeeded(blob, options = {}) {
       const stream = blob.stream().pipeThrough(decompressor);
       decompressed = await decompressStreamToBlob(stream, onProgress);
     }
-    console.info("decompress.js: decompressed size", decompressed.size);
     if (decompressed.size > maxBytes) {
       throw new Error(
         `Compression ratio exceeded safety limit (${maxRatio}:1).`
