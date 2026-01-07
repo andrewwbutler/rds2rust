@@ -41,6 +41,21 @@ impl Default for AsyncCursorConfig {
 }
 
 #[cfg(target_arch = "wasm32")]
+pub fn recommended_buffer_config() -> AsyncCursorConfig {
+    let device_memory_gb = web_sys::window()
+        .and_then(|w| w.navigator().device_memory())
+        .unwrap_or(4.0);
+
+    let buffer_mb = (device_memory_gb * 32.0).min(128.0).max(16.0) as usize;
+    let max_buffer_mb = (buffer_mb * 2).min(256);
+
+    AsyncCursorConfig {
+        buffer_size: buffer_mb * 1024 * 1024,
+        max_buffer_size: max_buffer_mb * 1024 * 1024,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 pub struct AsyncBufferedCursor<'a> {
     source: &'a dyn AsyncRdsInput,
     buffer: Vec<u8>,

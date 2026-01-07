@@ -50,4 +50,13 @@ pub enum Error {
 
     #[error("Memory budget exhausted: needed {needed} bytes, {available} available")]
     MemoryBudgetExceeded { needed: usize, available: usize },
+
+    #[error("Object requires full parse (reason: {reason})")]
+    RequiresFullParse { reason: String },
+
+    #[error("Unsupported structure in streaming mode: {structure}")]
+    UnsupportedInStreamingMode { structure: String },
+
+    #[error("Partial metadata: {missing_fields:?}")]
+    PartialMetadataWarning { missing_fields: Vec<String> },
 }

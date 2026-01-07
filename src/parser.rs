@@ -2,9 +2,12 @@
 
 use crate::constants::*;
 use crate::error::{Error, Result};
+use crate::streaming::{
+    RdsVisitor, StreamingError, StreamingProgress, StreamingResult, VisitAction,
+};
 use crate::types::{
-    Attributes, DataFrameData, FactorData, Logical, PairlistElement, RObject, S3ObjectData,
-    S4ObjectData,
+    Attributes, Complex, DataFrameData, FactorData, LazyVector, Logical, PairlistElement, RObject,
+    S3ObjectData, S4ObjectData,
 };
 use byteorder::{BigEndian, ReadBytesExt};
 use flate2::read::GzDecoder;
@@ -13,6 +16,7 @@ use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, RwLock};
 
+use crate::extraction::VectorKind;
 #[cfg(target_arch = "wasm32")]
 use crate::wasm::{AsyncBufferedCursor, AsyncCursorConfig, AsyncRdsInput};
 
@@ -574,6 +578,29 @@ pub fn parse_rds_with_input(
     parse_rds_internal_cursor(&mut cursor, &mut ctx)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub fn traverse_rds_streaming_with_input<V: RdsVisitor>(
+    input: &dyn crate::RdsInput,
+    config: crate::ParseConfig,
+    visitor: &mut V,
+) -> StreamingResult<(), V::Error> {
+    let mut ctx = ParserContext::from_config(config);
+    let mut cursor = RdsCursor::new_input(input)?;
+    traverse_rds_internal_cursor(&mut cursor, &mut ctx, visitor, None)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn traverse_rds_streaming_with_input_progress<V: RdsVisitor>(
+    input: &dyn crate::RdsInput,
+    config: crate::ParseConfig,
+    visitor: &mut V,
+    progress: &mut dyn FnMut(StreamingProgress),
+) -> StreamingResult<(), V::Error> {
+    let mut ctx = ParserContext::from_config(config);
+    let mut cursor = RdsCursor::new_input(input)?;
+    traverse_rds_internal_cursor(&mut cursor, &mut ctx, visitor, Some(progress))
+}
+
 fn parse_rds_internal_cursor(
     cursor: &mut RdsCursor<'_>,
     ctx: &mut ParserContext,
@@ -633,6 +660,55 @@ fn parse_rds_internal_cursor(
     result
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn traverse_rds_internal_cursor<V: RdsVisitor>(
+    cursor: &mut RdsCursor<'_>,
+    ctx: &mut ParserContext,
+    visitor: &mut V,
+    progress: Option<&mut dyn FnMut(StreamingProgress)>,
+) -> StreamingResult<(), V::Error> {
+    let format_version = parse_header(cursor)?;
+    visitor
+        .on_header(format_version)
+        .map_err(StreamingError::Visitor)?;
+
+    if format_version >= 3 {
+        ensure_bytes_available(cursor, 4, "parse_rds:enc_len")?;
+        let enc_len = cursor
+            .read_u32::<BigEndian>()
+            .map_err(|e| StreamingError::Parse(Error::Io(e)))? as usize;
+        guard_allocation(ctx, enc_len, 1, cursor, "header encoding")?;
+        let mut enc_bytes = vec![0u8; enc_len];
+        ensure_bytes_available(cursor, enc_len, "parse_rds:enc_bytes")?;
+        cursor
+            .read_exact(&mut enc_bytes)
+            .map_err(|e| StreamingError::Parse(Error::Io(e)))?;
+    }
+
+    let mut ref_table = RefTable::new();
+    let mut symbol_table = SymbolTable::new();
+    let mut dedup_table = DedupTable::new();
+    let mut ref_paths = StreamingRefTable::new();
+    let mut path = crate::ObjectPath::new(Vec::new());
+    let mut progress_state = StreamingProgressState::new(Some(cursor.len()), progress);
+
+    match parse_object_streaming(
+        ctx,
+        cursor,
+        &mut ref_table,
+        &mut symbol_table,
+        &mut dedup_table,
+        &mut ref_paths,
+        &mut progress_state,
+        visitor,
+        &mut path,
+        true,
+    )? {
+        StreamControl::Stop => Ok(()),
+        StreamControl::Continue => Ok(()),
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 pub async fn parse_rds_with_async_input(
     input: &dyn AsyncRdsInput,
@@ -642,6 +718,35 @@ pub async fn parse_rds_with_async_input(
     let mut ctx = ParserContext::from_config(config);
     let mut cursor = AsyncBufferedCursor::new(input, cursor_config).await?;
     parse_rds_internal_async(&mut cursor, &mut ctx).await
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn traverse_rds_streaming_with_async_input<V: RdsVisitor>(
+    input: &dyn AsyncRdsInput,
+    config: crate::ParseConfig,
+    cursor_config: AsyncCursorConfig,
+    visitor: &mut V,
+) -> StreamingResult<(), V::Error> {
+    let mut ctx = ParserContext::from_config(config);
+    let mut cursor = AsyncBufferedCursor::new(input, cursor_config)
+        .await
+        .map_err(StreamingError::Parse)?;
+    traverse_rds_internal_async_streaming(&mut cursor, &mut ctx, visitor, None).await
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn traverse_rds_streaming_with_async_input_progress<V: RdsVisitor>(
+    input: &dyn AsyncRdsInput,
+    config: crate::ParseConfig,
+    cursor_config: AsyncCursorConfig,
+    visitor: &mut V,
+    progress: &mut dyn FnMut(StreamingProgress),
+) -> StreamingResult<(), V::Error> {
+    let mut ctx = ParserContext::from_config(config);
+    let mut cursor = AsyncBufferedCursor::new(input, cursor_config)
+        .await
+        .map_err(StreamingError::Parse)?;
+    traverse_rds_internal_async_streaming(&mut cursor, &mut ctx, visitor, Some(progress)).await
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -669,6 +774,47 @@ async fn parse_rds_internal_async(
         &mut dedup_table,
     )
     .await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn traverse_rds_internal_async_streaming<V: RdsVisitor>(
+    cursor: &mut AsyncBufferedCursor<'_>,
+    ctx: &mut ParserContext,
+    visitor: &mut V,
+    progress: Option<&mut dyn FnMut(StreamingProgress)>,
+) -> StreamingResult<(), V::Error> {
+    let format_version = parse_with_sync_cursor_retry(cursor, 14, 14, |c| parse_header(c)).await?;
+    visitor
+        .on_header(format_version)
+        .map_err(StreamingError::Visitor)?;
+
+    if format_version >= 3 {
+        let enc_len = read_u32_async(cursor).await? as usize;
+        guard_allocation_common(ctx, enc_len, 1, "header encoding")?;
+        let _enc_bytes = read_bytes_async(cursor, enc_len).await?;
+    }
+
+    let mut ref_table = RefTable::new();
+    let mut symbol_table = SymbolTable::new();
+    let mut dedup_table = DedupTable::new();
+    let mut ref_paths = StreamingRefTable::new();
+    let mut path = crate::ObjectPath::new(Vec::new());
+    let mut progress_state = StreamingProgressState::new(cursor.total_len(), progress);
+
+    let _ = parse_object_streaming_async(
+        ctx,
+        cursor,
+        &mut ref_table,
+        &mut symbol_table,
+        &mut dedup_table,
+        &mut ref_paths,
+        &mut progress_state,
+        visitor,
+        &mut path,
+        true,
+    )
+    .await?;
+    Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -725,6 +871,91 @@ async fn parse_object_async(
                 dedup_table.rollback(dedup_checkpoint);
                 size = std::cmp::min(max_size, size.saturating_mul(2));
                 continue;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn parse_object_streaming_async<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut AsyncBufferedCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    progress: &mut StreamingProgressState<'_>,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    emit: bool,
+) -> StreamingResult<StreamControl, V::Error> {
+    cursor
+        .ensure_available(8)
+        .await
+        .map_err(StreamingError::Parse)?;
+    let estimate = crate::estimate_parse_size(cursor).unwrap_or(cursor.buffer_size());
+    let total_len = cursor
+        .total_len()
+        .ok_or_else(|| Error::InvalidFormat("async cursor requires length".to_string()))?;
+    let remaining = (total_len - cursor.position()) as usize;
+    let max_size = std::cmp::min(cursor.max_buffer_size(), remaining);
+    let mut size = estimate.clamp(4, max_size.max(4));
+
+    loop {
+        cursor
+            .ensure_available(size)
+            .await
+            .map_err(StreamingError::Parse)?;
+        let slice = cursor.as_sync_slice(size).map_err(StreamingError::Parse)?;
+        let mut sync_cursor = RdsCursor::new_slice(slice);
+
+        let ctx_snapshot = ctx.snapshot();
+        let ref_checkpoint = ref_table.checkpoint();
+        let symbol_checkpoint = symbol_table.checkpoint();
+        let dedup_checkpoint = dedup_table.checkpoint();
+
+        progress.base_offset = cursor.position();
+        let result = parse_object_streaming(
+            ctx,
+            &mut sync_cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            emit,
+        );
+
+        match result {
+            Ok(control) => {
+                cursor
+                    .advance(sync_cursor.position())
+                    .map_err(StreamingError::Parse)?;
+                return Ok(control);
+            }
+            Err(StreamingError::Visitor(err)) => return Err(StreamingError::Visitor(err)),
+            Err(StreamingError::Parse(Error::UnexpectedEof))
+            | Err(StreamingError::Parse(Error::UnexpectedEofDetail { .. })) => {
+                ctx.restore(ctx_snapshot);
+                ref_table.rollback(ref_checkpoint);
+                symbol_table.rollback(symbol_checkpoint);
+                dedup_table.rollback(dedup_checkpoint);
+                if size >= max_size {
+                    return result;
+                }
+                size = std::cmp::min(max_size, size.saturating_mul(2));
+            }
+            Err(StreamingError::Parse(Error::InvalidFormat(message)))
+                if message.contains("exceeds remaining") && size < max_size =>
+            {
+                ctx.restore(ctx_snapshot);
+                ref_table.rollback(ref_checkpoint);
+                symbol_table.rollback(symbol_checkpoint);
+                dedup_table.rollback(dedup_checkpoint);
+                size = std::cmp::min(max_size, size.saturating_mul(2));
             }
             Err(err) => return Err(err),
         }
@@ -1415,6 +1646,1523 @@ fn parse_object(
     }
 
     Ok(obj)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamControl {
+    Continue,
+    Stop,
+}
+
+struct StreamingProgressState<'a> {
+    total_bytes: Option<u64>,
+    objects_visited: usize,
+    base_offset: u64,
+    callback: Option<&'a mut dyn FnMut(StreamingProgress)>,
+}
+
+impl<'a> StreamingProgressState<'a> {
+    fn new(
+        total_bytes: Option<u64>,
+        callback: Option<&'a mut dyn FnMut(StreamingProgress)>,
+    ) -> Self {
+        Self {
+            total_bytes,
+            objects_visited: 0,
+            base_offset: 0,
+            callback,
+        }
+    }
+
+    fn report_object(&mut self, cursor_pos: u64) {
+        self.objects_visited = self.objects_visited.saturating_add(1);
+        if let Some(callback) = self.callback.as_mut() {
+            callback(StreamingProgress {
+                bytes_read: self.base_offset.saturating_add(cursor_pos),
+                total_bytes: self.total_bytes,
+                objects_visited: self.objects_visited,
+            });
+        }
+    }
+}
+
+struct StreamingRefTable {
+    paths: Vec<Option<crate::ObjectPath>>,
+}
+
+impl StreamingRefTable {
+    fn new() -> Self {
+        Self { paths: vec![None] }
+    }
+
+    fn insert(&mut self, index: u32, path: crate::ObjectPath) {
+        let idx = index as usize;
+        if self.paths.len() <= idx {
+            self.paths.resize_with(idx + 1, || None);
+        }
+        self.paths[idx] = Some(path);
+    }
+
+    fn get(&self, index: u32) -> Option<&crate::ObjectPath> {
+        self.paths
+            .get(index as usize)
+            .and_then(|path| path.as_ref())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_object_streaming<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    progress: &mut StreamingProgressState<'_>,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    emit: bool,
+) -> StreamingResult<StreamControl, V::Error> {
+    let pos = cursor.position();
+    ensure_bytes_available(cursor, 1, "streaming:parse_object:first_byte")?;
+    let first_byte = cursor
+        .read_u8()
+        .map_err(|e| StreamingError::Parse(Error::Io(e)))?;
+    cursor.set_position(pos);
+
+    if first_byte >= 240 {
+        let _ = cursor
+            .read_u8()
+            .map_err(|e| StreamingError::Parse(Error::Io(e)))?;
+        if emit {
+            visitor
+                .on_object_start(path, "Null")
+                .map_err(StreamingError::Visitor)?;
+            visitor
+                .on_object_end(path)
+                .map_err(StreamingError::Visitor)?;
+        }
+        progress.report_object(cursor.position());
+        return Ok(StreamControl::Continue);
+    }
+
+    ensure_bytes_available(cursor, 4, "streaming:parse_object:flags")?;
+    let flags = cursor
+        .read_u32::<BigEndian>()
+        .map_err(|e| StreamingError::Parse(Error::Io(e)))?;
+    let type_from_8_15 = (flags >> 8) & 0xFF;
+    let type_from_0_7 = flags & 0xFF;
+    let sexp_type =
+        if type_from_0_7 == REFSXP || (2..=S4SXP).contains(&type_from_0_7) || type_from_0_7 == 1 {
+            type_from_0_7
+        } else if type_from_0_7 == 0 && type_from_8_15 >= 2 {
+            type_from_8_15
+        } else {
+            type_from_0_7
+        };
+
+    let has_attr = if sexp_type == REFSXP {
+        false
+    } else {
+        (flags & HAS_ATTR_BIT) != 0
+    };
+    let has_tag = if sexp_type == REFSXP {
+        false
+    } else {
+        (flags & HAS_TAG_BIT) != 0
+    };
+
+    if sexp_type == REFSXP {
+        let ref_index = flags >> 8;
+        if emit {
+            visitor
+                .on_object_start(path, "SharedRef")
+                .map_err(StreamingError::Visitor)?;
+            visitor
+                .on_shared_reference(path, ref_paths.get(ref_index))
+                .map_err(StreamingError::Visitor)?;
+            visitor
+                .on_object_end(path)
+                .map_err(StreamingError::Visitor)?;
+        }
+        progress.report_object(cursor.position());
+        return Ok(StreamControl::Continue);
+    }
+
+    let early_attributes = if has_attr
+        && (sexp_type == LISTSXP
+            || sexp_type == LANGSXP
+            || sexp_type == CLOSXP
+            || sexp_type == PROMSXP)
+    {
+        let prev = ctx.parsing_attributes;
+        ctx.parsing_attributes = true;
+        let obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+        ctx.parsing_attributes = prev;
+        Some(parse_attributes(obj, ctx)?)
+    } else if sexp_type == S4SXP && has_tag {
+        ctx.parsing_s4_tag = true;
+        let pairlist = parse_pairlist(ctx, cursor, true, ref_table, symbol_table, dedup_table)?;
+        let attrs = if let RObject::Pairlist(list) = pairlist {
+            parse_attributes(RObject::Pairlist(list), ctx)?
+        } else {
+            parse_attributes(pairlist, ctx)?
+        };
+        ctx.parsing_s4_tag = false;
+        Some(attrs)
+    } else {
+        None
+    };
+
+    let track_reference = should_track_reference(sexp_type, has_attr);
+    let ref_index = if track_reference && sexp_type != CLOSXP {
+        let index = ref_table.add(RObject::Null);
+        ref_paths.insert(index, path.clone());
+        Some(index)
+    } else {
+        None
+    };
+
+    let obj_type = sexp_type_name(sexp_type);
+    let mut emit_children = emit;
+    if emit {
+        match visitor
+            .on_object_start(path, obj_type)
+            .map_err(StreamingError::Visitor)?
+        {
+            VisitAction::Stop => {
+                progress.report_object(cursor.position());
+                return Ok(StreamControl::Stop);
+            }
+            VisitAction::Skip => emit_children = false,
+            VisitAction::Continue => {}
+        }
+    }
+
+    if let Some(ref attrs) = early_attributes {
+        if emit {
+            visitor
+                .on_attributes(path, attrs)
+                .map_err(StreamingError::Visitor)?;
+        }
+    }
+
+    let control = match sexp_type {
+        NILSXP | NILVALUE_SXP => StreamControl::Continue,
+        INTSXP => parse_atomic_vector_streaming::<i32, V>(
+            ctx,
+            cursor,
+            VectorKind::Integer,
+            emit_children,
+            visitor,
+            path,
+            progress,
+        )?,
+        REALSXP => parse_atomic_vector_streaming::<f64, V>(
+            ctx,
+            cursor,
+            VectorKind::Real,
+            emit_children,
+            visitor,
+            path,
+            progress,
+        )?,
+        LGLSXP => parse_atomic_vector_streaming::<Logical, V>(
+            ctx,
+            cursor,
+            VectorKind::Logical,
+            emit_children,
+            visitor,
+            path,
+            progress,
+        )?,
+        RAWSXP => parse_atomic_vector_streaming::<u8, V>(
+            ctx,
+            cursor,
+            VectorKind::Raw,
+            emit_children,
+            visitor,
+            path,
+            progress,
+        )?,
+        CPLXSXP => parse_atomic_vector_streaming::<Complex, V>(
+            ctx,
+            cursor,
+            VectorKind::Complex,
+            emit_children,
+            visitor,
+            path,
+            progress,
+        )?,
+        STRSXP => parse_character_vector_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            emit_children,
+            visitor,
+            path,
+            progress,
+        )?,
+        SYMSXP => parse_symbol_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            emit_children,
+            visitor,
+            path,
+            ref_index,
+            progress,
+        )?,
+        VECSXP => parse_list_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            emit_children,
+            visitor,
+            path,
+            progress,
+        )?,
+        LISTSXP | ATTRLISTSXP => parse_pairlist_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            has_tag,
+            emit_children,
+            visitor,
+            path,
+            progress,
+        )?,
+        LANGSXP | ATTRLANGSXP => parse_language_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            has_tag,
+            emit_children,
+            visitor,
+            path,
+            progress,
+        )?,
+        EXPRSXP => parse_expression_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            emit_children,
+            visitor,
+            path,
+            progress,
+        )?,
+        CLOSXP => parse_closure_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            emit_children,
+            visitor,
+            path,
+            progress,
+        )?,
+        ENVSXP => parse_environment_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            emit_children,
+            visitor,
+            path,
+            progress,
+        )?,
+        PROMSXP => parse_promise_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            emit_children,
+            visitor,
+            path,
+            progress,
+        )?,
+        BCODESXP => parse_bytecode_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            emit_children,
+            visitor,
+            path,
+            progress,
+        )?,
+        S4SXP => StreamControl::Continue,
+        NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => {
+            let namespace_obj = parse_namespace(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+            if emit_children {
+                if let RObject::Namespace(values) = namespace_obj {
+                    visitor
+                        .on_vector_metadata(path, VectorKind::Character, values.len())
+                        .map_err(StreamingError::Visitor)?;
+                }
+            }
+            StreamControl::Continue
+        }
+        ALTREP_SXP => parse_altrep_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            emit_children,
+            visitor,
+            path,
+            progress,
+        )?,
+        WEAKREFSXP | EXTPTRSXP | PACKAGESXP | MISSINGARG_SXP | PERSISTSXP | GLOBALENV_SXP
+        | BASEENV_SXP | EMPTYENV_SXP | UNBOUNDVALUE_SXP => StreamControl::Continue,
+        GENERICREFSXP | CLASSREFSXP | 244 => StreamControl::Continue,
+        _ if sexp_type > 25 && sexp_type < 238 => StreamControl::Continue,
+        _ => return Err(StreamingError::Parse(Error::UnknownSexpType(sexp_type))),
+    };
+
+    if has_attr && early_attributes.is_none() {
+        let prev = ctx.parsing_attributes;
+        ctx.parsing_attributes = true;
+        let attr_obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+        ctx.parsing_attributes = prev;
+        let attrs = parse_attributes(attr_obj, ctx)?;
+        if emit {
+            visitor
+                .on_attributes(path, &attrs)
+                .map_err(StreamingError::Visitor)?;
+        }
+    }
+
+    if emit {
+        visitor
+            .on_object_end(path)
+            .map_err(StreamingError::Visitor)?;
+    }
+
+    progress.report_object(cursor.position());
+    Ok(control)
+}
+
+fn sexp_type_name(sexp_type: u32) -> &'static str {
+    match sexp_type {
+        NILSXP | NILVALUE_SXP => "Null",
+        SYMSXP => "Symbol",
+        LISTSXP => "Pairlist",
+        CLOSXP => "Closure",
+        ENVSXP => "Environment",
+        PROMSXP => "Promise",
+        LANGSXP => "Language",
+        SPECIALSXP => "Special",
+        BUILTINSXP => "Builtin",
+        CHARSXP => "Charsxp",
+        LGLSXP => "Logical",
+        INTSXP => "Integer",
+        REALSXP => "Real",
+        CPLXSXP => "Complex",
+        STRSXP => "Character",
+        VECSXP => "List",
+        EXPRSXP => "Expression",
+        BCODESXP => "Bytecode",
+        EXTPTRSXP => "ExternalPtr",
+        WEAKREFSXP => "WeakRef",
+        S4SXP => "S4Object",
+        NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => "Namespace",
+        ALTREP_SXP => "Altrep",
+        _ => "Unknown",
+    }
+}
+
+fn parse_atomic_vector_streaming<T, V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    kind: VectorKind,
+    emit: bool,
+    visitor: &mut V,
+    path: &crate::ObjectPath,
+    _progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error> {
+    let length = cursor
+        .read_u32::<BigEndian>()
+        .map_err(|e| StreamingError::Parse(Error::Io(e)))? as usize;
+    let elem_size = match kind {
+        VectorKind::Logical => 4,
+        _ => std::mem::size_of::<T>(),
+    };
+    guard_allocation(ctx, length, elem_size, cursor, "vector")?;
+    let offset = cursor.position();
+    let byte_len = length
+        .checked_mul(elem_size)
+        .ok_or_else(|| Error::InvalidFormat("vector byte length overflow".to_string()))?;
+    if emit {
+        visitor
+            .on_vector_metadata(path, kind, length)
+            .map_err(StreamingError::Visitor)?;
+        let span = LazyVector {
+            length,
+            offset,
+            byte_len: byte_len as u64,
+        };
+        let _ = visitor
+            .on_vector_chunk_available(path, span)
+            .map_err(StreamingError::Visitor)?;
+    }
+    ensure_bytes_available(cursor, byte_len, "streaming:vector_skip")?;
+    cursor
+        .seek(SeekFrom::Current(byte_len as i64))
+        .map_err(|e| StreamingError::Parse(Error::Io(e)))?;
+    Ok(StreamControl::Continue)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_character_vector_streaming<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    emit: bool,
+    visitor: &mut V,
+    path: &crate::ObjectPath,
+    _progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error> {
+    let length = cursor
+        .read_u32::<BigEndian>()
+        .map_err(|e| StreamingError::Parse(Error::Io(e)))? as usize;
+    guard_allocation(ctx, length, 1, cursor, "character vector")?;
+    let offset = cursor.position();
+    let start_pos = cursor.position();
+    if emit {
+        visitor
+            .on_vector_metadata(path, VectorKind::Character, length)
+            .map_err(StreamingError::Visitor)?;
+    }
+
+    for _ in 0..length {
+        let pos = cursor.position();
+        let flags = cursor
+            .read_u32::<BigEndian>()
+            .map_err(|e| StreamingError::Parse(Error::Io(e)))?;
+        let type_from_0_7 = flags & 0xFF;
+        let type_from_8_15 = (flags >> 8) & 0xFF;
+
+        if type_from_0_7 == REFSXP {
+            continue;
+        }
+
+        if type_from_0_7 == CHARSXP || type_from_8_15 == CHARSXP {
+            let _ = parse_charsxp_content(ctx, cursor, flags)?;
+            continue;
+        }
+
+        cursor.set_position(pos);
+        let _ = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+    }
+
+    let byte_len = cursor.position().saturating_sub(start_pos);
+    if emit {
+        let span = LazyVector {
+            length,
+            offset,
+            byte_len,
+        };
+        let _ = visitor
+            .on_vector_chunk_available(path, span)
+            .map_err(StreamingError::Visitor)?;
+    }
+
+    Ok(StreamControl::Continue)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_symbol_streaming<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    _emit: bool,
+    _visitor: &mut V,
+    _path: &crate::ObjectPath,
+    ref_index: Option<u32>,
+    _progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error> {
+    let name_obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+    let symbol_obj = match name_obj {
+        RObject::Character(names) if names.len() == 1 => {
+            let name = &names[0];
+            if name.as_ref() == "\x01NULL\x01" {
+                RObject::Symbol(names.into_vec().into_iter().next().unwrap())
+            } else {
+                RObject::Symbol(name.clone())
+            }
+        }
+        other => other,
+    };
+    symbol_table.add(symbol_obj.clone());
+    if let Some(index) = ref_index {
+        ref_table.update(index, symbol_obj.clone());
+    }
+    Ok(StreamControl::Continue)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_list_streaming<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    emit: bool,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error> {
+    let length = cursor
+        .read_u32::<BigEndian>()
+        .map_err(|e| StreamingError::Parse(Error::Io(e)))? as usize;
+    guard_allocation(ctx, length, 1, cursor, "VECSXP/list")?;
+    for index in 0..length {
+        if emit {
+            path.push(Arc::from(format!("[{}]", index)));
+            if matches!(
+                parse_object_streaming(
+                    ctx,
+                    cursor,
+                    ref_table,
+                    symbol_table,
+                    dedup_table,
+                    ref_paths,
+                    progress,
+                    visitor,
+                    path,
+                    true,
+                )?,
+                StreamControl::Stop
+            ) {
+                path.pop();
+                return Ok(StreamControl::Stop);
+            }
+            path.pop();
+        } else {
+            let _ = parse_object_streaming(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                false,
+            )?;
+        }
+
+        if index + 1 < length {
+            let pos = cursor.position();
+            ensure_bytes_available(cursor, 1, "streaming:list:peek")?;
+            let marker = cursor
+                .read_u8()
+                .map_err(|e| StreamingError::Parse(Error::Io(e)))?;
+            if marker != NILVALUE_SXP as u8 {
+                cursor.set_position(pos);
+            }
+        }
+    }
+    Ok(StreamControl::Continue)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_pairlist_streaming<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    has_tag: bool,
+    emit: bool,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error> {
+    let mut index = 0usize;
+    let (_tag_name, control) = parse_pairlist_element_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        has_tag,
+        emit,
+        visitor,
+        path,
+        index,
+        progress,
+    )?;
+    if matches!(control, StreamControl::Stop) {
+        return Ok(StreamControl::Stop);
+    }
+    index += 1;
+
+    loop {
+        let pos = cursor.position();
+        let remaining = cursor.len().saturating_sub(pos);
+        if remaining == 0 {
+            break;
+        }
+        ensure_bytes_available(cursor, 4, "streaming:pairlist:next_flags")?;
+        let flags = cursor
+            .read_u32::<BigEndian>()
+            .map_err(|e| StreamingError::Parse(Error::Io(e)))?;
+        let next_type = flags & 0xFF;
+        let has_tag_next = (flags & HAS_TAG_BIT) != 0;
+        let continues_pairlist =
+            has_tag_next || matches!(next_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP);
+
+        if next_type == REFSXP {
+            if emit {
+                visitor
+                    .on_object_start(path, "SharedRef")
+                    .map_err(StreamingError::Visitor)?;
+                visitor
+                    .on_object_end(path)
+                    .map_err(StreamingError::Visitor)?;
+            }
+            break;
+        } else if continues_pairlist {
+            let (_tag_name, control) = parse_pairlist_element_streaming(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                has_tag_next,
+                emit,
+                visitor,
+                path,
+                index,
+                progress,
+            )?;
+            if matches!(control, StreamControl::Stop) {
+                return Ok(StreamControl::Stop);
+            }
+            index += 1;
+        } else {
+            cursor.set_position(pos);
+            let _ = parse_object_streaming(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                false,
+            )?;
+            break;
+        }
+    }
+    Ok(StreamControl::Continue)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_pairlist_element_streaming<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    has_tag: bool,
+    emit: bool,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    index: usize,
+    progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<(Option<Arc<str>>, StreamControl), V::Error> {
+    let tag_name = if has_tag {
+        let pos = cursor.position();
+        ensure_bytes_available(cursor, 4, "streaming:pairlist:tag_flags")?;
+        let flags = cursor
+            .read_u32::<BigEndian>()
+            .map_err(|e| StreamingError::Parse(Error::Io(e)))?;
+        let tag_type = flags & 0xFF;
+        let tag_obj = if tag_type == REFSXP {
+            let sym_index = flags >> 8;
+            if let Some(sym) = symbol_table.get(sym_index) {
+                sym.clone()
+            } else if let Some(obj) = ref_table.get(sym_index) {
+                obj.read()
+                    .map_err(|_| {
+                        StreamingError::Parse(Error::Unsupported(
+                            "shared object lock poisoned".to_string(),
+                        ))
+                    })?
+                    .clone()
+            } else {
+                return Err(StreamingError::Parse(Error::InvalidFormat(format!(
+                    "Invalid TAG REFSXP index {} (symbol table size={}, ref table size={})",
+                    sym_index,
+                    symbol_table.len(),
+                    ref_table.next_index - 1
+                ))));
+            }
+        } else {
+            cursor.set_position(pos);
+            parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?
+        };
+        extract_tag_name(tag_obj.clone())
+    } else {
+        None
+    };
+
+    if emit {
+        let segment = tag_name
+            .clone()
+            .unwrap_or_else(|| Arc::from(format!("[{}]", index)));
+        path.push(segment);
+        let control = parse_object_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            true,
+        )?;
+        path.pop();
+        Ok((tag_name, control))
+    } else {
+        let _ = parse_object_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            false,
+        )?;
+        Ok((tag_name, StreamControl::Continue))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_language_streaming<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    has_tag: bool,
+    emit: bool,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error> {
+    if has_tag {
+        let _ = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+    }
+    if emit {
+        path.push(Arc::from("function"));
+        if matches!(
+            parse_object_streaming(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                true,
+            )?,
+            StreamControl::Stop
+        ) {
+            path.pop();
+            return Ok(StreamControl::Stop);
+        }
+        path.pop();
+
+        path.push(Arc::from("args"));
+        let control = parse_object_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            true,
+        )?;
+        path.pop();
+        return Ok(control);
+    }
+
+    let _ = parse_object_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )?;
+    parse_object_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_expression_streaming<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    emit: bool,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error> {
+    let length = cursor
+        .read_u32::<BigEndian>()
+        .map_err(|e| StreamingError::Parse(Error::Io(e)))? as usize;
+    guard_allocation(ctx, length, 1, cursor, "expression vector")?;
+    for index in 0..length {
+        if emit {
+            path.push(Arc::from(format!("[{}]", index)));
+            if matches!(
+                parse_object_streaming(
+                    ctx,
+                    cursor,
+                    ref_table,
+                    symbol_table,
+                    dedup_table,
+                    ref_paths,
+                    progress,
+                    visitor,
+                    path,
+                    true,
+                )?,
+                StreamControl::Stop
+            ) {
+                path.pop();
+                return Ok(StreamControl::Stop);
+            }
+            path.pop();
+        } else {
+            let _ = parse_object_streaming(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                false,
+            )?;
+        }
+    }
+    Ok(StreamControl::Continue)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_closure_streaming<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    emit: bool,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error> {
+    if emit {
+        path.push(Arc::from("formals"));
+        if matches!(
+            parse_object_streaming(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                true,
+            )?,
+            StreamControl::Stop
+        ) {
+            path.pop();
+            return Ok(StreamControl::Stop);
+        }
+        path.pop();
+        path.push(Arc::from("body"));
+        if matches!(
+            parse_object_streaming(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                true,
+            )?,
+            StreamControl::Stop
+        ) {
+            path.pop();
+            return Ok(StreamControl::Stop);
+        }
+        path.pop();
+        path.push(Arc::from("environment"));
+        let control = parse_object_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            true,
+        )?;
+        path.pop();
+        return Ok(control);
+    }
+
+    let _ = parse_object_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )?;
+    let _ = parse_object_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )?;
+    parse_object_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_environment_streaming<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    emit: bool,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error> {
+    if emit {
+        path.push(Arc::from("enclosing"));
+        if matches!(
+            parse_object_streaming(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                true,
+            )?,
+            StreamControl::Stop
+        ) {
+            path.pop();
+            return Ok(StreamControl::Stop);
+        }
+        path.pop();
+        path.push(Arc::from("frame"));
+        if matches!(
+            parse_object_streaming(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                true,
+            )?,
+            StreamControl::Stop
+        ) {
+            path.pop();
+            return Ok(StreamControl::Stop);
+        }
+        path.pop();
+        path.push(Arc::from("hashtab"));
+        let control = parse_object_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            true,
+        )?;
+        path.pop();
+        return Ok(control);
+    }
+
+    let _ = parse_object_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )?;
+    let _ = parse_object_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )?;
+    parse_object_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_promise_streaming<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    emit: bool,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error> {
+    if emit {
+        path.push(Arc::from("value"));
+        if matches!(
+            parse_object_streaming(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                true,
+            )?,
+            StreamControl::Stop
+        ) {
+            path.pop();
+            return Ok(StreamControl::Stop);
+        }
+        path.pop();
+        path.push(Arc::from("expression"));
+        if matches!(
+            parse_object_streaming(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                true,
+            )?,
+            StreamControl::Stop
+        ) {
+            path.pop();
+            return Ok(StreamControl::Stop);
+        }
+        path.pop();
+        path.push(Arc::from("environment"));
+        let control = parse_object_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            true,
+        )?;
+        path.pop();
+        return Ok(control);
+    }
+
+    let _ = parse_object_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )?;
+    let _ = parse_object_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )?;
+    parse_object_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_bytecode_streaming<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    emit: bool,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error> {
+    if emit {
+        path.push(Arc::from("code"));
+        if matches!(
+            parse_object_streaming(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                true,
+            )?,
+            StreamControl::Stop
+        ) {
+            path.pop();
+            return Ok(StreamControl::Stop);
+        }
+        path.pop();
+        path.push(Arc::from("constants"));
+        if matches!(
+            parse_object_streaming(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                true,
+            )?,
+            StreamControl::Stop
+        ) {
+            path.pop();
+            return Ok(StreamControl::Stop);
+        }
+        path.pop();
+        path.push(Arc::from("expr"));
+        let control = parse_object_streaming(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            true,
+        )?;
+        path.pop();
+        return Ok(control);
+    }
+
+    let _ = parse_object_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )?;
+    let _ = parse_object_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )?;
+    parse_object_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_altrep_streaming<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    _ref_paths: &mut StreamingRefTable,
+    emit: bool,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    _progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error> {
+    let class_info = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+    let state = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+    let prev = ctx.parsing_attributes;
+    ctx.parsing_attributes = true;
+    let attr_obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+    ctx.parsing_attributes = prev;
+    let attrs = parse_attributes(attr_obj, ctx)?;
+    if emit {
+        if let Some((kind, len)) = estimate_altrep_metadata(&class_info, &state)
+            .or_else(|| estimate_compact_seq_fallback(&state))
+        {
+            visitor
+                .on_vector_metadata(path, kind, len)
+                .map_err(StreamingError::Visitor)?;
+        }
+        visitor
+            .on_attributes(path, &attrs)
+            .map_err(StreamingError::Visitor)?;
+    }
+    Ok(StreamControl::Continue)
+}
+
+fn estimate_altrep_metadata(class_info: &RObject, state: &RObject) -> Option<(VectorKind, usize)> {
+    let class_name = extract_altrep_class_name(class_info)?;
+    let state = state.as_concrete();
+
+    let name = class_name.as_str();
+    if name.contains("compact_intseq") {
+        return estimate_compact_seq(&state, VectorKind::Integer);
+    }
+    if name.contains("compact_realseq") {
+        return estimate_compact_seq(&state, VectorKind::Real);
+    }
+    if name.contains("wrap_int") {
+        return estimate_wrapped_len(&state, VectorKind::Integer);
+    }
+    if name.contains("wrap_real") {
+        return estimate_wrapped_len(&state, VectorKind::Real);
+    }
+    None
+}
+
+fn estimate_compact_seq(state: &RObject, kind: VectorKind) -> Option<(VectorKind, usize)> {
+    match state {
+        RObject::Real(params) => match params {
+            crate::VectorData::Owned(values) if !values.is_empty() => {
+                let len = values[0] as i64;
+                if len >= 0 {
+                    Some((kind, len as usize))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn estimate_wrapped_len(state: &RObject, kind: VectorKind) -> Option<(VectorKind, usize)> {
+    match (kind, state) {
+        (VectorKind::Integer, RObject::Integer(crate::VectorData::Owned(vec))) => {
+            Some((kind, vec.len()))
+        }
+        (VectorKind::Real, RObject::Real(crate::VectorData::Owned(vec))) => Some((kind, vec.len())),
+        _ => None,
+    }
+}
+
+fn estimate_compact_seq_fallback(state: &RObject) -> Option<(VectorKind, usize)> {
+    let state = state.as_concrete();
+    let values = match &state {
+        RObject::Real(crate::VectorData::Owned(values)) => values,
+        _ => return None,
+    };
+    if values.len() != 3 {
+        return None;
+    }
+    let len = values[0];
+    if len < 0.0 {
+        return None;
+    }
+    let first = values[1];
+    let stride = values[2];
+    let is_integer_seq = first.fract() == 0.0 && stride.fract() == 0.0 && stride == 1.0;
+    let kind = if is_integer_seq {
+        VectorKind::Integer
+    } else {
+        VectorKind::Real
+    };
+    Some((kind, len as usize))
 }
 
 /// Parse an integer vector.
@@ -2970,6 +4718,7 @@ fn extract_altrep_class_name(class_info: &RObject) -> Option<String> {
             let class_name = vec[0].to_string();
             Some(class_name)
         }
+        RObject::Symbol(name) => Some(name.to_string()),
         RObject::Pairlist(elements) => {
             // Pairlist might contain [package_symbol, class_symbol, ...]
             // Symbols are stored as Character vectors

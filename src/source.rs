@@ -120,6 +120,29 @@ impl ChunkedRdsSource {
         }
     }
 
+    pub fn from_path_with_cache_config(
+        path: &Path,
+        cache_max_bytes: Option<usize>,
+        chunk_size: Option<usize>,
+    ) -> Result<Self> {
+        let source = Self::from_path(path)?;
+        Ok(source.with_cache_config(cache_max_bytes, chunk_size))
+    }
+
+    pub fn with_cache_config(
+        mut self,
+        cache_max_bytes: Option<usize>,
+        chunk_size: Option<usize>,
+    ) -> Self {
+        if let Some(bytes) = cache_max_bytes {
+            self.cache = std::sync::Mutex::new(ChunkCacheState::new(bytes));
+        }
+        if let Some(size) = chunk_size {
+            self.chunk_size = size.max(1);
+        }
+        self
+    }
+
     fn from_file(file: File) -> Result<Self> {
         let len = file.metadata()?.len();
         Ok(Self {

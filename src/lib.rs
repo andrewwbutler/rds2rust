@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
+mod chunk_iter;
 mod constants;
 mod error;
 mod extraction;
@@ -13,11 +15,14 @@ mod materialization;
 mod parser;
 #[cfg(not(target_arch = "wasm32"))]
 mod source;
+mod streaming;
 mod types;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 mod writer;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use chunk_iter::{CharacterChunkIter, ChunkConfig, VectorChunkIter};
 pub use error::{Error, Result};
 pub use extraction::{
     convert_object_to_raw_dump, convert_object_to_raw_dump_at_path, expand_dataframe_paths,
@@ -49,6 +54,20 @@ pub use materialization::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use source::{ChunkedCacheMetrics, ChunkedRdsSource, MmapRdsSource, RdsInput};
+#[cfg(not(target_arch = "wasm32"))]
+pub use streaming::inspect_metadata_streaming;
+#[cfg(not(target_arch = "wasm32"))]
+pub use streaming::traverse_rds_streaming;
+#[cfg(target_arch = "wasm32")]
+pub use streaming::traverse_rds_streaming_async;
+#[cfg(target_arch = "wasm32")]
+pub use streaming::traverse_rds_streaming_async_with_progress;
+#[cfg(not(target_arch = "wasm32"))]
+pub use streaming::traverse_rds_streaming_with_progress;
+pub use streaming::{
+    ChunkAction, DataFrameMetadata, DatasetInfo, MetadataWarning, RdsVisitor, S4Metadata,
+    StreamingError, StreamingProgress, StreamingResult, VectorMetadata, VisitAction,
+};
 pub use types::{
     Attributes, Complex, DataFrameData, FactorData, LazyVector, Logical, PairlistElement, RObject,
     S3ObjectData, S4ObjectData, VectorData,
@@ -125,6 +144,14 @@ impl ObjectPath {
         }
     }
 
+    pub fn push(&mut self, segment: impl Into<Arc<str>>) {
+        self.segments.push(segment.into());
+    }
+
+    pub fn pop(&mut self) -> Option<Arc<str>> {
+        self.segments.pop()
+    }
+
     /// Check if this path matches or is a prefix of another path.
     pub fn matches(&self, other: &[Arc<str>]) -> bool {
         if self.segments.len() > other.len() {
@@ -171,6 +198,16 @@ pub struct ParseConfig {
     ///
     /// None means no budget enforcement at this layer.
     pub memory_budget_bytes: Option<usize>,
+
+    /// Optional cache size for chunked reads (in bytes).
+    ///
+    /// Only used by helpers that construct `ChunkedRdsSource`.
+    pub chunk_cache_max_bytes: Option<usize>,
+
+    /// Optional chunk size for chunked reads (in bytes).
+    ///
+    /// Only used by helpers that construct `ChunkedRdsSource`.
+    pub chunk_size_bytes: Option<usize>,
 }
 
 impl Default for ParseConfig {
@@ -182,6 +219,8 @@ impl Default for ParseConfig {
             lazy_threshold: 10, // Load vectors with <= 10 elements even in lazy mode
             bytecode_lazy_threshold: 1000, // Load bytecode constants with <= 1000 elements
             memory_budget_bytes: None,
+            chunk_cache_max_bytes: None,
+            chunk_size_bytes: None,
         }
     }
 }
@@ -216,6 +255,18 @@ impl ParseConfig {
     /// Set the lazy threshold (vectors smaller than this are always loaded in lazy mode).
     pub fn with_lazy_threshold(mut self, threshold: usize) -> Self {
         self.lazy_threshold = threshold;
+        self
+    }
+
+    /// Set the max cache size for chunked inputs (bytes).
+    pub fn with_chunk_cache_max_bytes(mut self, max: usize) -> Self {
+        self.chunk_cache_max_bytes = Some(max);
+        self
+    }
+
+    /// Set the chunk size for chunked inputs (bytes).
+    pub fn with_chunk_size_bytes(mut self, size: usize) -> Self {
+        self.chunk_size_bytes = Some(size);
         self
     }
 
@@ -263,6 +314,8 @@ impl ParseConfig {
             lazy_threshold: 100,
             bytecode_lazy_threshold: 1000,
             memory_budget_bytes: None,
+            chunk_cache_max_bytes: None,
+            chunk_size_bytes: None,
         }
     }
 
@@ -277,6 +330,8 @@ impl ParseConfig {
             lazy_threshold: 100,
             bytecode_lazy_threshold: 1000,
             memory_budget_bytes: None,
+            chunk_cache_max_bytes: None,
+            chunk_size_bytes: None,
         }
     }
 
@@ -291,6 +346,8 @@ impl ParseConfig {
             lazy_threshold: 100,
             bytecode_lazy_threshold: 10_000,
             memory_budget_bytes: None,
+            chunk_cache_max_bytes: None,
+            chunk_size_bytes: None,
         }
     }
 
@@ -318,6 +375,8 @@ impl ParseConfig {
             lazy_threshold: 100,
             bytecode_lazy_threshold: 1000,
             memory_budget_bytes: Some(budget_mb * 1024 * 1024),
+            chunk_cache_max_bytes: None,
+            chunk_size_bytes: None,
         }
     }
 }
@@ -425,7 +484,11 @@ pub fn read_rds_from_path_chunked_with_config<P: AsRef<std::path::Path>>(
     path: P,
     config: ParseConfig,
 ) -> Result<RObject> {
-    let source = ChunkedRdsSource::from_path(path.as_ref())?;
+    let source = ChunkedRdsSource::from_path_with_cache_config(
+        path.as_ref(),
+        config.chunk_cache_max_bytes,
+        config.chunk_size_bytes,
+    )?;
     read_rds_with_input(&source, config)
 }
 

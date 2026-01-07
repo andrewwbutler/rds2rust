@@ -230,6 +230,21 @@ from the backing store. Use `--no-streaming` to force materialization if needed.
 `--chunk-size-mb` to cap per-read buffer size when streaming. Streaming is best paired with
 `--chunked` to avoid mmap'ing large decompressed streams.
 
+### Streaming Traversal API
+
+Use `traverse_rds_streaming` (sync) or `traverse_rds_streaming_with_progress` to walk an RDS
+stream without materializing large vectors. Implement `RdsVisitor` to receive events:
+
+- `on_object_start` / `on_object_end` for object boundaries
+- `on_vector_metadata` for vector length/kind
+- `on_vector_chunk_available` for lazy vector spans
+- `on_shared_reference` for REFSXP references (target path may be `None`)
+
+Notes:
+- ALTREP metadata is best-effort: compact sequences and wrapped vectors emit estimated length; other
+  forms only report attributes.
+- Singleton environment markers (global/base/empty/unbound) are treated as leaf nodes in streaming.
+
 ### WASM Extraction APIs
 
 WASM exposes async extraction helpers that return JS typed arrays or call a callback per chunk:

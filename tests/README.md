@@ -10,6 +10,17 @@ Rscript tests/generate_test_data.R
 
 This will create RDS files in `tests/data/` directory.
 
+### Optional large fixture
+
+To generate a large-vector fixture for out-of-core tests, set `RDS_LARGE_VECTOR_LEN`:
+
+```bash
+RDS_LARGE_VECTOR_LEN=10000000 Rscript tests/generate_test_data.R
+```
+
+This produces `tests/data/large_int_<len>.rds`. The fixture is not checked into the repo.
+For an on-disk size around 500MB, use `RDS_LARGE_VECTOR_LEN=125000000` (integer vector, ~500MB raw).
+
 ## Manual Test Data
 
 If R is not available, you can use the manually created test files or install R:

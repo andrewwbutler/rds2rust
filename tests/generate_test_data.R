@@ -892,5 +892,19 @@ mc3 <- new("MatrixContainer",
 matrix_containers <- list(mc1, mc2, mc3)
 saveRDS(matrix_containers, file.path(output_dir, "s4_multiple_with_matrices.rds"))
 
+# Optional large vector fixture (off by default to avoid huge repos).
+# Enable with: RDS_LARGE_VECTOR_LEN=10000000 Rscript tests/generate_test_data.R
+large_len <- suppressWarnings(as.numeric(Sys.getenv("RDS_LARGE_VECTOR_LEN", "0")))
+if (!is.na(large_len) && large_len > 0) {
+  if (large_len > .Machine$integer.max) {
+    stop("RDS_LARGE_VECTOR_LEN exceeds integer max for this fixture")
+  }
+  large_len <- as.integer(large_len)
+  large_vec <- seq_len(large_len)
+  large_name <- sprintf("large_int_%d.rds", large_len)
+  saveRDS(large_vec, file.path(output_dir, large_name))
+  cat("Generated large vector fixture:", large_name, "\n")
+}
+
 cat("Test RDS files generated successfully in", output_dir, "\n")
 cat("Total files:", length(list.files(output_dir, pattern = "\\.rds$")), "\n")
