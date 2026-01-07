@@ -3638,7 +3638,13 @@ fn convert_to_s3_object(obj: RObject, mut attributes: Attributes) -> RObject {
         .iter()
         .position(|(k, _)| k.as_ref() == "class")
         .and_then(|idx| match attributes.attrs[idx].1.as_concrete() {
-            RObject::Character(classes) => Some(classes.as_vec().clone()),
+            RObject::Character(classes) => {
+                if classes.is_loaded() {
+                    Some(classes.as_vec().clone())
+                } else {
+                    None
+                }
+            }
             _ => None,
         })
         .unwrap_or_default();
@@ -3691,19 +3697,33 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
             }
 
             match class_obj {
-                RObject::Character(classes) => (classes.as_vec().clone(), None),
+                RObject::Character(classes) => {
+                    if classes.is_loaded() {
+                        (classes.as_vec().clone(), None)
+                    } else {
+                        (vec![], None)
+                    }
+                }
                 RObject::WithAttributes {
                     object,
                     attributes: class_attrs,
                 } => {
                     // Unwrap the WithAttributes to get the actual class vector
                     let classes = match object.as_ref() {
-                        RObject::Character(classes) => classes.as_vec().clone(),
+                        RObject::Character(classes) => {
+                            if classes.is_loaded() {
+                                classes.as_vec().clone()
+                            } else {
+                                vec![]
+                            }
+                        }
                         _ => vec![],
                     };
                     // Extract the package attribute from the class's attributes
                     let pkg = class_attrs.get("package").and_then(|p| match p {
-                        RObject::Character(pkgs) if !pkgs.is_empty() => Some(pkgs[0].clone()),
+                        RObject::Character(pkgs) if pkgs.is_loaded() && !pkgs.is_empty() => {
+                            Some(pkgs[0].clone())
+                        }
                         _ => None,
                     });
                     (classes, pkg)
