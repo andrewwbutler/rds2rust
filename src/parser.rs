@@ -3482,7 +3482,9 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
     // Check if this has class="data.frame"
     let class_attr = attributes.get("class")?.as_concrete();
     let is_dataframe = match class_attr {
-        RObject::Character(classes) => classes.iter().any(|c| c.as_ref() == "data.frame"),
+        RObject::Character(classes) => {
+            classes.is_loaded() && classes.iter().any(|c| c.as_ref() == "data.frame")
+        }
         _ => false,
     };
 
