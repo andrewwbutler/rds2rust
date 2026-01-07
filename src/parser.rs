@@ -3086,11 +3086,19 @@ fn convert_compact_intseq(ctx: &mut ParserContext, state: RObject) -> Result<ROb
     let state = state.into_concrete();
     // compact_intseq state is a Real vector: [length, first, stride]
     let (length, first, stride) = match state {
-        RObject::Real(params) if params.len() == 3 && params.is_loaded() => {
-            let len = params[0] as i64;
-            let first_val = params[1] as i32;
-            let stride_val = params[2] as i32;
-            (len, first_val, stride_val)
+        RObject::Real(params) if params.len() == 3 => {
+            if params.is_loaded() {
+                let len = params[0] as i64;
+                let first_val = params[1] as i32;
+                let stride_val = params[2] as i32;
+                (len, first_val, stride_val)
+            } else if matches!(ctx.mode, crate::ParseMode::LazyMetadata) {
+                return Ok(RObject::Null);
+            } else {
+                return Err(Error::InvalidFormat(
+                    "Invalid compact_intseq state".to_string(),
+                ));
+            }
         }
         _ => {
             return Err(Error::InvalidFormat(
