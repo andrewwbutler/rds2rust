@@ -136,7 +136,15 @@ impl<T> std::ops::Index<usize> for VectorData<T> {
     type Output = T;
 
     fn index(&self, index: usize) -> &Self::Output {
-        &self.as_vec()[index]
+        match self {
+            VectorData::Owned(v) => &v[index],
+            VectorData::Lazy(lazy) => panic!(
+                "Cannot access lazy vector data (length={}, offset={}). \
+                 This file may contain bytecode or structures requiring full parsing. \
+                 Use read_rds() instead of read_rds_lazy(), or check is_loaded() before accessing.",
+                lazy.length, lazy.offset
+            ),
+        }
     }
 }
 
@@ -144,7 +152,10 @@ impl<T> std::ops::Deref for VectorData<T> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
-        self.as_vec()
+        match self {
+            VectorData::Owned(v) => v,
+            VectorData::Lazy(_) => &[],
+        }
     }
 }
 
@@ -165,7 +176,10 @@ impl<'a, T: 'a + Clone> IntoIterator for &'a VectorData<T> {
     type IntoIter = std::slice::Iter<'a, T>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.as_vec().iter()
+        match self {
+            VectorData::Owned(v) => v.iter(),
+            VectorData::Lazy(_) => [].iter(),
+        }
     }
 }
 
