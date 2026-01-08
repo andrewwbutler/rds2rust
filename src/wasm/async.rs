@@ -5,6 +5,10 @@ use std::pin::Pin;
 
 #[cfg(target_arch = "wasm32")]
 use byteorder::{BigEndian, ReadBytesExt};
+#[cfg(target_arch = "wasm32")]
+use js_sys::Reflect;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsValue;
 
 #[cfg(target_arch = "wasm32")]
 use crate::constants::{
@@ -42,11 +46,18 @@ impl Default for AsyncCursorConfig {
 
 #[cfg(target_arch = "wasm32")]
 pub fn recommended_buffer_config() -> AsyncCursorConfig {
-    let device_memory_gb = web_sys::window()
-        .and_then(|w| w.navigator().device_memory())
+    let device_memory_gb: f64 = web_sys::window()
+        .and_then(|w| {
+            let nav = w.navigator();
+            Reflect::get(&nav, &JsValue::from_str("deviceMemory"))
+                .ok()
+                .and_then(|value| value.as_f64())
+        })
         .unwrap_or(4.0);
 
-    let buffer_mb = (device_memory_gb * 32.0).min(128.0).max(16.0) as usize;
+    let buffer_mb = (device_memory_gb * 32.0_f64)
+        .min(128.0_f64)
+        .max(16.0_f64) as usize;
     let max_buffer_mb = (buffer_mb * 2).min(256);
 
     AsyncCursorConfig {
