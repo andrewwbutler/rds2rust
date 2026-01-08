@@ -17,6 +17,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, RwLock};
 
 use crate::extraction::VectorKind;
+use crate::types::VectorData;
 #[cfg(target_arch = "wasm32")]
 use crate::wasm::{AsyncBufferedCursor, AsyncCursorConfig, AsyncRdsInput};
 
@@ -1844,6 +1845,9 @@ fn parse_object_streaming<V: RdsVisitor>(
             visitor
                 .on_attributes(path, attrs)
                 .map_err(StreamingError::Visitor)?;
+            if emit_children {
+                emit_attribute_values_streaming(attrs, path, visitor)?;
+            }
         }
     }
 
@@ -2056,6 +2060,9 @@ fn parse_object_streaming<V: RdsVisitor>(
             visitor
                 .on_attributes(path, &attrs)
                 .map_err(StreamingError::Visitor)?;
+            if emit_children {
+                emit_attribute_values_streaming(&attrs, path, visitor)?;
+            }
         }
     }
 
@@ -2095,6 +2102,204 @@ fn sexp_type_name(sexp_type: u32) -> &'static str {
         NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => "Namespace",
         ALTREP_SXP => "Altrep",
         _ => "Unknown",
+    }
+}
+
+fn emit_attribute_values_streaming<V: RdsVisitor>(
+    attrs: &Attributes,
+    path: &mut crate::ObjectPath,
+    visitor: &mut V,
+) -> StreamingResult<(), V::Error> {
+    for (key, value) in attrs.iter() {
+        let segment = Arc::from(format!("@{}", key.as_ref()));
+        path.push(segment);
+        emit_parsed_object_streaming(value, path, visitor)?;
+        path.pop();
+    }
+    Ok(())
+}
+
+fn emit_parsed_object_streaming<V: RdsVisitor>(
+    obj: &RObject,
+    path: &mut crate::ObjectPath,
+    visitor: &mut V,
+) -> StreamingResult<(), V::Error> {
+    let action = visitor
+        .on_object_start(path, object_type_name(obj))
+        .map_err(StreamingError::Visitor)?;
+    let emit_children = match action {
+        VisitAction::Stop => return Ok(()),
+        VisitAction::Skip => false,
+        VisitAction::Continue => true,
+    };
+
+    if emit_children {
+        match obj {
+            RObject::Null
+            | RObject::Symbol(_)
+            | RObject::Special { .. }
+            | RObject::Builtin { .. }
+            | RObject::Bytecode { .. }
+            | RObject::Environment { .. }
+            | RObject::Promise { .. }
+            | RObject::Language { .. }
+            | RObject::Expression(_)
+            | RObject::Namespace(_)
+            | RObject::GlobalEnv
+            | RObject::BaseEnv
+            | RObject::EmptyEnv
+            | RObject::MissingArg
+            | RObject::UnboundValue => {}
+            RObject::Shared(inner) => {
+                if let Ok(inner) = inner.read() {
+                    emit_parsed_object_streaming(&inner, path, visitor)?;
+                }
+            }
+            RObject::WithAttributes { object, attributes } => {
+                emit_attribute_values_streaming(attributes, path, visitor)?;
+                emit_parsed_object_streaming(object, path, visitor)?;
+            }
+            RObject::Closure {
+                formals,
+                body,
+                environment,
+            } => {
+                path.push(Arc::from("formals"));
+                emit_parsed_object_streaming(formals, path, visitor)?;
+                path.pop();
+                path.push(Arc::from("body"));
+                emit_parsed_object_streaming(body, path, visitor)?;
+                path.pop();
+                path.push(Arc::from("environment"));
+                emit_parsed_object_streaming(environment, path, visitor)?;
+                path.pop();
+            }
+            RObject::Integer(vec) => {
+                emit_vector_metadata(VectorKind::Integer, vec, path, visitor)?;
+            }
+            RObject::Real(vec) => {
+                emit_vector_metadata(VectorKind::Real, vec, path, visitor)?;
+            }
+            RObject::Logical(vec) => {
+                emit_vector_metadata(VectorKind::Logical, vec, path, visitor)?;
+            }
+            RObject::Raw(vec) => {
+                emit_vector_metadata(VectorKind::Raw, vec, path, visitor)?;
+            }
+            RObject::Complex(vec) => {
+                emit_vector_metadata(VectorKind::Complex, vec, path, visitor)?;
+            }
+            RObject::Character(vec) => {
+                emit_vector_metadata(VectorKind::Character, vec, path, visitor)?;
+            }
+            RObject::List(values) => {
+                for (index, value) in values.iter().enumerate() {
+                    path.push(Arc::from(format!("[{}]", index)));
+                    emit_parsed_object_streaming(value, path, visitor)?;
+                    path.pop();
+                }
+            }
+            RObject::Pairlist(values) => {
+                for (index, value) in values.iter().enumerate() {
+                    path.push(Arc::from(format!("[{}]", index)));
+                    emit_parsed_object_streaming(&value.value, path, visitor)?;
+                    path.pop();
+                }
+            }
+            RObject::DataFrame(data) => {
+                for (name, column) in data.columns.iter() {
+                    path.push(Arc::clone(name));
+                    emit_parsed_object_streaming(column, path, visitor)?;
+                    path.pop();
+                }
+            }
+            RObject::Factor(data) => {
+                path.push(Arc::from("values"));
+                visitor
+                    .on_vector_metadata(path, VectorKind::Integer, data.values.len())
+                    .map_err(StreamingError::Visitor)?;
+                path.pop();
+                path.push(Arc::from("levels"));
+                visitor
+                    .on_vector_metadata(path, VectorKind::Character, data.levels.len())
+                    .map_err(StreamingError::Visitor)?;
+                path.pop();
+            }
+            RObject::S3Object(data) => {
+                emit_attribute_values_streaming(&data.attributes, path, visitor)?;
+                path.push(Arc::from("base"));
+                emit_parsed_object_streaming(&data.base, path, visitor)?;
+                path.pop();
+            }
+            RObject::S4Object(data) => {
+                for (name, slot) in data.slots.iter() {
+                    path.push(Arc::clone(name));
+                    emit_parsed_object_streaming(slot, path, visitor)?;
+                    path.pop();
+                }
+            }
+        }
+    }
+
+    visitor
+        .on_object_end(path)
+        .map_err(StreamingError::Visitor)?;
+    Ok(())
+}
+
+fn emit_vector_metadata<V, T>(
+    kind: VectorKind,
+    data: &VectorData<T>,
+    path: &mut crate::ObjectPath,
+    visitor: &mut V,
+) -> StreamingResult<(), V::Error>
+where
+    V: RdsVisitor,
+{
+    let len = data.len();
+    visitor
+        .on_vector_metadata(path, kind, len)
+        .map_err(StreamingError::Visitor)?;
+    if let VectorData::Lazy(span) = data {
+        let _ = visitor
+            .on_vector_chunk_available(path, *span)
+            .map_err(StreamingError::Visitor)?;
+    }
+    Ok(())
+}
+
+fn object_type_name(obj: &RObject) -> &'static str {
+    match obj {
+        RObject::Null => "Null",
+        RObject::Integer(_) => "Integer",
+        RObject::Real(_) => "Real",
+        RObject::Logical(_) => "Logical",
+        RObject::Character(_) => "Character",
+        RObject::Symbol(_) => "Symbol",
+        RObject::Raw(_) => "Raw",
+        RObject::Complex(_) => "Complex",
+        RObject::List(_) => "List",
+        RObject::Pairlist(_) => "Pairlist",
+        RObject::Language { .. } => "Language",
+        RObject::Expression(_) => "Expression",
+        RObject::Closure { .. } => "Closure",
+        RObject::Environment { .. } => "Environment",
+        RObject::Promise { .. } => "Promise",
+        RObject::Special { .. } => "Special",
+        RObject::Builtin { .. } => "Builtin",
+        RObject::Bytecode { .. } => "Bytecode",
+        RObject::DataFrame(_) => "DataFrame",
+        RObject::Factor(_) => "Factor",
+        RObject::S3Object(_) => "S3Object",
+        RObject::S4Object(_) => "S4Object",
+        RObject::Namespace(_) => "Namespace",
+        RObject::GlobalEnv => "GlobalEnv",
+        RObject::BaseEnv => "BaseEnv",
+        RObject::EmptyEnv => "EmptyEnv",
+        RObject::MissingArg => "MissingArg",
+        RObject::UnboundValue => "UnboundValue",
+        RObject::Shared(_) => "Shared",
+        RObject::WithAttributes { .. } => "WithAttributes",
     }
 }
 
