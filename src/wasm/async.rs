@@ -45,6 +45,7 @@ impl Default for AsyncCursorConfig {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 pub fn recommended_buffer_config() -> AsyncCursorConfig {
     let device_memory_gb: f64 = web_sys::window()
         .and_then(|w| {

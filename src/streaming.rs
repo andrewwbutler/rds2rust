@@ -7,7 +7,9 @@ use crate::parser;
 use crate::RdsInput;
 #[cfg(target_arch = "wasm32")]
 use crate::{AsyncCursorConfig, AsyncRdsInput};
-use crate::{Attributes, Error, LazyVector, ObjectPath, ParseConfig, Result};
+use crate::{Attributes, Error, LazyVector, ObjectPath, ParseConfig};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::Result;
 
 #[cfg(test)]
 use crate::RObject;
@@ -172,6 +174,7 @@ pub enum MetadataWarning {
     },
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct Frame {
     path: ObjectPath,
     obj_type: String,
@@ -200,12 +203,14 @@ pub fn inspect_metadata_streaming(
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 struct DatasetInfoVisitor {
     info: DatasetInfo,
     stack: Vec<Frame>,
     vectors_by_path: HashMap<ObjectPath, VectorMetadata>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl DatasetInfoVisitor {
     fn new() -> Self {
         Self {

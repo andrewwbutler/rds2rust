@@ -24,8 +24,7 @@ pub use decompression::{
 pub use extract::{extract_vector_chunked, extract_vector_to_js};
 #[cfg(target_arch = "wasm32")]
 pub use r#async::{
-    estimate_parse_size, recommended_buffer_config, AsyncBufferedCursor, AsyncCursorConfig,
-    AsyncRdsInput, AsyncReadFuture,
+    estimate_parse_size, AsyncBufferedCursor, AsyncCursorConfig, AsyncRdsInput, AsyncReadFuture,
 };
 #[cfg(target_arch = "wasm32")]
 pub use write::{
