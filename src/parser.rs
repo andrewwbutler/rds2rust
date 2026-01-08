@@ -19,7 +19,7 @@ use std::sync::{Arc, RwLock};
 use crate::extraction::VectorKind;
 use crate::types::VectorData;
 #[cfg(target_arch = "wasm32")]
-use crate::wasm::{AsyncBufferedCursor, AsyncCursorConfig, AsyncRdsInput};
+use crate::wasm::{AsyncBufferedCursor, AsyncCursor, AsyncCursorConfig, AsyncRdsInput};
 
 struct RdsCursor<'a> {
     position: u64,
@@ -777,6 +777,88 @@ async fn parse_rds_internal_async(
     .await
 }
 
+/// Traverse RDS from a sequential input source (for streaming decompression).
+#[cfg(target_arch = "wasm32")]
+pub async fn traverse_rds_streaming_with_sequential_input<I, V>(
+    input: &mut I,
+    config: crate::ParseConfig,
+    visitor: &mut V,
+) -> StreamingResult<(), V::Error>
+where
+    I: crate::AsyncSequentialInput,
+    V: RdsVisitor,
+{
+    let mut ctx = ParserContext::from_config(config);
+    let mut cursor = crate::SequentialCursor::new(input)
+        .await
+        .map_err(StreamingError::Parse)?;
+    traverse_rds_internal_sequential_streaming(&mut cursor, &mut ctx, visitor, None).await
+}
+
+/// Traverse RDS from a sequential input source with progress reporting.
+#[cfg(target_arch = "wasm32")]
+pub async fn traverse_rds_streaming_with_sequential_input_progress<I, V>(
+    input: &mut I,
+    config: crate::ParseConfig,
+    visitor: &mut V,
+    progress: &mut dyn FnMut(StreamingProgress),
+) -> StreamingResult<(), V::Error>
+where
+    I: crate::AsyncSequentialInput,
+    V: RdsVisitor,
+{
+    let mut ctx = ParserContext::from_config(config);
+    let mut cursor = crate::SequentialCursor::new(input)
+        .await
+        .map_err(StreamingError::Parse)?;
+    traverse_rds_internal_sequential_streaming(&mut cursor, &mut ctx, visitor, Some(progress)).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn traverse_rds_internal_sequential_streaming<I, V>(
+    cursor: &mut crate::SequentialCursor<'_, I>,
+    ctx: &mut ParserContext,
+    visitor: &mut V,
+    progress: Option<&mut dyn FnMut(StreamingProgress)>,
+) -> StreamingResult<(), V::Error>
+where
+    I: crate::AsyncSequentialInput,
+    V: RdsVisitor,
+{
+    let format_version = parse_with_sync_cursor_retry(cursor, 14, 14, |c| parse_header(c)).await?;
+    visitor
+        .on_header(format_version)
+        .map_err(StreamingError::Visitor)?;
+
+    if format_version >= 3 {
+        let enc_len = read_u32_async(cursor).await? as usize;
+        guard_allocation_common(ctx, enc_len, 1, "header encoding")?;
+        let _enc_bytes = read_bytes_async(cursor, enc_len).await?;
+    }
+
+    let mut ref_table = RefTable::new();
+    let mut symbol_table = SymbolTable::new();
+    let mut dedup_table = DedupTable::new();
+    let mut ref_paths = StreamingRefTable::new();
+    let mut path = crate::ObjectPath::new(Vec::new());
+    let mut progress_state = StreamingProgressState::new(cursor.total_len(), progress);
+
+    let _ = parse_object_streaming_async(
+        ctx,
+        cursor,
+        &mut ref_table,
+        &mut symbol_table,
+        &mut dedup_table,
+        &mut ref_paths,
+        &mut progress_state,
+        visitor,
+        &mut path,
+        true,
+    )
+    .await?;
+    Ok(())
+}
+
 #[cfg(target_arch = "wasm32")]
 async fn traverse_rds_internal_async_streaming<V: RdsVisitor>(
     cursor: &mut AsyncBufferedCursor<'_>,
@@ -879,9 +961,9 @@ async fn parse_object_async(
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn parse_object_streaming_async<V: RdsVisitor>(
+async fn parse_object_streaming_async<C, V>(
     ctx: &mut ParserContext,
-    cursor: &mut AsyncBufferedCursor<'_>,
+    cursor: &mut C,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -890,17 +972,23 @@ async fn parse_object_streaming_async<V: RdsVisitor>(
     visitor: &mut V,
     path: &mut crate::ObjectPath,
     emit: bool,
-) -> StreamingResult<StreamControl, V::Error> {
+) -> StreamingResult<StreamControl, V::Error>
+where
+    C: AsyncCursor,
+    V: RdsVisitor,
+{
     cursor
         .ensure_available(8)
         .await
         .map_err(StreamingError::Parse)?;
-    let estimate = crate::estimate_parse_size(cursor).unwrap_or(cursor.buffer_size());
-    let total_len = cursor
-        .total_len()
-        .ok_or_else(|| Error::InvalidFormat("async cursor requires length".to_string()))?;
-    let remaining = (total_len - cursor.position()) as usize;
-    let max_size = std::cmp::min(cursor.max_buffer_size(), remaining);
+    let estimate = estimate_parse_size_from_cursor(cursor).unwrap_or(cursor.buffer_size());
+    let max_size = match cursor.total_len() {
+        Some(total_len) => {
+            let remaining = total_len.saturating_sub(cursor.position()) as usize;
+            std::cmp::min(cursor.max_buffer_size(), remaining)
+        }
+        None => cursor.max_buffer_size(),
+    };
     let mut size = estimate.clamp(4, max_size.max(4));
 
     loop {
@@ -964,14 +1052,15 @@ async fn parse_object_streaming_async<V: RdsVisitor>(
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn parse_with_sync_cursor_retry<T, F>(
-    cursor: &mut AsyncBufferedCursor<'_>,
+async fn parse_with_sync_cursor_retry<T, F, C>(
+    cursor: &mut C,
     initial: usize,
     max_size: usize,
     mut f: F,
 ) -> Result<T>
 where
     F: FnMut(&mut RdsCursor<'_>) -> Result<T>,
+    C: AsyncCursor,
 {
     let mut size = initial.max(4);
     let max_size = max_size.max(4);
@@ -1006,7 +1095,7 @@ where
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn read_u32_async(cursor: &mut AsyncBufferedCursor<'_>) -> Result<u32> {
+async fn read_u32_async<C: AsyncCursor>(cursor: &mut C) -> Result<u32> {
     cursor.ensure_available(4).await?;
     let slice = cursor.as_sync_slice(4)?;
     let mut reader = std::io::Cursor::new(slice);
@@ -1016,7 +1105,7 @@ async fn read_u32_async(cursor: &mut AsyncBufferedCursor<'_>) -> Result<u32> {
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn read_bytes_async(cursor: &mut AsyncBufferedCursor<'_>, len: usize) -> Result<Vec<u8>> {
+async fn read_bytes_async<C: AsyncCursor>(cursor: &mut C, len: usize) -> Result<Vec<u8>> {
     if len == 0 {
         return Ok(Vec::new());
     }
@@ -1025,6 +1114,27 @@ async fn read_bytes_async(cursor: &mut AsyncBufferedCursor<'_>, len: usize) -> R
     let bytes = slice.to_vec();
     cursor.advance(len as u64)?;
     Ok(bytes)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn estimate_parse_size_from_cursor<C: AsyncCursor>(cursor: &C) -> Result<usize> {
+    let slice = cursor.as_sync_slice(8)?;
+    let mut temp = std::io::Cursor::new(slice);
+    let flags = temp.read_u32::<BigEndian>()?;
+    let length = temp.read_i32::<BigEndian>()?.max(0) as usize;
+
+    let sexp_type = flags & 0xFF;
+    let estimate = match sexp_type {
+        NILSXP | SYMSXP | EMPTYENV_SXP | GLOBALENV_SXP | BASEENV_SXP => 4,
+        INTSXP | LGLSXP => 4 + 4 + length.saturating_mul(4) + 1024,
+        REALSXP => 4 + 4 + length.saturating_mul(8) + 1024,
+        RAWSXP => 4 + 4 + length + 1024,
+        STRSXP => 4 + 4 + length.saturating_mul(100),
+        VECSXP => 4 + 4 + length.saturating_mul(10 * 1024),
+        _ => 1024 * 1024,
+    };
+
+    Ok(estimate)
 }
 /// Parse the RDS file header.
 fn parse_header(cursor: &mut RdsCursor<'_>) -> Result<u32> {

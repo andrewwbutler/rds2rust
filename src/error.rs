@@ -59,4 +59,10 @@ pub enum Error {
 
     #[error("Partial metadata: {missing_fields:?}")]
     PartialMetadataWarning { missing_fields: Vec<String> },
+
+    #[error("Compression error: {0}")]
+    CompressionError(String),
+
+    #[error("Parse error: {0}")]
+    ParseError(String),
 }

@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Streaming traversal tests.
 
 use std::path::{Path, PathBuf};

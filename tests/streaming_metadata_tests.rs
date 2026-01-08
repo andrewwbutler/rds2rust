@@ -1,3 +1,4 @@
+#![cfg(not(target_arch = "wasm32"))]
 //! Streaming metadata extraction tests.
 
 use std::path::Path;

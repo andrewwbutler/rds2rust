@@ -5,11 +5,11 @@ use crate::extraction::VectorKind;
 use crate::parser;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::RdsInput;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::Result;
 #[cfg(target_arch = "wasm32")]
 use crate::{AsyncCursorConfig, AsyncRdsInput};
 use crate::{Attributes, Error, LazyVector, ObjectPath, ParseConfig};
-#[cfg(not(target_arch = "wasm32"))]
-use crate::Result;
 
 #[cfg(test)]
 use crate::RObject;
@@ -477,6 +477,62 @@ pub async fn traverse_rds_streaming_async_with_progress<V: RdsVisitor>(
         progress,
     )
     .await
+}
+
+/// Traverse RDS data from a sequential input source (e.g., streaming decompression).
+///
+/// This is more memory-efficient than `traverse_rds_streaming_async` for compressed files
+/// as it doesn't require buffering decompressed data for random access. The input must
+/// support only forward reading (no seeking backwards).
+///
+/// # Example
+///
+/// ```ignore
+/// use rds2rust::{StreamingGzipDecompressor, ParseConfig};
+///
+/// let blob = get_compressed_blob();
+/// let mut decompressor = StreamingGzipDecompressor::new(blob).await?;
+/// let mut visitor = MyVisitor::new();
+///
+/// traverse_rds_streaming_sequential_async(
+///     &mut decompressor,
+///     ParseConfig::default(),
+///     &mut visitor
+/// ).await?;
+/// ```
+#[cfg(target_arch = "wasm32")]
+pub async fn traverse_rds_streaming_sequential_async<I, V>(
+    input: &mut I,
+    parse_config: ParseConfig,
+    visitor: &mut V,
+) -> StreamingResult<(), V::Error>
+where
+    I: crate::AsyncSequentialInput,
+    V: RdsVisitor,
+{
+    use crate::parser::traverse_rds_streaming_with_sequential_input;
+
+    traverse_rds_streaming_with_sequential_input(input, parse_config, visitor).await
+}
+
+/// Traverse RDS data from a sequential input source with progress reporting.
+///
+/// Similar to `traverse_rds_streaming_sequential_async` but provides progress callbacks.
+#[cfg(target_arch = "wasm32")]
+pub async fn traverse_rds_streaming_sequential_async_with_progress<I, V>(
+    input: &mut I,
+    parse_config: ParseConfig,
+    visitor: &mut V,
+    progress: &mut dyn FnMut(StreamingProgress),
+) -> StreamingResult<(), V::Error>
+where
+    I: crate::AsyncSequentialInput,
+    V: RdsVisitor,
+{
+    use crate::parser::traverse_rds_streaming_with_sequential_input_progress;
+
+    traverse_rds_streaming_with_sequential_input_progress(input, parse_config, visitor, progress)
+        .await
 }
 
 #[cfg(test)]

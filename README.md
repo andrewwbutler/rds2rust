@@ -165,6 +165,63 @@ Gzip-compressed `.rds.gz` files are auto-detected in the WASM helper (browser su
 Chrome/Edge 89+, Firefox 102+, Safari 16.4+). Unsupported formats (bzip2/xz) return helpful
 errors.
 
+### WASM Streaming Decompression
+
+For memory-efficient parsing of compressed RDS files, use the streaming decompression API that automatically detects compression format and chooses the optimal parsing strategy:
+
+```javascript
+import {
+  traverseRdsBlobStreaming,
+  checkStreamingDecompressionSupport
+} from "./rds2rust_wasm.js";
+
+// Check browser support
+try {
+  checkStreamingDecompressionSupport();
+} catch (e) {
+  console.error("Streaming decompression not available:", e);
+}
+
+// Parse with automatic compression detection
+const blob = await fetch("large_data.rds.gz").then(r => r.blob());
+
+const visitor = {
+  onHeader: (version) => console.log("RDS version:", version),
+  onObjectStart: (path, type) => console.log("Object:", type),
+  onVectorMetadata: (path, kind, length) => {
+    console.log(`Vector: ${kind}, length: ${length}`);
+  },
+  // ... other visitor methods
+};
+
+await traverseRdsBlobStreaming(blob, parseConfig, visitor);
+```
+
+**Memory Efficiency**:
+- **Gzip files**: Uses `DecompressionStream` API with bounded buffer (64-128MB)
+- **Uncompressed files**: Uses cached random-access reads
+- **Unsupported formats** (xz/bzip2): Clear error with fallback instructions
+
+**Browser Requirements**:
+- `DecompressionStream` API (Chrome 89+, Firefox 102+, Safari 16.4+)
+- For older browsers, use `decompressBlobIfNeeded()` to pre-decompress
+
+**Progress Reporting**:
+
+```javascript
+await traverseRdsBlobStreamingWithProgress(
+  blob,
+  parseConfig,
+  visitor,
+  (progress) => {
+    const pct = progress.totalBytes
+      ? (100 * progress.bytesRead / progress.totalBytes).toFixed(1)
+      : '?';
+    console.log(`Progress: ${progress.bytesRead} bytes (${pct}%)`);
+  }
+);
+```
+
 ### WASM Streaming Writer
 
 WASM exposes chunked writer helpers that avoid large allocations in Rust. These emit

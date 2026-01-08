@@ -62,6 +62,10 @@ pub use streaming::traverse_rds_streaming;
 pub use streaming::traverse_rds_streaming_async;
 #[cfg(target_arch = "wasm32")]
 pub use streaming::traverse_rds_streaming_async_with_progress;
+#[cfg(target_arch = "wasm32")]
+pub use streaming::traverse_rds_streaming_sequential_async;
+#[cfg(target_arch = "wasm32")]
+pub use streaming::traverse_rds_streaming_sequential_async_with_progress;
 #[cfg(not(target_arch = "wasm32"))]
 pub use streaming::traverse_rds_streaming_with_progress;
 pub use streaming::{
@@ -74,13 +78,15 @@ pub use types::{
 };
 #[cfg(target_arch = "wasm32")]
 pub use wasm::{
-    decompress_blob_if_needed, estimate_parse_size, extract_vector_chunked, extract_vector_to_js,
-    memory_warning, read_rds_async, read_rds_from_blob, recommend_decompression_mode,
-    recommended_chunk_size_mb, write_rds_with_callback, write_rds_with_callback_and_compression,
-    write_rds_with_progress, write_rds_with_progress_and_compression, AsyncBufferedCursor,
-    AsyncCursorConfig, AsyncParseConfig, AsyncRdsInput, AsyncReadFuture, BlobChunkedSource,
-    CacheConfig, CacheMetrics, WasmDecompressedSource, WasmDecompressionMode,
-    WasmDecompressionThresholds,
+    check_streaming_decompression_support, decompress_blob_if_needed, detect_blob_compression,
+    estimate_parse_size, extract_vector_chunked, extract_vector_to_js, memory_warning,
+    read_rds_async, read_rds_from_blob, recommend_decompression_mode, recommended_chunk_size_mb,
+    traverse_rds_blob_streaming, traverse_rds_blob_streaming_with_progress,
+    write_rds_with_callback, write_rds_with_callback_and_compression, write_rds_with_progress,
+    write_rds_with_progress_and_compression, AsyncBufferedCursor, AsyncCursor, AsyncCursorConfig,
+    AsyncParseConfig, AsyncRdsInput, AsyncReadFuture, AsyncSequentialInput, BlobChunkedSource,
+    CacheConfig, CacheMetrics, SequentialAdapter, SequentialCursor, StreamingGzipDecompressor,
+    WasmDecompressedSource, WasmDecompressionMode, WasmDecompressionThresholds,
 };
 
 /// Parsing mode for RDS files.

@@ -9,6 +9,10 @@ mod decompression;
 #[cfg(target_arch = "wasm32")]
 mod extract;
 #[cfg(target_arch = "wasm32")]
+mod streaming_api;
+#[cfg(target_arch = "wasm32")]
+mod streaming_decompress;
+#[cfg(target_arch = "wasm32")]
 mod write;
 
 #[cfg(target_arch = "wasm32")]
@@ -24,8 +28,16 @@ pub use decompression::{
 pub use extract::{extract_vector_chunked, extract_vector_to_js};
 #[cfg(target_arch = "wasm32")]
 pub use r#async::{
-    estimate_parse_size, AsyncBufferedCursor, AsyncCursorConfig, AsyncRdsInput, AsyncReadFuture,
+    estimate_parse_size, AsyncBufferedCursor, AsyncCursor, AsyncCursorConfig, AsyncRdsInput,
+    AsyncReadFuture, AsyncSequentialInput, SequentialAdapter, SequentialCursor,
 };
+#[cfg(target_arch = "wasm32")]
+pub use streaming_api::{
+    check_streaming_decompression_support, detect_blob_compression, traverse_rds_blob_streaming,
+    traverse_rds_blob_streaming_with_progress,
+};
+#[cfg(target_arch = "wasm32")]
+pub use streaming_decompress::StreamingGzipDecompressor;
 #[cfg(target_arch = "wasm32")]
 pub use write::{
     recommended_chunk_size_mb, write_rds_with_callback, write_rds_with_callback_and_compression,
