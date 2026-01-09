@@ -2110,7 +2110,17 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
         let slice = cursor.as_sync_slice(4)?;
         let mut reader = std::io::Cursor::new(slice);
         let flags = reader.read_u32::<BigEndian>()?;
-        let next_type = flags & 0xFF;
+        let type_from_8_15 = (flags >> 8) & 0xFF;
+        let type_from_0_7 = flags & 0xFF;
+        let next_type =
+            if type_from_0_7 == REFSXP || (2..=S4SXP).contains(&type_from_0_7) || type_from_0_7 == 1
+            {
+                type_from_0_7
+            } else if type_from_0_7 == 0 && type_from_8_15 >= 2 {
+                type_from_8_15
+            } else {
+                type_from_0_7
+            };
         let has_tag_next = (flags & HAS_TAG_BIT) != 0;
         let continues_pairlist =
             has_tag_next || matches!(next_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP);
