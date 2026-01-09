@@ -1088,6 +1088,7 @@ where
                     ref_table,
                     symbol_table,
                     dedup_table,
+                    ref_paths,
                     progress,
                     visitor,
                     path,
@@ -1213,6 +1214,7 @@ async fn try_parse_large_vector_streaming_async<C, V>(
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
     progress: &mut StreamingProgressState<'_>,
     visitor: &mut V,
     path: &mut crate::ObjectPath,
@@ -1256,6 +1258,76 @@ where
         } else {
             type_from_0_7
         };
+
+    if sexp_type == S4SXP {
+        let flags = read_u32_async(cursor)
+            .await
+            .map_err(StreamingError::Parse)?;
+        let has_attr = (flags & HAS_ATTR_BIT) != 0;
+        let has_tag = (flags & HAS_TAG_BIT) != 0;
+
+        let mut emit_children = true;
+        if emit {
+            match visitor
+                .on_object_start(path, sexp_type_name(S4SXP))
+                .map_err(StreamingError::Visitor)?
+            {
+                VisitAction::Stop => {
+                    progress.report_object(cursor.position());
+                    return Ok(Some(StreamControl::Stop));
+                }
+                VisitAction::Skip => emit_children = false,
+                VisitAction::Continue => {}
+            }
+        }
+
+        if has_tag {
+            let prev = ctx.parsing_s4_tag;
+            ctx.parsing_s4_tag = true;
+            let _ = parse_object_streaming_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            false,
+        )
+            .await?;
+            ctx.parsing_s4_tag = prev;
+        }
+
+        if has_attr {
+            let prev = ctx.parsing_attributes;
+            ctx.parsing_attributes = true;
+            let _ = parse_object_streaming_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            false,
+        )
+            .await?;
+            ctx.parsing_attributes = prev;
+        }
+
+        if emit && emit_children {
+            visitor
+                .on_object_end(path)
+                .map_err(StreamingError::Visitor)?;
+        }
+
+        progress.report_object(cursor.position());
+        return Ok(Some(StreamControl::Continue));
+    }
 
     let (kind, elem_size) = match sexp_type {
         INTSXP => (VectorKind::Integer, std::mem::size_of::<i32>()),
