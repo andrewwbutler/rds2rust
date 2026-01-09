@@ -1926,7 +1926,13 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                 for chunk in bytes.chunks_exact(4) {
                     let mut reader = std::io::Cursor::new(chunk);
                     let value = reader.read_i32::<BigEndian>()?;
-                    values.push(Logical::from(value));
+                    let logical = match value {
+                        1 => Logical::True,
+                        0 => Logical::False,
+                        i32::MIN => Logical::Na,
+                        _ => Logical::Na,
+                    };
+                    values.push(logical);
                 }
                 RObject::Logical(values.into())
             }
