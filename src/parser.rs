@@ -3127,6 +3127,14 @@ where
     C: AsyncCursor,
     V: RdsVisitor,
 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let msg = format!(
+            "sequential tag parse start pos={}",
+            cursor.position()
+        );
+        web_sys::console::debug_1(&JsValue::from_str(&msg));
+    }
     let flags = read_u32_async(cursor)
         .await
         .map_err(StreamingError::Parse)?;
@@ -3140,6 +3148,14 @@ where
         } else {
             type_from_0_7
         };
+    #[cfg(target_arch = "wasm32")]
+    {
+        let msg = format!(
+            "sequential tag flags=0x{:08x} type0_7={} type8_15={} sexp_type={}",
+            flags, type_from_0_7, type_from_8_15, sexp_type
+        );
+        web_sys::console::debug_1(&JsValue::from_str(&msg));
+    }
 
     if sexp_type == REFSXP {
         let flags = read_u32_async(cursor)
@@ -3168,6 +3184,14 @@ where
     }
 
     if sexp_type == SYMSXP {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let msg = format!(
+                "sequential tag SYMSXP at pos={}",
+                cursor.position()
+            );
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
+        }
         let _ = read_u32_async(cursor)
             .await
             .map_err(StreamingError::Parse)?;
@@ -3176,6 +3200,14 @@ where
             .map_err(StreamingError::Parse)?;
         let name_type_from_0_7 = name_flags & 0xFF;
         let name_type_from_8_15 = (name_flags >> 8) & 0xFF;
+        #[cfg(target_arch = "wasm32")]
+        {
+            let msg = format!(
+                "sequential tag SYMSXP name flags=0x{:08x} type0_7={} type8_15={}",
+                name_flags, name_type_from_0_7, name_type_from_8_15
+            );
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
+        }
         let has_attr = (name_flags & HAS_ATTR_BIT) != 0;
 
         let name = if name_type_from_0_7 == REFSXP {
@@ -3232,6 +3264,14 @@ where
     }
 
     if sexp_type == CHARSXP {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let msg = format!(
+                "sequential tag CHARSXP at pos={}",
+                cursor.position()
+            );
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
+        }
         let flags = read_u32_async(cursor)
             .await
             .map_err(StreamingError::Parse)?;
