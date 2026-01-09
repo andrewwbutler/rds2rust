@@ -54,15 +54,43 @@ export async function detectCompression(blob) {
   return "unknown";
 }
 
+function parseGzipHeader(bytes, index) {
+  if (index + 10 > bytes.length) return null;
+  if (bytes[index] !== 0x1f || bytes[index + 1] !== 0x8b || bytes[index + 2] !== 0x08) {
+    return null;
+  }
+  const flags = bytes[index + 3];
+  if ((flags & 0xe0) !== 0) return null;
+  let cursor = index + 10;
+  if (flags & 0x04) {
+    if (cursor + 2 > bytes.length) return null;
+    const xlen = bytes[cursor] | (bytes[cursor + 1] << 8);
+    cursor += 2 + xlen;
+    if (cursor > bytes.length) return null;
+  }
+  if (flags & 0x08) {
+    while (cursor < bytes.length && bytes[cursor] !== 0) cursor += 1;
+    if (cursor >= bytes.length) return null;
+    cursor += 1;
+  }
+  if (flags & 0x10) {
+    while (cursor < bytes.length && bytes[cursor] !== 0) cursor += 1;
+    if (cursor >= bytes.length) return null;
+    cursor += 1;
+  }
+  if (flags & 0x02) {
+    if (cursor + 2 > bytes.length) return null;
+    cursor += 2;
+  }
+  return cursor - index;
+}
+
 function findGzipMemberOffsets(buffer) {
   const bytes = new Uint8Array(buffer);
   const offsets = [];
-  for (let i = 0; i + 2 < bytes.length; i += 1) {
-    if (bytes[i] === 0x1f && bytes[i + 1] === 0x8b && bytes[i + 2] === 0x08) {
-      const flags = bytes[i + 3];
-      if ((flags & 0xe0) === 0) {
-        offsets.push(i);
-      }
+  for (let i = 0; i + 10 <= bytes.length; i += 1) {
+    if (parseGzipHeader(bytes, i) !== null) {
+      offsets.push(i);
     }
   }
   return offsets;
@@ -72,6 +100,7 @@ async function findGzipMemberOffsetsFromBlob(blob, chunkSize = 8 * 1024 * 1024) 
   const offsets = [];
   let offset = 0;
   let carry = new Uint8Array(0);
+  const carryLimit = 64 * 1024;
   while (offset < blob.size) {
     const end = Math.min(blob.size, offset + chunkSize);
     const chunk = new Uint8Array(await blob.slice(offset, end).arrayBuffer());
@@ -86,7 +115,7 @@ async function findGzipMemberOffsetsFromBlob(blob, chunkSize = 8 * 1024 * 1024) 
         offsets.push(absolute);
       }
     }
-    carry = merged.slice(Math.max(0, merged.length - 2));
+    carry = merged.slice(Math.max(0, merged.length - carryLimit));
     offset = end;
   }
   return offsets;
