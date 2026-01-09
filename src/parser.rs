@@ -1331,6 +1331,202 @@ where
         return Ok(Some(StreamControl::Continue));
     }
 
+    if matches!(sexp_type, LISTSXP | ATTRLISTSXP) {
+        let flags = read_u32_async(cursor)
+            .await
+            .map_err(StreamingError::Parse)?;
+        let has_tag = (flags & HAS_TAG_BIT) != 0;
+        let has_attr = (flags & HAS_ATTR_BIT) != 0;
+
+        let mut emit_children = true;
+        if emit {
+            match visitor
+                .on_object_start(path, sexp_type_name(sexp_type))
+                .map_err(StreamingError::Visitor)?
+            {
+                VisitAction::Stop => {
+                    progress.report_object(cursor.position());
+                    return Ok(Some(StreamControl::Stop));
+                }
+                VisitAction::Skip => emit_children = false,
+                VisitAction::Continue => {}
+            }
+        }
+
+        if has_attr {
+            let prev = ctx.parsing_attributes;
+            ctx.parsing_attributes = true;
+            let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                false,
+            )))
+            .await?;
+            ctx.parsing_attributes = prev;
+        }
+
+        let control = parse_pairlist_streaming_sequential_async(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            has_tag,
+            emit && emit_children,
+            visitor,
+            path,
+            progress,
+        )
+        .await?;
+
+        if emit && emit_children {
+            visitor
+                .on_object_end(path)
+                .map_err(StreamingError::Visitor)?;
+        }
+
+        progress.report_object(cursor.position());
+        return Ok(Some(control));
+    }
+
+    if matches!(sexp_type, LANGSXP | ATTRLANGSXP) {
+        let flags = read_u32_async(cursor)
+            .await
+            .map_err(StreamingError::Parse)?;
+        let has_tag = (flags & HAS_TAG_BIT) != 0;
+        let has_attr = (flags & HAS_ATTR_BIT) != 0;
+
+        let mut emit_children = true;
+        if emit {
+            match visitor
+                .on_object_start(path, sexp_type_name(sexp_type))
+                .map_err(StreamingError::Visitor)?
+            {
+                VisitAction::Stop => {
+                    progress.report_object(cursor.position());
+                    return Ok(Some(StreamControl::Stop));
+                }
+                VisitAction::Skip => emit_children = false,
+                VisitAction::Continue => {}
+            }
+        }
+
+        if has_attr {
+            let prev = ctx.parsing_attributes;
+            ctx.parsing_attributes = true;
+            let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                false,
+            )))
+            .await?;
+            ctx.parsing_attributes = prev;
+        }
+
+        let control = parse_language_streaming_sequential_async(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            has_tag,
+            emit && emit_children,
+            visitor,
+            path,
+            progress,
+        )
+        .await?;
+
+        if emit && emit_children {
+            visitor
+                .on_object_end(path)
+                .map_err(StreamingError::Visitor)?;
+        }
+
+        progress.report_object(cursor.position());
+        return Ok(Some(control));
+    }
+
+    if matches!(sexp_type, VECSXP | EXPRSXP) {
+        let flags = read_u32_async(cursor)
+            .await
+            .map_err(StreamingError::Parse)?;
+        let has_attr = (flags & HAS_ATTR_BIT) != 0;
+
+        let mut emit_children = true;
+        if emit {
+            match visitor
+                .on_object_start(path, sexp_type_name(sexp_type))
+                .map_err(StreamingError::Visitor)?
+            {
+                VisitAction::Stop => {
+                    progress.report_object(cursor.position());
+                    return Ok(Some(StreamControl::Stop));
+                }
+                VisitAction::Skip => emit_children = false,
+                VisitAction::Continue => {}
+            }
+        }
+
+        let control = parse_list_streaming_sequential_async(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            emit && emit_children,
+            visitor,
+            path,
+            progress,
+        )
+        .await?;
+
+        if has_attr {
+            let prev = ctx.parsing_attributes;
+            ctx.parsing_attributes = true;
+            let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                false,
+            )))
+            .await?;
+            ctx.parsing_attributes = prev;
+        }
+
+        if emit && emit_children {
+            visitor
+                .on_object_end(path)
+                .map_err(StreamingError::Visitor)?;
+        }
+
+        progress.report_object(cursor.position());
+        return Ok(Some(control));
+    }
+
     let (kind, elem_size) = match sexp_type {
         INTSXP => (VectorKind::Integer, std::mem::size_of::<i32>()),
         REALSXP => (VectorKind::Real, std::mem::size_of::<f64>()),
@@ -1347,9 +1543,11 @@ where
         }
     };
 
-    let flags = read_u32_async(cursor)
+    cursor
+        .ensure_available(4)
         .await
         .map_err(StreamingError::Parse)?;
+    let flags = cursor.peek_u32().map_err(StreamingError::Parse)?;
     let has_attr = (flags & HAS_ATTR_BIT) != 0;
 
     let mut emit_children = true;
@@ -1496,6 +1694,82 @@ async fn read_bytes_async<C: AsyncCursor>(cursor: &mut C, len: usize) -> Result<
     let bytes = slice.to_vec();
     cursor.advance(len as u64)?;
     Ok(bytes)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_i32_async<C: AsyncCursor>(cursor: &mut C) -> Result<i32> {
+    let bytes = read_bytes_async(cursor, 4).await?;
+    let mut reader = std::io::Cursor::new(bytes);
+    Ok(reader.read_i32::<BigEndian>()?)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn parse_charsxp_content_async<C: AsyncCursor>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    flags: u32,
+) -> Result<String> {
+    let compact_length = (flags >> 24) & 0xFF;
+    let use_compact = compact_length > 0;
+
+    let length = if use_compact {
+        let bytes_3 = read_bytes_async(cursor, 3).await?;
+        ((bytes_3[0] as i32) << 16) | ((bytes_3[1] as i32) << 8) | (bytes_3[2] as i32)
+    } else {
+        read_i32_async(cursor).await?
+    };
+
+    if length == -1 {
+        return Ok(String::from("NA"));
+    }
+    if length < 0 {
+        return Err(Error::InvalidFormat(format!(
+            "Negative CHARSXP length {}",
+            length
+        )));
+    }
+
+    let length = length as usize;
+    guard_allocation_common(ctx, length, 1, "charsxp content")?;
+    let bytes = read_bytes_async(cursor, length).await?;
+
+    let string = match String::from_utf8(bytes.clone()) {
+        Ok(s) => s,
+        Err(_) => bytes.iter().map(|&b| b as char).collect(),
+    };
+
+    Ok(string)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
+async fn parse_charsxp_async<C: AsyncCursor>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+) -> Result<String> {
+    let flags = read_u32_async(cursor).await?;
+    let type_from_0_7 = flags & 0xFF;
+    let type_from_8_15 = (flags >> 8) & 0xFF;
+
+    if type_from_8_15 == CHARSXP || type_from_0_7 == CHARSXP {
+        return parse_charsxp_content_async(ctx, cursor, flags).await;
+    }
+
+    if type_from_0_7 == NILSXP || type_from_0_7 == NILVALUE_SXP {
+        return Ok(String::from("NA"));
+    }
+
+    if type_from_0_7 == REFSXP {
+        return Err(Error::InvalidFormat(format!(
+            "REFSXP in CHARSXP context requires caller to handle reference (ref={})",
+            flags >> 8
+        )));
+    }
+
+    Err(Error::InvalidFormat(format!(
+        "Expected CHARSXP ({}), got {} (flags: 0x{:08x})",
+        CHARSXP, type_from_0_7, flags
+    )))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2833,6 +3107,537 @@ fn parse_atomic_vector_streaming<T, V: RdsVisitor>(
     cursor
         .seek(SeekFrom::Current(byte_len as i64))
         .map_err(|e| StreamingError::Parse(Error::Io(e)))?;
+    Ok(StreamControl::Continue)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::too_many_arguments)]
+async fn parse_tag_name_streaming_sequential_async<C, V>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    progress: &mut StreamingProgressState<'_>,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+) -> StreamingResult<Option<Arc<str>>, V::Error>
+where
+    C: AsyncCursor,
+    V: RdsVisitor,
+{
+    let flags = read_u32_async(cursor)
+        .await
+        .map_err(StreamingError::Parse)?;
+    let type_from_8_15 = (flags >> 8) & 0xFF;
+    let type_from_0_7 = flags & 0xFF;
+    let sexp_type =
+        if type_from_0_7 == REFSXP || (2..=S4SXP).contains(&type_from_0_7) || type_from_0_7 == 1 {
+            type_from_0_7
+        } else if type_from_0_7 == 0 && type_from_8_15 >= 2 {
+            type_from_8_15
+        } else {
+            type_from_0_7
+        };
+
+    if sexp_type == REFSXP {
+        let flags = read_u32_async(cursor)
+            .await
+            .map_err(StreamingError::Parse)?;
+        let ref_index = flags >> 8;
+        let tag_obj = if let Some(sym) = symbol_table.get(ref_index) {
+            sym.clone()
+        } else if let Some(obj) = ref_table.get(ref_index) {
+            obj.read()
+                .map_err(|_| {
+                    StreamingError::Parse(Error::Unsupported(
+                        "shared object lock poisoned".to_string(),
+                    ))
+                })?
+                .clone()
+        } else {
+            return Err(StreamingError::Parse(Error::InvalidFormat(format!(
+                "Invalid TAG REFSXP index {} (symbol table size={}, ref table size={})",
+                ref_index,
+                symbol_table.len(),
+                ref_table.next_index - 1
+            ))));
+        };
+        return Ok(extract_tag_name(tag_obj));
+    }
+
+    if sexp_type == SYMSXP {
+        let _ = read_u32_async(cursor)
+            .await
+            .map_err(StreamingError::Parse)?;
+        let name_flags = read_u32_async(cursor)
+            .await
+            .map_err(StreamingError::Parse)?;
+        let name_type_from_0_7 = name_flags & 0xFF;
+        let name_type_from_8_15 = (name_flags >> 8) & 0xFF;
+        let has_attr = (name_flags & HAS_ATTR_BIT) != 0;
+
+        let name = if name_type_from_0_7 == REFSXP {
+            let ref_index = name_flags >> 8;
+            let tag_obj = ref_table
+                .get(ref_index)
+                .ok_or_else(|| {
+                    StreamingError::Parse(Error::InvalidFormat(format!(
+                        "Invalid symbol REFSXP index {}",
+                        ref_index
+                    )))
+                })?
+                .read()
+                .map_err(|_| {
+                    StreamingError::Parse(Error::Unsupported(
+                        "shared object lock poisoned".to_string(),
+                    ))
+                })?
+                .clone();
+            extract_tag_name(tag_obj).unwrap_or_else(|| Arc::from("NA"))
+        } else if name_type_from_8_15 == CHARSXP || name_type_from_0_7 == CHARSXP {
+            Arc::from(
+                parse_charsxp_content_async(ctx, cursor, name_flags)
+                    .await
+                    .map_err(StreamingError::Parse)?
+                    .as_str(),
+            )
+        } else {
+            return Err(StreamingError::Parse(Error::InvalidFormat(format!(
+                "Unexpected SYMSXP name type {} (flags: 0x{:08x})",
+                name_type_from_0_7, name_flags
+            ))));
+        };
+
+        if has_attr {
+            let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                false,
+            )))
+            .await?;
+        }
+
+        let sym = RObject::Symbol(name.clone());
+        symbol_table.add(sym.clone());
+        return Ok(extract_tag_name(sym));
+    }
+
+    if sexp_type == CHARSXP {
+        let flags = read_u32_async(cursor)
+            .await
+            .map_err(StreamingError::Parse)?;
+        let has_attr = (flags & HAS_ATTR_BIT) != 0;
+        let name = parse_charsxp_content_async(ctx, cursor, flags)
+            .await
+            .map_err(StreamingError::Parse)?;
+        if has_attr {
+            let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                false,
+            )))
+            .await?;
+        }
+        let obj = RObject::Character(vec![Arc::from(name.as_str())].into());
+        return Ok(extract_tag_name(obj));
+    }
+
+    let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )))
+    .await?;
+
+    Ok(None)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::too_many_arguments)]
+async fn parse_pairlist_element_streaming_sequential_async<C, V>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    has_tag: bool,
+    emit: bool,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    index: usize,
+    progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<(Option<Arc<str>>, StreamControl), V::Error>
+where
+    C: AsyncCursor,
+    V: RdsVisitor,
+{
+    let tag_name = if has_tag {
+        parse_tag_name_streaming_sequential_async(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+        )
+        .await?
+    } else {
+        None
+    };
+
+    if emit {
+        let segment = tag_name
+            .clone()
+            .unwrap_or_else(|| Arc::from(format!("[{}]", index)));
+        path.push(segment);
+        let control = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            true,
+        )))
+        .await?;
+        path.pop();
+        Ok((tag_name, control))
+    } else {
+        let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            false,
+        )))
+        .await?;
+        Ok((tag_name, StreamControl::Continue))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::too_many_arguments)]
+async fn parse_pairlist_streaming_sequential_async<C, V>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    has_tag: bool,
+    emit: bool,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error>
+where
+    C: AsyncCursor,
+    V: RdsVisitor,
+{
+    let mut index = 0usize;
+    let (_tag_name, control) = parse_pairlist_element_streaming_sequential_async(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        has_tag,
+        emit,
+        visitor,
+        path,
+        index,
+        progress,
+    )
+    .await?;
+    if matches!(control, StreamControl::Stop) {
+        return Ok(StreamControl::Stop);
+    }
+    index += 1;
+
+    loop {
+        cursor
+            .ensure_available(4)
+            .await
+            .map_err(StreamingError::Parse)?;
+        let flags = cursor.peek_u32().map_err(StreamingError::Parse)?;
+        let next_type = flags & 0xFF;
+        let has_tag_next = (flags & HAS_TAG_BIT) != 0;
+        let continues_pairlist =
+            has_tag_next || matches!(next_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP);
+
+        if next_type == REFSXP {
+            let _ = read_u32_async(cursor)
+                .await
+                .map_err(StreamingError::Parse)?;
+            if emit {
+                visitor
+                    .on_object_start(path, "SharedRef")
+                    .map_err(StreamingError::Visitor)?;
+                visitor
+                    .on_object_end(path)
+                    .map_err(StreamingError::Visitor)?;
+            }
+            break;
+        } else if continues_pairlist {
+            let _flags = read_u32_async(cursor)
+                .await
+                .map_err(StreamingError::Parse)?;
+            let (_tag_name, control) = parse_pairlist_element_streaming_sequential_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                has_tag_next,
+                emit,
+                visitor,
+                path,
+                index,
+                progress,
+            )
+            .await?;
+            if matches!(control, StreamControl::Stop) {
+                return Ok(StreamControl::Stop);
+            }
+            index += 1;
+        } else {
+            let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                false,
+            )))
+            .await?;
+            break;
+        }
+    }
+
+    Ok(StreamControl::Continue)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::too_many_arguments)]
+async fn parse_language_streaming_sequential_async<C, V>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    has_tag: bool,
+    emit: bool,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error>
+where
+    C: AsyncCursor,
+    V: RdsVisitor,
+{
+    if has_tag {
+        let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            false,
+        )))
+        .await?;
+    }
+
+    if emit {
+        path.push(Arc::from("function"));
+        if matches!(
+            std::pin::Pin::from(Box::new(parse_object_streaming_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                true,
+            )))
+            .await?,
+            StreamControl::Stop
+        ) {
+            path.pop();
+            return Ok(StreamControl::Stop);
+        }
+        path.pop();
+
+        path.push(Arc::from("args"));
+        let control = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            true,
+        )))
+        .await?;
+        path.pop();
+        return Ok(control);
+    }
+
+    let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )))
+    .await?;
+    let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )))
+    .await?;
+
+    Ok(StreamControl::Continue)
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::too_many_arguments)]
+async fn parse_list_streaming_sequential_async<C, V>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    emit: bool,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error>
+where
+    C: AsyncCursor,
+    V: RdsVisitor,
+{
+    let length = read_u32_async(cursor)
+        .await
+        .map_err(StreamingError::Parse)? as usize;
+    guard_allocation_common(ctx, length, 1, "VECSXP/list")?;
+
+    for index in 0..length {
+        if emit {
+            path.push(Arc::from(format!("[{}]", index)));
+            if matches!(
+                std::pin::Pin::from(Box::new(parse_object_streaming_async(
+                    ctx,
+                    cursor,
+                    ref_table,
+                    symbol_table,
+                    dedup_table,
+                    ref_paths,
+                    progress,
+                    visitor,
+                    path,
+                    true,
+                )))
+                .await?,
+                StreamControl::Stop
+            ) {
+                path.pop();
+                return Ok(StreamControl::Stop);
+            }
+            path.pop();
+        } else {
+            let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                false,
+            )))
+            .await?;
+        }
+
+        if index + 1 < length {
+            cursor
+                .ensure_available(1)
+                .await
+                .map_err(StreamingError::Parse)?;
+            let marker = cursor.as_sync_slice(1).map_err(StreamingError::Parse)?[0];
+            if marker == NILVALUE_SXP as u8 {
+                cursor.advance(1).map_err(StreamingError::Parse)?;
+            }
+        }
+    }
+
     Ok(StreamControl::Continue)
 }
 
