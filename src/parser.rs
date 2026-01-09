@@ -995,7 +995,7 @@ where
             type_from_0_7
         };
     if sexp_type == ALTREP_SXP && cursor.total_len().is_none() {
-        return parse_altrep_streaming_sequential_async(
+        return std::pin::Pin::from(Box::new(parse_altrep_streaming_sequential_async(
             ctx,
             cursor,
             ref_table,
@@ -1007,7 +1007,7 @@ where
             path,
             emit,
             flags,
-        )
+        )))
         .await;
     }
     cursor
