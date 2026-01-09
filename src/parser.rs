@@ -2037,9 +2037,7 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
         _ => RObject::Null,
     };
 
-    let attributes = if let Some(attrs) = early_attributes {
-        attrs
-    } else if sexp_type == S4SXP && has_tag {
+    let attributes = if sexp_type == S4SXP && has_tag {
         let pairlist = std::pin::Pin::from(Box::new(parse_pairlist_sequential_value_async(
             ctx,
             cursor,
@@ -2050,6 +2048,8 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
         )))
         .await?;
         parse_attributes(RObject::Pairlist(pairlist), ctx)?
+    } else if let Some(attrs) = early_attributes {
+        attrs
     } else if has_attr {
         let attr_obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
             ctx, cursor, ref_table, symbol_table, dedup_table,
