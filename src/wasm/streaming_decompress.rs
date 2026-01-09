@@ -106,6 +106,11 @@ impl StreamingGzipDecompressor {
                 Error::CompressionError(format!("Failed to detect gzip members: {:?}", e))
             })?;
         let offsets = Array::from(&offsets_value);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let msg = format!("gzip members detected: {}", offsets.length());
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
+        }
         if offsets.length() > 1 {
             let decompressed_stream = stream_multi_member_gzip_js(&blob, offsets.into());
             let get_reader_fn = Reflect::get(&decompressed_stream, &JsValue::from_str("getReader"))

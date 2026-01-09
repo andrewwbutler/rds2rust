@@ -122,7 +122,17 @@ async function findGzipMemberOffsetsFromBlob(blob, chunkSize = 8 * 1024 * 1024) 
 }
 
 export async function detectGzipMemberOffsets(blob, chunkSize = 8 * 1024 * 1024) {
-  return await findGzipMemberOffsetsFromBlob(blob, chunkSize);
+  const offsets = await findGzipMemberOffsetsFromBlob(blob, chunkSize);
+  try {
+    console.debug("gzip member offsets", {
+      size: blob.size,
+      count: offsets.length,
+      sample: offsets.slice(0, 8),
+    });
+  } catch {
+    // ignore logging failures
+  }
+  return offsets;
 }
 
 export function streamMultiMemberGzip(blob, offsets) {
