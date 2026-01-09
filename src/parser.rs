@@ -2212,12 +2212,15 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
-    mut has_tag: bool,
+    has_tag: bool,
 ) -> Result<Vec<PairlistElement>> {
+    let _ = has_tag;
     let mut elements = Vec::new();
 
     loop {
-        let (tag, tag_obj) = if has_tag {
+        let element_flags = read_u32_async(cursor).await?;
+        let element_has_tag = (element_flags & HAS_TAG_BIT) != 0;
+        let (tag, tag_obj) = if element_has_tag {
             std::pin::Pin::from(Box::new(parse_tag_sequential_value_async(
                 ctx, cursor, ref_table, symbol_table, dedup_table,
             )))
@@ -2281,7 +2284,6 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
         } else if continues_pairlist {
             // Do not consume the flags here; the next loop iteration will
             // read them as part of the next tag parse.
-            has_tag = has_tag_next;
             continue;
         } else {
             let _ = read_u32_async(cursor).await?;
