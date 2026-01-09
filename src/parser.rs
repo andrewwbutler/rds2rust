@@ -1287,45 +1287,53 @@ where
             }
         }
 
+        let mut attrs = Attributes::new();
         if has_tag {
             let prev = ctx.parsing_s4_tag;
             ctx.parsing_s4_tag = true;
-            let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+            let pairlist = std::pin::Pin::from(Box::new(parse_pairlist_sequential_value_async(
                 ctx,
                 cursor,
                 ref_table,
                 symbol_table,
                 dedup_table,
-                ref_paths,
-                progress,
-                visitor,
-                path,
-                false,
+                true,
             )))
-            .await?;
+            .await
+            .map_err(StreamingError::Parse)?;
+            attrs = parse_attributes(RObject::Pairlist(pairlist), ctx)
+                .map_err(StreamingError::Parse)?;
             ctx.parsing_s4_tag = prev;
         }
 
         if has_attr {
             let prev = ctx.parsing_attributes;
             ctx.parsing_attributes = true;
-            let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
+            let attr_obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
                 ctx,
                 cursor,
                 ref_table,
                 symbol_table,
                 dedup_table,
-                ref_paths,
-                progress,
-                visitor,
-                path,
-                false,
             )))
-            .await?;
+            .await
+            .map_err(StreamingError::Parse)?;
+            let extra = parse_attributes(attr_obj, ctx).map_err(StreamingError::Parse)?;
+            for (k, v) in extra.attrs.into_iter() {
+                if !attrs.attrs.iter().any(|(ek, _)| ek == &k) {
+                    attrs.insert(k, *v);
+                }
+            }
             ctx.parsing_attributes = prev;
         }
 
-        if emit && emit_children {
+        if emit {
+            visitor
+                .on_attributes(path, &attrs)
+                .map_err(StreamingError::Visitor)?;
+            if emit_children {
+                emit_attribute_values_streaming(&attrs, path, visitor)?;
+            }
             visitor
                 .on_object_end(path)
                 .map_err(StreamingError::Visitor)?;
@@ -1705,6 +1713,414 @@ async fn read_i32_async<C: AsyncCursor>(cursor: &mut C) -> Result<i32> {
     let bytes = read_bytes_async(cursor, 4).await?;
     let mut reader = std::io::Cursor::new(bytes);
     Ok(reader.read_i32::<BigEndian>()?)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn parse_object_sequential_value_async<C: AsyncCursor>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+) -> Result<RObject> {
+    cursor.ensure_available(1).await?;
+    let first_byte = cursor.as_sync_slice(1)?[0];
+    if first_byte >= 240 {
+        cursor.advance(1)?;
+        return Ok(RObject::Null);
+    }
+
+    let flags = read_u32_async(cursor).await?;
+    let type_from_8_15 = (flags >> 8) & 0xFF;
+    let type_from_0_7 = flags & 0xFF;
+    let sexp_type =
+        if type_from_0_7 == REFSXP || (2..=S4SXP).contains(&type_from_0_7) || type_from_0_7 == 1 {
+            type_from_0_7
+        } else if type_from_0_7 == 0 && type_from_8_15 >= 2 {
+            type_from_8_15
+        } else {
+            type_from_0_7
+        };
+
+    let has_attr = if sexp_type == REFSXP {
+        false
+    } else {
+        (flags & HAS_ATTR_BIT) != 0
+    };
+    let has_tag = if sexp_type == REFSXP {
+        false
+    } else {
+        (flags & HAS_TAG_BIT) != 0
+    };
+
+    if sexp_type == REFSXP {
+        let ref_index = flags >> 8;
+        if let Some(obj) = ref_table.get(ref_index) {
+            return Ok(RObject::Shared(obj));
+        }
+        return Err(Error::InvalidFormat(format!(
+            "Invalid reference index: {}",
+            ref_index
+        )));
+    }
+
+    let track_reference = should_track_reference(sexp_type, has_attr);
+    let ref_index = if track_reference && sexp_type != CLOSXP {
+        let idx = ref_table.add(RObject::Null);
+        Some(idx)
+    } else {
+        None
+    };
+
+    let early_attributes = if has_attr
+        && matches!(sexp_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP)
+    {
+        let attr_obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+            ctx, cursor, ref_table, symbol_table, dedup_table,
+        )))
+        .await?;
+        Some(parse_attributes(attr_obj, ctx)?)
+    } else {
+        None
+    };
+
+    let mut obj = match sexp_type {
+        NILSXP | NILVALUE_SXP => RObject::Null,
+        SYMSXP => {
+            let name_flags = read_u32_async(cursor).await?;
+            let name_type_from_0_7 = name_flags & 0xFF;
+            let name_type_from_8_15 = (name_flags >> 8) & 0xFF;
+            let name = if name_type_from_0_7 == REFSXP {
+                let ref_index = name_flags >> 8;
+                if let Some(obj) = ref_table.get(ref_index) {
+                    extract_tag_name(obj.read().unwrap().clone()).unwrap_or_else(|| Arc::from("NA"))
+                } else {
+                    Arc::from("NA")
+                }
+            } else if name_type_from_0_7 == CHARSXP || name_type_from_8_15 == CHARSXP {
+                Arc::from(parse_charsxp_content_async(ctx, cursor, name_flags).await?.as_str())
+            } else {
+                Arc::from("NA")
+            };
+            let symbol = RObject::Symbol(name);
+            symbol_table.add(symbol.clone());
+            symbol
+        }
+        CHARSXP => {
+            let string = parse_charsxp_content_async(ctx, cursor, flags).await?;
+            RObject::Character(vec![Arc::from(string.as_str())].into())
+        }
+        STRSXP => {
+            let length = read_u32_async(cursor).await? as usize;
+            guard_allocation_common(ctx, length, 1, "character vector")?;
+            let mut vec = Vec::with_capacity(length);
+            let mut string_cache: Vec<Arc<str>> = Vec::new();
+            for _ in 0..length {
+                let elem_flags = read_u32_async(cursor).await?;
+                let elem_type = elem_flags & 0xFF;
+                let elem_type_alt = (elem_flags >> 8) & 0xFF;
+                let value = if elem_type == REFSXP {
+                    let ref_index = (elem_flags >> 8) as usize;
+                    string_cache
+                        .get(ref_index.saturating_sub(1))
+                        .cloned()
+                        .unwrap_or_else(|| Arc::from("NA"))
+                } else if elem_type == SYMSXP {
+                    let name_flags = read_u32_async(cursor).await?;
+                    let name_type = name_flags & 0xFF;
+                    let name_type_alt = (name_flags >> 8) & 0xFF;
+                    if name_type == REFSXP {
+                        let ref_index = (name_flags >> 8) as usize;
+                        string_cache
+                            .get(ref_index.saturating_sub(1))
+                            .cloned()
+                            .unwrap_or_else(|| Arc::from("NA"))
+                    } else if name_type == CHARSXP || name_type_alt == CHARSXP {
+                        Arc::from(
+                            parse_charsxp_content_async(ctx, cursor, name_flags)
+                                .await?
+                                .as_str(),
+                        )
+                    } else {
+                        Arc::from("NA")
+                    }
+                } else if elem_type == CHARSXP || elem_type_alt == CHARSXP {
+                    Arc::from(
+                        parse_charsxp_content_async(ctx, cursor, elem_flags)
+                            .await?
+                            .as_str(),
+                    )
+                } else {
+                    Arc::from("NA")
+                };
+                string_cache.push(value.clone());
+                vec.push(value);
+            }
+            RObject::Character(vec.into())
+        }
+        INTSXP => {
+            let length = read_u32_async(cursor).await? as usize;
+            guard_allocation_common(ctx, length, std::mem::size_of::<i32>(), "int vector")?;
+            let offset = cursor.position();
+            let byte_len = length * std::mem::size_of::<i32>();
+            if matches!(ctx.mode, crate::ParseMode::LazyMetadata)
+                && length > ctx.effective_lazy_threshold()
+            {
+                cursor.skip_bytes(byte_len).await?;
+                RObject::Integer(VectorData::Lazy(LazyVector {
+                    length,
+                    offset,
+                    byte_len: byte_len as u64,
+                }))
+            } else {
+                let bytes = read_bytes_async(cursor, byte_len).await?;
+                let mut values = Vec::with_capacity(length);
+                for chunk in bytes.chunks_exact(4) {
+                    let mut reader = std::io::Cursor::new(chunk);
+                    values.push(reader.read_i32::<BigEndian>()?);
+                }
+                RObject::Integer(values.into())
+            }
+        }
+        REALSXP => {
+            let length = read_u32_async(cursor).await? as usize;
+            guard_allocation_common(ctx, length, std::mem::size_of::<f64>(), "real vector")?;
+            let offset = cursor.position();
+            let byte_len = length * std::mem::size_of::<f64>();
+            if matches!(ctx.mode, crate::ParseMode::LazyMetadata)
+                && length > ctx.effective_lazy_threshold()
+            {
+                cursor.skip_bytes(byte_len).await?;
+                RObject::Real(VectorData::Lazy(LazyVector {
+                    length,
+                    offset,
+                    byte_len: byte_len as u64,
+                }))
+            } else {
+                let bytes = read_bytes_async(cursor, byte_len).await?;
+                let mut values = Vec::with_capacity(length);
+                for chunk in bytes.chunks_exact(8) {
+                    let mut reader = std::io::Cursor::new(chunk);
+                    values.push(reader.read_f64::<BigEndian>()?);
+                }
+                RObject::Real(values.into())
+            }
+        }
+        LGLSXP => {
+            let length = read_u32_async(cursor).await? as usize;
+            guard_allocation_common(ctx, length, 4, "logical vector")?;
+            let offset = cursor.position();
+            let byte_len = length * 4;
+            if matches!(ctx.mode, crate::ParseMode::LazyMetadata)
+                && length > ctx.effective_lazy_threshold()
+            {
+                cursor.skip_bytes(byte_len).await?;
+                RObject::Logical(VectorData::Lazy(LazyVector {
+                    length,
+                    offset,
+                    byte_len: byte_len as u64,
+                }))
+            } else {
+                let bytes = read_bytes_async(cursor, byte_len).await?;
+                let mut values = Vec::with_capacity(length);
+                for chunk in bytes.chunks_exact(4) {
+                    let mut reader = std::io::Cursor::new(chunk);
+                    values.push(Logical::from(reader.read_i32::<BigEndian>()?));
+                }
+                RObject::Logical(values.into())
+            }
+        }
+        RAWSXP => {
+            let length = read_u32_async(cursor).await? as usize;
+            guard_allocation_common(ctx, length, 1, "raw vector")?;
+            let offset = cursor.position();
+            let byte_len = length;
+            if matches!(ctx.mode, crate::ParseMode::LazyMetadata)
+                && length > ctx.effective_lazy_threshold()
+            {
+                cursor.skip_bytes(byte_len).await?;
+                RObject::Raw(VectorData::Lazy(LazyVector {
+                    length,
+                    offset,
+                    byte_len: byte_len as u64,
+                }))
+            } else {
+                let bytes = read_bytes_async(cursor, byte_len).await?;
+                RObject::Raw(bytes.into())
+            }
+        }
+        CPLXSXP => {
+            let length = read_u32_async(cursor).await? as usize;
+            guard_allocation_common(ctx, length, std::mem::size_of::<Complex>(), "complex vector")?;
+            let offset = cursor.position();
+            let byte_len = length * std::mem::size_of::<Complex>();
+            if matches!(ctx.mode, crate::ParseMode::LazyMetadata)
+                && length > ctx.effective_lazy_threshold()
+            {
+                cursor.skip_bytes(byte_len).await?;
+                RObject::Complex(VectorData::Lazy(LazyVector {
+                    length,
+                    offset,
+                    byte_len: byte_len as u64,
+                }))
+            } else {
+                let bytes = read_bytes_async(cursor, byte_len).await?;
+                let mut values = Vec::with_capacity(length);
+                for chunk in bytes.chunks_exact(16) {
+                    let mut reader = std::io::Cursor::new(chunk);
+                    let real = reader.read_f64::<BigEndian>()?;
+                    let imaginary = reader.read_f64::<BigEndian>()?;
+                    values.push(Complex { real, imaginary });
+                }
+                RObject::Complex(values.into())
+            }
+        }
+        VECSXP | EXPRSXP => {
+            let length = read_u32_async(cursor).await? as usize;
+            guard_allocation_common(ctx, length, 1, "list")?;
+            let mut values = Vec::with_capacity(length);
+            for _ in 0..length {
+                let value = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                    ctx, cursor, ref_table, symbol_table, dedup_table,
+                )))
+                .await?;
+                values.push(value);
+            }
+            if sexp_type == VECSXP {
+                RObject::List(values)
+            } else {
+                RObject::Expression(values)
+            }
+        }
+        LISTSXP | ATTRLISTSXP | LANGSXP | ATTRLANGSXP => {
+            let list = std::pin::Pin::from(Box::new(parse_pairlist_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                has_tag,
+            )))
+            .await?;
+            if sexp_type == LANGSXP || sexp_type == ATTRLANGSXP {
+                RObject::Language {
+                    elements: list,
+                    evaluated: None,
+                }
+            } else {
+                RObject::Pairlist(list)
+            }
+        }
+        S4SXP => RObject::Null,
+        _ => RObject::Null,
+    };
+
+    let attributes = if let Some(attrs) = early_attributes {
+        attrs
+    } else if sexp_type == S4SXP && has_tag {
+        let pairlist = std::pin::Pin::from(Box::new(parse_pairlist_sequential_value_async(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            true,
+        )))
+        .await?;
+        parse_attributes(RObject::Pairlist(pairlist), ctx)?
+    } else if has_attr {
+        let attr_obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+            ctx, cursor, ref_table, symbol_table, dedup_table,
+        )))
+        .await?;
+        parse_attributes(attr_obj, ctx)?
+    } else {
+        Attributes::new()
+    };
+
+    if sexp_type == S4SXP && !attributes.is_empty() {
+        obj = convert_to_s4_object(attributes);
+    } else if has_attr && !attributes.is_empty() {
+        obj = RObject::WithAttributes {
+            object: Box::new(obj),
+            attributes,
+        };
+    }
+
+    if let Some(index) = ref_index {
+        ref_table.update(index, obj.clone());
+        obj = RObject::Shared(
+            ref_table
+                .get(index)
+                .ok_or_else(|| Error::InvalidFormat(format!("Missing ref idx {}", index)))?,
+        );
+    }
+
+    Ok(obj)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    mut has_tag: bool,
+) -> Result<Vec<PairlistElement>> {
+    let mut elements = Vec::new();
+
+    loop {
+        let tag_obj = if has_tag {
+            Some(
+                std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                    ctx, cursor, ref_table, symbol_table, dedup_table,
+                )))
+                .await?,
+            )
+        } else {
+            None
+        };
+        let tag = tag_obj
+            .clone()
+            .and_then(|obj| extract_tag_name(obj));
+        let value = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+            ctx, cursor, ref_table, symbol_table, dedup_table,
+        )))
+        .await?;
+        elements.push(PairlistElement {
+            tag,
+            value,
+            tag_object: tag_obj.map(Box::new),
+        });
+
+        cursor.ensure_available(4).await?;
+        let slice = cursor.as_sync_slice(4)?;
+        let mut reader = std::io::Cursor::new(slice);
+        let flags = reader.read_u32::<BigEndian>()?;
+        let next_type = flags & 0xFF;
+        let has_tag_next = (flags & HAS_TAG_BIT) != 0;
+        let continues_pairlist =
+            has_tag_next || matches!(next_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP);
+
+        if next_type == REFSXP {
+            let _ = read_u32_async(cursor).await?;
+            break;
+        } else if continues_pairlist {
+            let _ = read_u32_async(cursor).await?;
+            has_tag = has_tag_next;
+            continue;
+        } else {
+            let _ = read_u32_async(cursor).await?;
+            let _ = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                ctx, cursor, ref_table, symbol_table, dedup_table,
+            )))
+            .await?;
+            break;
+        }
+    }
+
+    Ok(elements)
 }
 
 #[cfg(target_arch = "wasm32")]

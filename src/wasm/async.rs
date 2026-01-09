@@ -130,7 +130,7 @@ pub fn recommended_buffer_config() -> AsyncCursorConfig {
         .unwrap_or(4.0);
 
     let buffer_mb = (device_memory_gb * 32.0_f64).min(128.0_f64).max(16.0_f64) as usize;
-    let max_buffer_mb = (buffer_mb * 2).min(256);
+    let max_buffer_mb = (buffer_mb * 4).min(512).max(buffer_mb * 2);
 
     AsyncCursorConfig {
         buffer_size: buffer_mb * 1024 * 1024,
