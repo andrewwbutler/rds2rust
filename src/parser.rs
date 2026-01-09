@@ -1709,8 +1709,8 @@ async fn parse_charsxp_content_async<C: AsyncCursor>(
     cursor: &mut C,
     flags: u32,
 ) -> Result<String> {
-    let compact_length = (flags >> 24) & 0xFF;
-    let use_compact = compact_length > 0;
+    let compact_flag = ((flags >> 24) & 0xFF) | ((flags >> 16) & 0xFF);
+    let use_compact = compact_flag > 0;
 
     let length = if use_compact {
         let bytes_3 = read_bytes_async(cursor, 3).await?;
@@ -6493,10 +6493,10 @@ fn parse_charsxp_content(
         eprintln!("[parse_charsxp_content] Starting at pos {}", pos_before);
     }
 
-    // Check if this uses compact 3-byte length encoding
-    // Compact encoding is signaled by bits 24-31 being non-zero (e.g., 0x04000900)
-    let compact_length = (flags >> 24) & 0xFF;
-    let use_compact = compact_length > 0;
+    // Check if this uses compact 3-byte length encoding.
+    // Some writers set the compact flag in bits 24-31, others in bits 16-23.
+    let compact_flag = ((flags >> 24) & 0xFF) | ((flags >> 16) & 0xFF);
+    let use_compact = compact_flag > 0;
 
     // Peek at the next 8 bytes for debugging
 
