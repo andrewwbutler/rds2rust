@@ -1037,7 +1037,7 @@ where
                 }
                 size = std::cmp::min(max_size, size.saturating_mul(2));
             }
-            Err(StreamingError::Parse(Error::InvalidFormat(message)))
+            Err(StreamingError::Parse(Error::InvalidFormat(ref message)))
                 if message.contains("exceeds remaining") && size < max_size =>
             {
                 ctx.restore(ctx_snapshot);
@@ -1046,7 +1046,7 @@ where
                 dedup_table.rollback(dedup_checkpoint);
                 size = std::cmp::min(max_size, size.saturating_mul(2));
             }
-            Err(StreamingError::Parse(Error::InvalidFormat(message)))
+            Err(StreamingError::Parse(Error::InvalidFormat(ref message)))
                 if message.contains("exceeds remaining") && cursor.total_len().is_none() =>
             {
                 ctx.restore(ctx_snapshot);
