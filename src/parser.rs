@@ -3370,9 +3370,6 @@ where
     V: RdsVisitor,
 {
     let mut index = 0usize;
-    let _ = read_u32_async(cursor)
-        .await
-        .map_err(StreamingError::Parse)?;
     let (_tag_name, control) = parse_pairlist_element_streaming_sequential_async(
         ctx,
         cursor,
