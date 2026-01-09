@@ -3158,9 +3158,6 @@ where
     }
 
     if sexp_type == REFSXP {
-        let flags = read_u32_async(cursor)
-            .await
-            .map_err(StreamingError::Parse)?;
         let ref_index = flags >> 8;
         let tag_obj = if let Some(sym) = symbol_table.get(ref_index) {
             sym.clone()
@@ -3192,9 +3189,6 @@ where
             );
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
-        let _ = read_u32_async(cursor)
-            .await
-            .map_err(StreamingError::Parse)?;
         let name_flags = read_u32_async(cursor)
             .await
             .map_err(StreamingError::Parse)?;
@@ -3272,9 +3266,6 @@ where
             );
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
-        let flags = read_u32_async(cursor)
-            .await
-            .map_err(StreamingError::Parse)?;
         let has_attr = (flags & HAS_ATTR_BIT) != 0;
         let name = parse_charsxp_content_async(ctx, cursor, flags)
             .await
