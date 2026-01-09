@@ -23,6 +23,16 @@ use crate::wasm::{AsyncBufferedCursor, AsyncCursor, AsyncCursorConfig, AsyncRdsI
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
 
+#[cfg(target_arch = "wasm32")]
+fn sequential_debug_enabled() -> bool {
+    let global = js_sys::global();
+    if let Ok(value) = js_sys::Reflect::get(&global, &JsValue::from_str("SCONVERT_STREAMING_DEBUG"))
+    {
+        return value.as_bool().unwrap_or(false);
+    }
+    false
+}
+
 struct RdsCursor<'a> {
     position: u64,
     len: u64,
@@ -2079,6 +2089,11 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
 ) -> Result<(Option<Arc<str>>, Option<RObject>)> {
+    #[cfg(target_arch = "wasm32")]
+    if sequential_debug_enabled() {
+        let msg = format!("seq tag parse start pos={}", cursor.position());
+        web_sys::console::debug_1(&JsValue::from_str(&msg));
+    }
     let flags = read_u32_async(cursor).await?;
     let type_from_8_15 = (flags >> 8) & 0xFF;
     let type_from_0_7 = flags & 0xFF;
@@ -2090,6 +2105,14 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
         } else {
             type_from_0_7
         };
+    #[cfg(target_arch = "wasm32")]
+    if sequential_debug_enabled() {
+        let msg = format!(
+            "seq tag flags=0x{:08x} type0_7={} type8_15={} sexp_type={}",
+            flags, type_from_0_7, type_from_8_15, sexp_type
+        );
+        web_sys::console::debug_1(&JsValue::from_str(&msg));
+    }
 
     if sexp_type == REFSXP {
         let ref_index = flags >> 8;
@@ -2100,6 +2123,16 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
                 .map_err(|_| Error::Unsupported("shared object lock poisoned".to_string()))?
                 .clone()
         } else {
+            #[cfg(target_arch = "wasm32")]
+            if sequential_debug_enabled() {
+                let msg = format!(
+                    "seq tag REFSXP missing index={} symbol_table_len={} ref_table_len={}",
+                    ref_index,
+                    symbol_table.len(),
+                    ref_table.next_index - 1
+                );
+                web_sys::console::debug_1(&JsValue::from_str(&msg));
+            }
             return Err(Error::InvalidFormat(format!(
                 "Invalid TAG REFSXP index {} (symbol table size={}, ref table size={})",
                 ref_index,
@@ -2114,6 +2147,14 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
         let name_flags = read_u32_async(cursor).await?;
         let name_type_from_0_7 = name_flags & 0xFF;
         let name_type_from_8_15 = (name_flags >> 8) & 0xFF;
+        #[cfg(target_arch = "wasm32")]
+        if sequential_debug_enabled() {
+            let msg = format!(
+                "seq tag SYMSXP name flags=0x{:08x} type0_7={} type8_15={}",
+                name_flags, name_type_from_0_7, name_type_from_8_15
+            );
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
+        }
         let name = if name_type_from_0_7 == REFSXP {
             let ref_index = name_flags >> 8;
             if let Some(sym) = symbol_table.get(ref_index) {
@@ -2130,12 +2171,22 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
         };
         let symbol = RObject::Symbol(name.clone());
         symbol_table.add(symbol.clone());
+        #[cfg(target_arch = "wasm32")]
+        if sequential_debug_enabled() {
+            let msg = format!("seq tag SYMSXP resolved='{}'", name);
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
+        }
         return Ok((Some(name), Some(symbol)));
     }
 
     if sexp_type == CHARSXP {
         let name = parse_charsxp_content_async(ctx, cursor, flags).await?;
         let obj = RObject::Character(vec![Arc::from(name.as_str())].into());
+        #[cfg(target_arch = "wasm32")]
+        if sequential_debug_enabled() {
+            let msg = format!("seq tag CHARSXP resolved='{}'", name);
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
+        }
         return Ok((extract_tag_name(obj.clone()), Some(obj)));
     }
 
@@ -2143,6 +2194,14 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
         ctx, cursor, ref_table, symbol_table, dedup_table,
     )))
     .await?;
+    #[cfg(target_arch = "wasm32")]
+    if sequential_debug_enabled() {
+        let msg = format!(
+            "seq tag fallback obj type={:?}",
+            std::mem::discriminant(&obj)
+        );
+        web_sys::console::debug_1(&JsValue::from_str(&msg));
+    }
     Ok((extract_tag_name(obj.clone()), Some(obj)))
 }
 
@@ -2166,6 +2225,15 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
         } else {
             (None, None)
         };
+        #[cfg(target_arch = "wasm32")]
+        if sequential_debug_enabled() {
+            let msg = format!(
+                "seq pairlist element tag={:?} pos={}",
+                tag,
+                cursor.position()
+            );
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
+        }
         let value = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
             ctx, cursor, ref_table, symbol_table, dedup_table,
         )))
@@ -2194,6 +2262,18 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
         let has_tag_next = (flags & HAS_TAG_BIT) != 0;
         let continues_pairlist =
             has_tag_next || matches!(next_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP);
+
+        #[cfg(target_arch = "wasm32")]
+        if sequential_debug_enabled() {
+            let msg = format!(
+                "seq pairlist next flags=0x{:08x} next_type={} has_tag_next={} continues={}",
+                flags,
+                next_type,
+                has_tag_next,
+                continues_pairlist
+            );
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
+        }
 
         if next_type == REFSXP {
             let _ = read_u32_async(cursor).await?;
