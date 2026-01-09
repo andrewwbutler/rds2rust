@@ -216,50 +216,48 @@ impl StreamingGzipDecompressor {
             return Ok(false);
         }
 
-        // Call reader.read()
         let read_fn = Reflect::get(&self.stream_reader, &JsValue::from_str("read"))
             .map_err(|e| Error::CompressionError(format!("Failed to get read function: {:?}", e)))?
             .dyn_into::<js_sys::Function>()
             .map_err(|_| Error::CompressionError("read is not a function".into()))?;
 
-        let read_promise = read_fn
-            .call0(&self.stream_reader)
-            .map_err(|e| Error::CompressionError(format!("Failed to call read(): {:?}", e)))?
-            .dyn_into::<Promise>()
-            .map_err(|_| Error::CompressionError("read() did not return a Promise".into()))?;
+        loop {
+            let read_promise = read_fn
+                .call0(&self.stream_reader)
+                .map_err(|e| Error::CompressionError(format!("Failed to call read(): {:?}", e)))?
+                .dyn_into::<Promise>()
+                .map_err(|_| Error::CompressionError("read() did not return a Promise".into()))?;
 
-        let result = JsFuture::from(read_promise)
-            .await
-            .map_err(|e| Error::CompressionError(format!("Stream read failed: {:?}", e)))?;
+            let result = JsFuture::from(read_promise)
+                .await
+                .map_err(|e| Error::CompressionError(format!("Stream read failed: {:?}", e)))?;
 
-        // Check if done
-        let done = Reflect::get(&result, &JsValue::from_str("done"))
-            .ok()
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+            let done = Reflect::get(&result, &JsValue::from_str("done"))
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
-        if done {
-            self.finished = true;
-            return Ok(false);
-        }
+            if done {
+                self.finished = true;
+                return Ok(false);
+            }
 
-        // Get value
-        let value = Reflect::get(&result, &JsValue::from_str("value"))
-            .map_err(|e| Error::CompressionError(format!("Failed to get value: {:?}", e)))?;
+            let value = Reflect::get(&result, &JsValue::from_str("value"))
+                .map_err(|e| Error::CompressionError(format!("Failed to get value: {:?}", e)))?;
 
-        if value.is_undefined() || value.is_null() {
-            // No data available yet, but not done
-            return Ok(false);
-        }
+            if value.is_undefined() || value.is_null() {
+                continue;
+            }
 
-        let array = Uint8Array::new(&value);
-        let chunk = array.to_vec();
+            let array = Uint8Array::new(&value);
+            let chunk = array.to_vec();
 
-        if !chunk.is_empty() {
+            if chunk.is_empty() {
+                continue;
+            }
+
             self.decompressed_buffer.extend(chunk);
-            Ok(true)
-        } else {
-            Ok(false)
+            return Ok(true);
         }
     }
 
@@ -280,15 +278,7 @@ impl AsyncSequentialInput for StreamingGzipDecompressor {
         Box::pin(async move {
             // Fill buffer until we have enough data or reach end
             while self.decompressed_buffer.len() < len && !self.finished {
-                let got_data = self.fill_buffer().await?;
-                if !got_data {
-                    // If we didn't get data and we're not finished, the stream
-                    // might be producing data slowly. Try once more.
-                    if !self.finished {
-                        let _ = self.fill_buffer().await?;
-                    }
-                    break;
-                }
+                let _ = self.fill_buffer().await?;
             }
 
             // Extract requested amount (or all remaining if less available)
