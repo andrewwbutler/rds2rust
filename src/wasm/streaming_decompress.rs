@@ -5,7 +5,7 @@
 //! memory usage.
 
 #[cfg(target_arch = "wasm32")]
-use js_sys::{Promise, Reflect, Uint8Array};
+use js_sys::{Array, Promise, Reflect, Uint8Array};
 #[cfg(target_arch = "wasm32")]
 use std::collections::VecDeque;
 #[cfg(target_arch = "wasm32")]
@@ -29,6 +29,12 @@ extern "C" {
     /// Detect compression format from blob header.
     #[wasm_bindgen(js_name = detectCompression)]
     fn detect_compression_js(blob: &Blob) -> Promise;
+    /// Detect gzip member offsets for multi-member gzip files.
+    #[wasm_bindgen(js_name = detectGzipMemberOffsets)]
+    fn detect_gzip_member_offsets_js(blob: &Blob) -> Promise;
+    /// Create a streaming reader for multi-member gzip files.
+    #[wasm_bindgen(js_name = streamMultiMemberGzip)]
+    fn stream_multi_member_gzip_js(blob: &Blob, offsets: JsValue) -> JsValue;
 }
 
 /// Streaming decompressor for gzip-compressed blobs.
@@ -92,6 +98,30 @@ impl StreamingGzipDecompressor {
                 "Expected gzip compression, got: {}. Only gzip is supported for streaming decompression.",
                 compression_str
             )));
+        }
+
+        let offsets_value = JsFuture::from(detect_gzip_member_offsets_js(&blob))
+            .await
+            .map_err(|e| {
+                Error::CompressionError(format!("Failed to detect gzip members: {:?}", e))
+            })?;
+        let offsets = Array::from(&offsets_value);
+        if offsets.length() > 1 {
+            let decompressed_stream = stream_multi_member_gzip_js(&blob, offsets.into());
+            let get_reader_fn = Reflect::get(&decompressed_stream, &JsValue::from_str("getReader"))
+                .map_err(|e| Error::CompressionError(format!("Failed to get getReader: {:?}", e)))?
+                .dyn_into::<js_sys::Function>()
+                .map_err(|_| Error::CompressionError("getReader is not a function".into()))?;
+            let reader = get_reader_fn
+                .call0(&decompressed_stream)
+                .map_err(|e| Error::CompressionError(format!("Failed to get reader: {:?}", e)))?;
+            return Ok(Self {
+                stream_reader: reader,
+                decompressed_buffer: VecDeque::new(),
+                position: 0,
+                finished: false,
+                total_size: None,
+            });
         }
 
         // Check if DecompressionStream is available (window or worker global)

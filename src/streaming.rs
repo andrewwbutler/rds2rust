@@ -696,7 +696,7 @@ fn traverse_object<V: RdsVisitor>(
                 let segment = element
                     .tag
                     .as_ref()
-                    .map(|s| Arc::clone(s))
+                    .map(Arc::clone)
                     .unwrap_or_else(|| Arc::from(format!("[{}]", index)));
                 path.push(segment);
                 if matches!(
@@ -721,7 +721,7 @@ fn traverse_object<V: RdsVisitor>(
                 let segment = arg
                     .tag
                     .as_ref()
-                    .map(|s| Arc::clone(s))
+                    .map(Arc::clone)
                     .unwrap_or_else(|| Arc::from(format!("[{}]", index)));
                 path.push(segment);
                 if matches!(

@@ -276,6 +276,5 @@ mod non_wasm_tests {
     #[test]
     fn streaming_decompressor_is_wasm_only() {
         // StreamingGzipDecompressor is only available on WASM
-        assert!(true);
     }
 }

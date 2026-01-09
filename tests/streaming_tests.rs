@@ -287,7 +287,7 @@ fn streaming_large_vector_fixture() {
     .expect("streaming traversal failed");
 
     assert!(
-        visitor.lengths.iter().any(|len| *len == expected_len),
+        visitor.lengths.contains(&expected_len),
         "expected integer vector length {} in streaming metadata",
         expected_len
     );
@@ -398,10 +398,7 @@ fn contains_pairlist_with_attrs(obj: &RObject) -> bool {
                 || contains_pairlist_with_attrs(constants)
                 || contains_pairlist_with_attrs(expr)
         }
-        RObject::DataFrame(data) => data
-            .columns
-            .values()
-            .any(|value| contains_pairlist_with_attrs(value)),
+        RObject::DataFrame(data) => data.columns.values().any(contains_pairlist_with_attrs),
         RObject::S3Object(data) => {
             contains_pairlist_with_attrs(&data.base)
                 || data
@@ -409,10 +406,7 @@ fn contains_pairlist_with_attrs(obj: &RObject) -> bool {
                     .iter()
                     .any(|(_, value)| contains_pairlist_with_attrs(value))
         }
-        RObject::S4Object(data) => data
-            .slots
-            .values()
-            .any(|value| contains_pairlist_with_attrs(value)),
+        RObject::S4Object(data) => data.slots.values().any(contains_pairlist_with_attrs),
         _ => false,
     }
 }

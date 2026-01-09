@@ -279,6 +279,5 @@ mod non_wasm_tests {
     fn sequential_input_is_wasm_only() {
         // The sequential input traits are only available on WASM
         // This test just ensures the file compiles on non-WASM targets
-        assert!(true);
     }
 }

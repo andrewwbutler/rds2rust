@@ -92,6 +92,39 @@ async function findGzipMemberOffsetsFromBlob(blob, chunkSize = 8 * 1024 * 1024) 
   return offsets;
 }
 
+export async function detectGzipMemberOffsets(blob, chunkSize = 8 * 1024 * 1024) {
+  return await findGzipMemberOffsetsFromBlob(blob, chunkSize);
+}
+
+export function streamMultiMemberGzip(blob, offsets) {
+  const members = Array.from(offsets || []);
+  if (members.length <= 1) {
+    return blob.stream().pipeThrough(new DecompressionStream("gzip"));
+  }
+  return new ReadableStream({
+    async start(controller) {
+      try {
+        for (let i = 0; i < members.length; i += 1) {
+          const start = members[i];
+          const end = members[i + 1] ?? blob.size;
+          const slice = blob.slice(start, end);
+          const decompressor = new DecompressionStream("gzip");
+          const stream = slice.stream().pipeThrough(decompressor);
+          const reader = stream.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value && value.byteLength) controller.enqueue(value);
+          }
+        }
+        controller.close();
+      } catch (err) {
+        controller.error(err);
+      }
+    }
+  });
+}
+
 async function decompressStreamToBlob(stream, onProgress) {
   const reader = stream.getReader();
   const chunks = [];
@@ -125,6 +158,10 @@ async function decompressMultiMemberGzip(blob, offsets, options = {}) {
     pieces.push(part);
   }
   return new Blob(pieces);
+}
+
+export async function decompressMultiMemberGzipBlob(blob, offsets, options = {}) {
+  return await decompressMultiMemberGzip(blob, offsets, options);
 }
 
 function estimateDecompressedSize(compressedBytes, ratioEstimate = 3) {
