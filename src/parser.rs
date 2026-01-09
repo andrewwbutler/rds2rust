@@ -1925,7 +1925,8 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                 let mut values = Vec::with_capacity(length);
                 for chunk in bytes.chunks_exact(4) {
                     let mut reader = std::io::Cursor::new(chunk);
-                    values.push(Logical::from(reader.read_i32::<BigEndian>()?));
+                    let value = reader.read_i32::<BigEndian>()?;
+                    values.push(Logical::from(value));
                 }
                 RObject::Logical(values.into())
             }
@@ -2003,9 +2004,14 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             )))
             .await?;
             if sexp_type == LANGSXP || sexp_type == ATTRLANGSXP {
+                let (function, args) = if list.is_empty() {
+                    (RObject::Null, Vec::new())
+                } else {
+                    (list[0].value.clone(), list[1..].to_vec())
+                };
                 RObject::Language {
-                    elements: list,
-                    evaluated: None,
+                    function: Box::new(function),
+                    args,
                 }
             } else {
                 RObject::Pairlist(list)
