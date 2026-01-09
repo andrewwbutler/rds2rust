@@ -351,7 +351,7 @@ pub struct SequentialCursor<'a, I: AsyncSequentialInput> {
 impl<'a, I: AsyncSequentialInput> SequentialCursor<'a, I> {
     /// Create a new sequential cursor with default configuration.
     pub async fn new(input: &'a mut I) -> Result<Self> {
-        let config = AsyncCursorConfig::default();
+        let config = recommended_buffer_config();
         Self::with_config(input, config).await
     }
 
