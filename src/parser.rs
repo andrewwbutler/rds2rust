@@ -1776,11 +1776,14 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
     } else {
         (flags & HAS_ATTR_BIT) != 0
     };
-    let has_tag = if sexp_type == REFSXP {
+    let mut has_tag = if sexp_type == REFSXP {
         false
     } else {
         (flags & HAS_TAG_BIT) != 0
     };
+    if sexp_type == S4SXP {
+        has_tag = true;
+    }
 
     if sexp_type == REFSXP {
         let ref_index = flags >> 8;
