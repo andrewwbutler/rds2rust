@@ -93,11 +93,21 @@ function findGzipMemberOffsets(buffer) {
       offsets.push(i);
     }
   }
+  try {
+    console.debug("gzip header scan", {
+      size: blob.size,
+      rawMatches,
+      validated: offsets.length,
+    });
+  } catch {
+    // ignore logging failures
+  }
   return offsets;
 }
 
 async function findGzipMemberOffsetsFromBlob(blob, chunkSize = 8 * 1024 * 1024) {
   const offsets = [];
+  let rawMatches = 0;
   let offset = 0;
   let carry = new Uint8Array(0);
   const carryLimit = 64 * 1024;
@@ -107,6 +117,11 @@ async function findGzipMemberOffsetsFromBlob(blob, chunkSize = 8 * 1024 * 1024) 
     const merged = new Uint8Array(carry.length + chunk.length);
     if (carry.length) merged.set(carry);
     merged.set(chunk, carry.length);
+    for (let i = 0; i + 2 < merged.length; i += 1) {
+      if (merged[i] === 0x1f && merged[i + 1] === 0x8b && merged[i + 2] === 0x08) {
+        rawMatches += 1;
+      }
+    }
     const localOffsets = findGzipMemberOffsets(merged.buffer);
     const base = offset - carry.length;
     for (const local of localOffsets) {

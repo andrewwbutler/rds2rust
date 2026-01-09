@@ -125,6 +125,11 @@ impl StreamingGzipDecompressor {
                 None
             }
         };
+        #[cfg(target_arch = "wasm32")]
+        if let Some(expected) = expected_size {
+            let msg = format!("gzip footer ISIZE: {}", expected);
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
+        }
         if offsets.length() > 1 {
             let decompressed_stream = stream_multi_member_gzip_js(&blob, offsets.into());
             let get_reader_fn = Reflect::get(&decompressed_stream, &JsValue::from_str("getReader"))
