@@ -1274,6 +1274,16 @@ where
         } else {
             type_from_0_7
         };
+    #[cfg(target_arch = "wasm32")]
+    if sequential_debug_enabled() {
+        let msg = format!(
+            "sequential fallback sexp_type={} pos={} emit={}",
+            sexp_type,
+            cursor.position(),
+            emit
+        );
+        web_sys::console::debug_1(&JsValue::from_str(&msg));
+    }
 
     if sexp_type == S4SXP {
         let flags = read_u32_async(cursor)
@@ -1335,6 +1345,15 @@ where
                 }
             }
             ctx.parsing_attributes = prev;
+        }
+        #[cfg(target_arch = "wasm32")]
+        if sequential_debug_enabled() {
+            let keys: Vec<_> = attrs.attrs.iter().map(|(k, _)| k.as_ref()).collect();
+            let msg = format!(
+                "sequential fallback S4 attrs keys={:?} has_tag={} has_attr={}",
+                keys, has_tag, has_attr
+            );
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
 
         if emit {
