@@ -20,6 +20,8 @@ use crate::extraction::VectorKind;
 use crate::types::VectorData;
 #[cfg(target_arch = "wasm32")]
 use crate::wasm::{AsyncBufferedCursor, AsyncCursor, AsyncCursorConfig, AsyncRdsInput};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsValue;
 
 struct RdsCursor<'a> {
     position: u64,
@@ -978,6 +980,37 @@ where
     V: RdsVisitor,
 {
     cursor
+        .ensure_available(4)
+        .await
+        .map_err(StreamingError::Parse)?;
+    let flags = cursor.peek_u32().map_err(StreamingError::Parse)?;
+    let type_from_8_15 = (flags >> 8) & 0xFF;
+    let type_from_0_7 = flags & 0xFF;
+    let sexp_type =
+        if type_from_0_7 == REFSXP || (2..=S4SXP).contains(&type_from_0_7) || type_from_0_7 == 1 {
+            type_from_0_7
+        } else if type_from_0_7 == 0 && type_from_8_15 >= 2 {
+            type_from_8_15
+        } else {
+            type_from_0_7
+        };
+    if sexp_type == ALTREP_SXP && cursor.total_len().is_none() {
+        return parse_altrep_streaming_sequential_async(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            emit,
+            flags,
+        )
+        .await;
+    }
+    cursor
         .ensure_available(8)
         .await
         .map_err(StreamingError::Parse)?;
@@ -1038,17 +1071,13 @@ where
                 size = std::cmp::min(max_size, size.saturating_mul(2));
             }
             Err(StreamingError::Parse(Error::InvalidFormat(ref message)))
-                if message.contains("exceeds remaining") && size < max_size =>
-            {
-                ctx.restore(ctx_snapshot);
-                ref_table.rollback(ref_checkpoint);
-                symbol_table.rollback(symbol_checkpoint);
-                dedup_table.rollback(dedup_checkpoint);
-                size = std::cmp::min(max_size, size.saturating_mul(2));
-            }
-            Err(StreamingError::Parse(Error::InvalidFormat(ref message)))
                 if message.contains("exceeds remaining") && cursor.total_len().is_none() =>
             {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let msg = format!("sequential fallback triggered: {}", message);
+                    web_sys::console::debug_1(&JsValue::from_str(&msg));
+                }
                 ctx.restore(ctx_snapshot);
                 ref_table.rollback(ref_checkpoint);
                 symbol_table.rollback(symbol_checkpoint);
@@ -1070,9 +1099,111 @@ where
                 }
                 return result;
             }
+            Err(StreamingError::Parse(Error::InvalidFormat(ref message)))
+                if message.contains("exceeds remaining") && size < max_size =>
+            {
+                ctx.restore(ctx_snapshot);
+                ref_table.rollback(ref_checkpoint);
+                symbol_table.rollback(symbol_checkpoint);
+                dedup_table.rollback(dedup_checkpoint);
+                size = std::cmp::min(max_size, size.saturating_mul(2));
+            }
             Err(err) => return Err(err),
         }
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn parse_altrep_streaming_sequential_async<C, V>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    progress: &mut StreamingProgressState<'_>,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    emit: bool,
+    flags: u32,
+) -> StreamingResult<StreamControl, V::Error>
+where
+    C: AsyncCursor,
+    V: RdsVisitor,
+{
+    let _ = read_u32_async(cursor)
+        .await
+        .map_err(StreamingError::Parse)?;
+    let has_attr = (flags & HAS_ATTR_BIT) != 0;
+
+    let mut emit_children = true;
+    if emit {
+        match visitor
+            .on_object_start(path, sexp_type_name(ALTREP_SXP))
+            .map_err(StreamingError::Visitor)?
+        {
+            VisitAction::Stop => {
+                progress.report_object(cursor.position());
+                return Ok(StreamControl::Stop);
+            }
+            VisitAction::Skip => emit_children = false,
+            VisitAction::Continue => {}
+        }
+    }
+
+    let _ = parse_object_streaming_async(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )
+    .await?;
+    let _ = parse_object_streaming_async(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )
+    .await?;
+    if has_attr {
+        let prev = ctx.parsing_attributes;
+        ctx.parsing_attributes = true;
+        let _ = parse_object_streaming_async(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+            ref_paths,
+            progress,
+            visitor,
+            path,
+            false,
+        )
+        .await?;
+        ctx.parsing_attributes = prev;
+    }
+
+    if emit && emit_children {
+        visitor
+            .on_object_end(path)
+            .map_err(StreamingError::Visitor)?;
+    }
+
+    progress.report_object(cursor.position());
+    Ok(StreamControl::Continue)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1132,7 +1263,14 @@ where
         LGLSXP => (VectorKind::Logical, 4),
         RAWSXP => (VectorKind::Raw, std::mem::size_of::<u8>()),
         CPLXSXP => (VectorKind::Complex, std::mem::size_of::<Complex>()),
-        _ => return Ok(None),
+        _ => {
+            #[cfg(target_arch = "wasm32")]
+            {
+                let msg = format!("sequential skip unsupported sexp_type={}", sexp_type);
+                web_sys::console::debug_1(&JsValue::from_str(&msg));
+            }
+            return Ok(None);
+        }
     };
 
     let flags = read_u32_async(cursor)
@@ -1163,6 +1301,14 @@ where
     let byte_len = length
         .checked_mul(elem_size)
         .ok_or_else(|| Error::InvalidFormat("vector byte length overflow".to_string()))?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let msg = format!(
+            "sequential skip vector type={} len={} bytes={} offset={}",
+            sexp_type, length, byte_len, offset
+        );
+        web_sys::console::debug_1(&JsValue::from_str(&msg));
+    }
 
     if emit && emit_children {
         visitor
