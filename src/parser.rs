@@ -2279,7 +2279,8 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
             let _ = read_u32_async(cursor).await?;
             break;
         } else if continues_pairlist {
-            let _ = read_u32_async(cursor).await?;
+            // Do not consume the flags here; the next loop iteration will
+            // read them as part of the next tag parse.
             has_tag = has_tag_next;
             continue;
         } else {
