@@ -216,10 +216,9 @@ where
 /// otherwise returns an error with information about browser requirements.
 #[cfg(target_arch = "wasm32")]
 pub fn check_streaming_decompression_support() -> Result<(), String> {
-    let window = web_sys::window().ok_or_else(|| "No window object available".to_string())?;
-
+    let global = js_sys::global();
     let has_decompression_stream =
-        js_sys::Reflect::has(&window, &JsValue::from_str("DecompressionStream")).unwrap_or(false);
+        js_sys::Reflect::has(&global, &JsValue::from_str("DecompressionStream")).unwrap_or(false);
 
     if has_decompression_stream {
         Ok(())

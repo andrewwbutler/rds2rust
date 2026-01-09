@@ -94,12 +94,10 @@ impl StreamingGzipDecompressor {
             )));
         }
 
-        // Check if DecompressionStream is available
-        let window = web_sys::window()
-            .ok_or_else(|| Error::CompressionError("No window object available".into()))?;
-
+        // Check if DecompressionStream is available (window or worker global)
+        let global = js_sys::global();
         let has_decompression_stream =
-            Reflect::has(&window, &JsValue::from_str("DecompressionStream")).unwrap_or(false);
+            Reflect::has(&global, &JsValue::from_str("DecompressionStream")).unwrap_or(false);
 
         if !has_decompression_stream {
             return Err(Error::CompressionError(
@@ -109,7 +107,7 @@ impl StreamingGzipDecompressor {
 
         // Create DecompressionStream using web_sys bindings
         let decompression_stream_class =
-            Reflect::get(&window, &JsValue::from_str("DecompressionStream")).map_err(|e| {
+            Reflect::get(&global, &JsValue::from_str("DecompressionStream")).map_err(|e| {
                 Error::CompressionError(format!("Failed to get DecompressionStream: {:?}", e))
             })?;
 
