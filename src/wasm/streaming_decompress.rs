@@ -346,7 +346,9 @@ async fn read_gzip_expected_size(blob: &Blob) -> Result<u32> {
         return Err(Error::CompressionError("gzip blob too small".into()));
     }
     let start = blob.size() - 4.0;
-    let tail = blob.slice_with_f64_and_f64(start, blob.size());
+    let tail = blob
+        .slice_with_f64_and_f64(start, blob.size())
+        .map_err(|e| Error::CompressionError(format!("footer slice failed: {:?}", e)))?;
     let buffer = JsFuture::from(tail.array_buffer())
         .await
         .map_err(|e| Error::CompressionError(format!("footer read failed: {:?}", e)))?;
