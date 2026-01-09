@@ -65,6 +65,8 @@ pub struct StreamingGzipDecompressor {
     finished: bool,
     /// Total decompressed size (unknown until fully decompressed)
     total_size: Option<u64>,
+    /// Expected size from gzip footer (only valid for single-member gzip).
+    expected_size: Option<u32>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -111,6 +113,18 @@ impl StreamingGzipDecompressor {
             let msg = format!("gzip members detected: {}", offsets.length());
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
+
+        let expected_size = match read_gzip_expected_size(&blob).await {
+            Ok(value) => Some(value),
+            Err(err) => {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let msg = format!("failed to read gzip footer: {}", err);
+                    web_sys::console::debug_1(&JsValue::from_str(&msg));
+                }
+                None
+            }
+        };
         if offsets.length() > 1 {
             let decompressed_stream = stream_multi_member_gzip_js(&blob, offsets.into());
             let get_reader_fn = Reflect::get(&decompressed_stream, &JsValue::from_str("getReader"))
@@ -126,6 +140,7 @@ impl StreamingGzipDecompressor {
                 position: 0,
                 finished: false,
                 total_size: None,
+                expected_size,
             });
         }
 
@@ -204,6 +219,7 @@ impl StreamingGzipDecompressor {
             position: 0,
             finished: false,
             total_size: None,
+            expected_size,
         })
     }
 
@@ -239,6 +255,18 @@ impl StreamingGzipDecompressor {
 
             if done {
                 self.finished = true;
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let msg = if let Some(expected) = self.expected_size {
+                        format!(
+                            "gzip stream finished at {} bytes (expected {})",
+                            self.position, expected
+                        )
+                    } else {
+                        format!("gzip stream finished at {} bytes", self.position)
+                    };
+                    web_sys::console::debug_1(&JsValue::from_str(&msg));
+                }
                 return Ok(false);
             }
 
@@ -310,4 +338,25 @@ impl Drop for StreamingGzipDecompressor {
         // Try to cancel/release the reader if possible
         let _ = Reflect::get(&self.stream_reader, &JsValue::from_str("cancel"));
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_gzip_expected_size(blob: &Blob) -> Result<u32> {
+    if blob.size() < 4.0 {
+        return Err(Error::CompressionError("gzip blob too small".into()));
+    }
+    let start = blob.size() - 4.0;
+    let tail = blob.slice_with_f64_and_f64(start, blob.size());
+    let buffer = JsFuture::from(tail.array_buffer())
+        .await
+        .map_err(|e| Error::CompressionError(format!("footer read failed: {:?}", e)))?;
+    let view = Uint8Array::new(&buffer);
+    if view.length() < 4 {
+        return Err(Error::CompressionError("gzip footer too small".into()));
+    }
+    let b0 = view.get_index(0) as u32;
+    let b1 = view.get_index(1) as u32;
+    let b2 = view.get_index(2) as u32;
+    let b3 = view.get_index(3) as u32;
+    Ok(b0 | (b1 << 8) | (b2 << 16) | (b3 << 24))
 }
