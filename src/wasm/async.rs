@@ -22,6 +22,8 @@ use crate::{Error, Result};
 pub type AsyncReadFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<u8>>> + 'a>>;
 #[cfg(target_arch = "wasm32")]
 pub type AsyncEnsureFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
+#[cfg(target_arch = "wasm32")]
+pub type AsyncSkipFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
 
 #[cfg(target_arch = "wasm32")]
 pub trait AsyncRdsInput {
@@ -57,6 +59,7 @@ pub trait AsyncCursor {
     fn buffer_size(&self) -> usize;
     fn max_buffer_size(&self) -> usize;
     fn peek_u32(&self) -> Result<u32>;
+    fn skip_bytes<'a>(&'a mut self, len: usize) -> AsyncSkipFuture<'a>;
 }
 
 /// Adapter that implements `AsyncSequentialInput` from any `AsyncRdsInput`.
@@ -300,6 +303,17 @@ impl<'a> AsyncCursor for AsyncBufferedCursor<'a> {
     fn peek_u32(&self) -> Result<u32> {
         AsyncBufferedCursor::peek_u32(self)
     }
+
+    fn skip_bytes<'b>(&'b mut self, len: usize) -> AsyncSkipFuture<'b> {
+        Box::pin(async move {
+            if len == 0 {
+                return Ok(());
+            }
+            self.ensure_available(len).await?;
+            self.advance(len as u64)?;
+            Ok(())
+        })
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -504,6 +518,47 @@ impl<'a, I: AsyncSequentialInput> SequentialCursor<'a, I> {
         let mut cursor = std::io::Cursor::new(slice);
         Ok(cursor.read_u32::<BigEndian>()?)
     }
+
+    async fn skip_bytes_internal(&mut self, len: usize) -> Result<()> {
+        if len == 0 {
+            return Ok(());
+        }
+
+        let mut remaining = len;
+        let offset_in_buffer = (self.position - self.buffer_start_pos) as usize;
+        if offset_in_buffer < self.buffer.len() {
+            let available = self.buffer.len() - offset_in_buffer;
+            let consume = available.min(remaining);
+            self.position += consume as u64;
+            remaining = remaining.saturating_sub(consume);
+            if consume > 0 {
+                self.buffer.drain(..offset_in_buffer + consume);
+                self.buffer_start_pos = self.position;
+            }
+            if remaining == 0 {
+                return Ok(());
+            }
+        }
+
+        self.buffer.clear();
+        self.buffer_start_pos = self.position;
+
+        while remaining > 0 {
+            let chunk_size = remaining.min(self.buffer_size);
+            let chunk = self.input.read_next(chunk_size).await?;
+            if chunk.is_empty() {
+                return Err(Error::UnexpectedEofDetail {
+                    position: self.position as usize,
+                    needed: len,
+                    available: len.saturating_sub(remaining),
+                });
+            }
+            self.position += chunk.len() as u64;
+            remaining = remaining.saturating_sub(chunk.len());
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -538,5 +593,9 @@ impl<'a, I: AsyncSequentialInput> AsyncCursor for SequentialCursor<'a, I> {
 
     fn peek_u32(&self) -> Result<u32> {
         SequentialCursor::peek_u32(self)
+    }
+
+    fn skip_bytes<'b>(&'b mut self, len: usize) -> AsyncSkipFuture<'b> {
+        Box::pin(async move { SequentialCursor::skip_bytes_internal(self, len).await })
     }
 }

@@ -1046,9 +1046,171 @@ where
                 dedup_table.rollback(dedup_checkpoint);
                 size = std::cmp::min(max_size, size.saturating_mul(2));
             }
+            Err(StreamingError::Parse(Error::InvalidFormat(message)))
+                if message.contains("exceeds remaining") && cursor.total_len().is_none() =>
+            {
+                ctx.restore(ctx_snapshot);
+                ref_table.rollback(ref_checkpoint);
+                symbol_table.rollback(symbol_checkpoint);
+                dedup_table.rollback(dedup_checkpoint);
+                if let Some(control) = try_parse_large_vector_streaming_async(
+                    ctx,
+                    cursor,
+                    ref_table,
+                    symbol_table,
+                    dedup_table,
+                    progress,
+                    visitor,
+                    path,
+                    emit,
+                )
+                .await?
+                {
+                    return Ok(control);
+                }
+                return result;
+            }
             Err(err) => return Err(err),
         }
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn try_parse_large_vector_streaming_async<C, V>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    progress: &mut StreamingProgressState<'_>,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    emit: bool,
+) -> StreamingResult<Option<StreamControl>, V::Error>
+where
+    C: AsyncCursor,
+    V: RdsVisitor,
+{
+    cursor
+        .ensure_available(1)
+        .await
+        .map_err(StreamingError::Parse)?;
+    let first_byte = cursor.as_sync_slice(1).map_err(StreamingError::Parse)?[0];
+    if first_byte >= 240 {
+        cursor.advance(1).map_err(StreamingError::Parse)?;
+        if emit {
+            visitor
+                .on_object_start(path, "Null")
+                .map_err(StreamingError::Visitor)?;
+            visitor
+                .on_object_end(path)
+                .map_err(StreamingError::Visitor)?;
+        }
+        progress.report_object(cursor.position());
+        return Ok(Some(StreamControl::Continue));
+    }
+
+    cursor
+        .ensure_available(4)
+        .await
+        .map_err(StreamingError::Parse)?;
+    let flags = cursor.peek_u32().map_err(StreamingError::Parse)?;
+    let type_from_8_15 = (flags >> 8) & 0xFF;
+    let type_from_0_7 = flags & 0xFF;
+    let sexp_type =
+        if type_from_0_7 == REFSXP || (2..=S4SXP).contains(&type_from_0_7) || type_from_0_7 == 1 {
+            type_from_0_7
+        } else if type_from_0_7 == 0 && type_from_8_15 >= 2 {
+            type_from_8_15
+        } else {
+            type_from_0_7
+        };
+
+    let (kind, elem_size) = match sexp_type {
+        INTSXP => (VectorKind::Integer, std::mem::size_of::<i32>()),
+        REALSXP => (VectorKind::Real, std::mem::size_of::<f64>()),
+        LGLSXP => (VectorKind::Logical, 4),
+        RAWSXP => (VectorKind::Raw, std::mem::size_of::<u8>()),
+        CPLXSXP => (VectorKind::Complex, std::mem::size_of::<Complex>()),
+        _ => return Ok(None),
+    };
+
+    let flags = read_u32_async(cursor)
+        .await
+        .map_err(StreamingError::Parse)?;
+    let has_attr = (flags & HAS_ATTR_BIT) != 0;
+
+    let mut emit_children = true;
+    if emit {
+        match visitor
+            .on_object_start(path, sexp_type_name(sexp_type))
+            .map_err(StreamingError::Visitor)?
+        {
+            VisitAction::Stop => {
+                progress.report_object(cursor.position());
+                return Ok(Some(StreamControl::Stop));
+            }
+            VisitAction::Skip => emit_children = false,
+            VisitAction::Continue => {}
+        }
+    }
+
+    let length = read_u32_async(cursor)
+        .await
+        .map_err(StreamingError::Parse)? as usize;
+    guard_allocation_common(ctx, length, elem_size, "vector")?;
+    let offset = cursor.position();
+    let byte_len = length
+        .checked_mul(elem_size)
+        .ok_or_else(|| Error::InvalidFormat("vector byte length overflow".to_string()))?;
+
+    if emit && emit_children {
+        visitor
+            .on_vector_metadata(path, kind, length)
+            .map_err(StreamingError::Visitor)?;
+        let span = LazyVector {
+            length,
+            offset,
+            byte_len: byte_len as u64,
+        };
+        let _ = visitor
+            .on_vector_chunk_available(path, span)
+            .map_err(StreamingError::Visitor)?;
+    }
+
+    cursor
+        .skip_bytes(byte_len)
+        .await
+        .map_err(StreamingError::Parse)?;
+
+    if has_attr {
+        let prev = ctx.parsing_attributes;
+        ctx.parsing_attributes = true;
+        let attr_obj = parse_with_sync_cursor_retry(cursor, 4096, cursor.max_buffer_size(), |c| {
+            parse_object(ctx, c, ref_table, symbol_table, dedup_table)
+        })
+        .await
+        .map_err(StreamingError::Parse)?;
+        ctx.parsing_attributes = prev;
+        let attrs = parse_attributes(attr_obj, ctx).map_err(StreamingError::Parse)?;
+        if emit {
+            visitor
+                .on_attributes(path, &attrs)
+                .map_err(StreamingError::Visitor)?;
+            if emit_children {
+                emit_attribute_values_streaming(&attrs, path, visitor)?;
+            }
+        }
+    }
+
+    if emit {
+        visitor
+            .on_object_end(path)
+            .map_err(StreamingError::Visitor)?;
+    }
+
+    progress.report_object(cursor.position());
+    Ok(Some(StreamControl::Continue))
 }
 
 #[cfg(target_arch = "wasm32")]
