@@ -1162,6 +1162,17 @@ pub enum Logical {
     Na,
 }
 
+impl From<i32> for Logical {
+    fn from(value: i32) -> Self {
+        match value {
+            1 => Logical::True,
+            0 => Logical::False,
+            i32::MIN => Logical::Na,
+            _ => Logical::Na,
+        }
+    }
+}
+
 /// Represents a complex number
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Complex {

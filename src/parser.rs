@@ -1020,6 +1020,31 @@ where
         )))
         .await;
     }
+    if cursor.total_len().is_none()
+        && matches!(
+            sexp_type,
+            INTSXP | REALSXP | LGLSXP | RAWSXP | CPLXSXP
+        )
+    {
+        if let Some(control) = std::pin::Pin::from(Box::new(
+            try_parse_large_vector_streaming_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                emit,
+            ),
+        ))
+        .await?
+        {
+            return Ok(control);
+        }
+    }
     cursor
         .ensure_available(8)
         .await
