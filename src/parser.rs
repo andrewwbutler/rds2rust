@@ -1082,18 +1082,20 @@ where
                 ref_table.rollback(ref_checkpoint);
                 symbol_table.rollback(symbol_checkpoint);
                 dedup_table.rollback(dedup_checkpoint);
-                if let Some(control) = try_parse_large_vector_streaming_async(
-                    ctx,
-                    cursor,
-                    ref_table,
-                    symbol_table,
-                    dedup_table,
-                    ref_paths,
-                    progress,
-                    visitor,
-                    path,
-                    emit,
-                )
+                if let Some(control) = std::pin::Pin::from(Box::new(
+                    try_parse_large_vector_streaming_async(
+                        ctx,
+                        cursor,
+                        ref_table,
+                        symbol_table,
+                        dedup_table,
+                        ref_paths,
+                        progress,
+                        visitor,
+                        path,
+                        emit,
+                    ),
+                ))
                 .await?
                 {
                     return Ok(control);
@@ -1284,18 +1286,18 @@ where
         if has_tag {
             let prev = ctx.parsing_s4_tag;
             ctx.parsing_s4_tag = true;
-            let _ = parse_object_streaming_async(
+            let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
                 ctx,
                 cursor,
                 ref_table,
                 symbol_table,
-            dedup_table,
-            ref_paths,
-            progress,
-            visitor,
-            path,
-            false,
-        )
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                false,
+            )))
             .await?;
             ctx.parsing_s4_tag = prev;
         }
@@ -1303,18 +1305,18 @@ where
         if has_attr {
             let prev = ctx.parsing_attributes;
             ctx.parsing_attributes = true;
-            let _ = parse_object_streaming_async(
+            let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
                 ctx,
                 cursor,
                 ref_table,
                 symbol_table,
-            dedup_table,
-            ref_paths,
-            progress,
-            visitor,
-            path,
-            false,
-        )
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                false,
+            )))
             .await?;
             ctx.parsing_attributes = prev;
         }
