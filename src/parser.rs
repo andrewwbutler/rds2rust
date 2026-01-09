@@ -2072,6 +2072,81 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
 }
 
 #[cfg(target_arch = "wasm32")]
+async fn parse_tag_sequential_value_async<C: AsyncCursor>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+) -> Result<(Option<Arc<str>>, Option<RObject>)> {
+    let flags = read_u32_async(cursor).await?;
+    let type_from_8_15 = (flags >> 8) & 0xFF;
+    let type_from_0_7 = flags & 0xFF;
+    let sexp_type =
+        if type_from_0_7 == REFSXP || (2..=S4SXP).contains(&type_from_0_7) || type_from_0_7 == 1 {
+            type_from_0_7
+        } else if type_from_0_7 == 0 && type_from_8_15 >= 2 {
+            type_from_8_15
+        } else {
+            type_from_0_7
+        };
+
+    if sexp_type == REFSXP {
+        let ref_index = flags >> 8;
+        let tag_obj = if let Some(sym) = symbol_table.get(ref_index) {
+            sym.clone()
+        } else if let Some(obj) = ref_table.get(ref_index) {
+            obj.read()
+                .map_err(|_| Error::Unsupported("shared object lock poisoned".to_string()))?
+                .clone()
+        } else {
+            return Err(Error::InvalidFormat(format!(
+                "Invalid TAG REFSXP index {} (symbol table size={}, ref table size={})",
+                ref_index,
+                symbol_table.len(),
+                ref_table.next_index - 1
+            )));
+        };
+        return Ok((extract_tag_name(tag_obj.clone()), Some(tag_obj)));
+    }
+
+    if sexp_type == SYMSXP {
+        let name_flags = read_u32_async(cursor).await?;
+        let name_type_from_0_7 = name_flags & 0xFF;
+        let name_type_from_8_15 = (name_flags >> 8) & 0xFF;
+        let name = if name_type_from_0_7 == REFSXP {
+            let ref_index = name_flags >> 8;
+            if let Some(sym) = symbol_table.get(ref_index) {
+                extract_tag_name(sym.clone()).unwrap_or_else(|| Arc::from("NA"))
+            } else if let Some(obj) = ref_table.get(ref_index) {
+                extract_tag_name(obj.read().unwrap().clone()).unwrap_or_else(|| Arc::from("NA"))
+            } else {
+                Arc::from("NA")
+            }
+        } else if name_type_from_0_7 == CHARSXP || name_type_from_8_15 == CHARSXP {
+            Arc::from(parse_charsxp_content_async(ctx, cursor, name_flags).await?.as_str())
+        } else {
+            Arc::from("NA")
+        };
+        let symbol = RObject::Symbol(name.clone());
+        symbol_table.add(symbol.clone());
+        return Ok((Some(name), Some(symbol)));
+    }
+
+    if sexp_type == CHARSXP {
+        let name = parse_charsxp_content_async(ctx, cursor, flags).await?;
+        let obj = RObject::Character(vec![Arc::from(name.as_str())].into());
+        return Ok((extract_tag_name(obj.clone()), Some(obj)));
+    }
+
+    let obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+        ctx, cursor, ref_table, symbol_table, dedup_table,
+    )))
+    .await?;
+    Ok((extract_tag_name(obj.clone()), Some(obj)))
+}
+
+#[cfg(target_arch = "wasm32")]
 async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
     ctx: &mut ParserContext,
     cursor: &mut C,
@@ -2083,19 +2158,14 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
     let mut elements = Vec::new();
 
     loop {
-        let tag_obj = if has_tag {
-            Some(
-                std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-                    ctx, cursor, ref_table, symbol_table, dedup_table,
-                )))
-                .await?,
-            )
+        let (tag, tag_obj) = if has_tag {
+            std::pin::Pin::from(Box::new(parse_tag_sequential_value_async(
+                ctx, cursor, ref_table, symbol_table, dedup_table,
+            )))
+            .await?
         } else {
-            None
+            (None, None)
         };
-        let tag = tag_obj
-            .clone()
-            .and_then(|obj| extract_tag_name(obj));
         let value = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
             ctx, cursor, ref_table, symbol_table, dedup_table,
         )))
