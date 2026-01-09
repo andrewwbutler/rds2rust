@@ -1073,15 +1073,19 @@ where
             Err(StreamingError::Parse(Error::InvalidFormat(ref message)))
                 if message.contains("exceeds remaining") && cursor.total_len().is_none() =>
             {
+                ctx.restore(ctx_snapshot);
+                ref_table.rollback(ref_checkpoint);
+                symbol_table.rollback(symbol_checkpoint);
+                dedup_table.rollback(dedup_checkpoint);
+                if size < max_size {
+                    size = std::cmp::min(max_size, size.saturating_mul(2));
+                    continue;
+                }
                 #[cfg(target_arch = "wasm32")]
                 {
                     let msg = format!("sequential fallback triggered: {}", message);
                     web_sys::console::debug_1(&JsValue::from_str(&msg));
                 }
-                ctx.restore(ctx_snapshot);
-                ref_table.rollback(ref_checkpoint);
-                symbol_table.rollback(symbol_checkpoint);
-                dedup_table.rollback(dedup_checkpoint);
                 if let Some(control) = std::pin::Pin::from(Box::new(
                     try_parse_large_vector_streaming_async(
                         ctx,
