@@ -2334,6 +2334,44 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
             );
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
+        #[cfg(target_arch = "wasm32")]
+        if sequential_debug_enabled() && force_s4_tag {
+            let pos = cursor.position();
+            let mut msg = format!("seq pairlist S4 value peek pos={}", pos);
+            if cursor.ensure_available(1).await.is_ok() {
+                if let Ok(slice) = cursor.as_sync_slice(1) {
+                    let first_byte = slice[0];
+                    msg.push_str(&format!(" first_byte=0x{:02x}", first_byte));
+                    if first_byte < 240 && cursor.ensure_available(4).await.is_ok() {
+                        if let Ok(flags_slice) = cursor.as_sync_slice(4) {
+                            let mut reader = std::io::Cursor::new(flags_slice);
+                            if let Ok(flags) = reader.read_u32::<BigEndian>() {
+                                let type_from_8_15 = (flags >> 8) & 0xFF;
+                                let type_from_0_7 = flags & 0xFF;
+                                let sexp_type = if type_from_0_7 == REFSXP
+                                    || (2..=S4SXP).contains(&type_from_0_7)
+                                    || type_from_0_7 == 1
+                                {
+                                    type_from_0_7
+                                } else if type_from_0_7 == 0 && type_from_8_15 >= 2 {
+                                    type_from_8_15
+                                } else {
+                                    type_from_0_7
+                                };
+                                let has_attr = (flags & HAS_ATTR_BIT) != 0;
+                                let has_tag_val = (flags & HAS_TAG_BIT) != 0;
+                                msg.push_str(&format!(
+                                    " flags=0x{:08x} sexp_type={} has_attr={} has_tag={}",
+                                    flags, sexp_type, has_attr, has_tag_val
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
+        }
+        let value_start = cursor.position();
         let value = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
             ctx, cursor, ref_table, symbol_table, dedup_table,
         )))
@@ -2347,11 +2385,14 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
         if sequential_debug_enabled() && force_s4_tag {
             let last = elements.last().expect("just pushed");
             let tag_name = last.tag.as_deref().unwrap_or("None");
+            let value_end = cursor.position();
+            let value_delta = value_end.saturating_sub(value_start);
             let msg = format!(
-                "seq pairlist S4 tag element tag='{}' value_type={:?} pos={}",
+                "seq pairlist S4 tag element tag='{}' value_type={:?} pos={} delta={}",
                 tag_name,
                 std::mem::discriminant(&last.value),
-                cursor.position()
+                value_end,
+                value_delta
             );
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
