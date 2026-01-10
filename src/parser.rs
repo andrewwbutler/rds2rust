@@ -2081,7 +2081,16 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             }
         }
         VECSXP | EXPRSXP => {
+            let start_pos = cursor.position();
             let length = read_u32_async(cursor).await? as usize;
+            #[cfg(target_arch = "wasm32")]
+            if sequential_debug_enabled() && ctx.parsing_s4_tag {
+                let msg = format!(
+                    "seq vecsxp start pos={} length={}",
+                    start_pos, length
+                );
+                web_sys::console::debug_1(&JsValue::from_str(&msg));
+            }
             guard_allocation_common(ctx, length, 1, "list")?;
             let mut values = Vec::with_capacity(length);
             for _ in 0..length {
@@ -2090,6 +2099,16 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                 )))
                 .await?;
                 values.push(value);
+            }
+            #[cfg(target_arch = "wasm32")]
+            if sequential_debug_enabled() && ctx.parsing_s4_tag {
+                let end_pos = cursor.position();
+                let msg = format!(
+                    "seq vecsxp end pos={} delta={}",
+                    end_pos,
+                    end_pos.saturating_sub(start_pos)
+                );
+                web_sys::console::debug_1(&JsValue::from_str(&msg));
             }
             if sexp_type == VECSXP {
                 RObject::List(values)
