@@ -33,6 +33,17 @@ fn sequential_debug_enabled() -> bool {
     false
 }
 
+#[cfg(target_arch = "wasm32")]
+fn sequential_list_debug_enabled() -> bool {
+    let global = js_sys::global();
+    if let Ok(value) =
+        js_sys::Reflect::get(&global, &JsValue::from_str("SCONVERT_STREAMING_DEBUG_LIST"))
+    {
+        return value.as_bool().unwrap_or(false);
+    }
+    false
+}
+
 struct RdsCursor<'a> {
     position: u64,
     len: u64,
@@ -2091,17 +2102,45 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                 );
                 web_sys::console::debug_1(&JsValue::from_str(&msg));
             }
+            #[cfg(target_arch = "wasm32")]
+            if sequential_list_debug_enabled() {
+                let msg = format!(
+                    "seq vecsxp start pos={} length={} parsing_s4_tag={}",
+                    start_pos, length, ctx.parsing_s4_tag
+                );
+                web_sys::console::debug_1(&JsValue::from_str(&msg));
+            }
             guard_allocation_common(ctx, length, 1, "list")?;
             let mut values = Vec::with_capacity(length);
-            for _ in 0..length {
+            for idx in 0..length {
                 let value = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
                     ctx, cursor, ref_table, symbol_table, dedup_table,
                 )))
                 .await?;
+                #[cfg(target_arch = "wasm32")]
+                if sequential_list_debug_enabled() && idx < 3 {
+                    let msg = format!(
+                        "seq vecsxp elem idx={} type={:?} pos={}",
+                        idx,
+                        std::mem::discriminant(&value),
+                        cursor.position()
+                    );
+                    web_sys::console::debug_1(&JsValue::from_str(&msg));
+                }
                 values.push(value);
             }
             #[cfg(target_arch = "wasm32")]
             if sequential_debug_enabled() && ctx.parsing_s4_tag {
+                let end_pos = cursor.position();
+                let msg = format!(
+                    "seq vecsxp end pos={} delta={}",
+                    end_pos,
+                    end_pos.saturating_sub(start_pos)
+                );
+                web_sys::console::debug_1(&JsValue::from_str(&msg));
+            }
+            #[cfg(target_arch = "wasm32")]
+            if sequential_list_debug_enabled() {
                 let end_pos = cursor.position();
                 let msg = format!(
                     "seq vecsxp end pos={} delta={}",
