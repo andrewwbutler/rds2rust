@@ -1843,6 +1843,47 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
         None
     };
 
+    if sexp_type == ALTREP_SXP {
+        let class_info = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+            ctx, cursor, ref_table, symbol_table, dedup_table,
+        )))
+        .await?;
+        let state = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+            ctx, cursor, ref_table, symbol_table, dedup_table,
+        )))
+        .await?;
+        let attributes_obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+            ctx, cursor, ref_table, symbol_table, dedup_table,
+        )))
+        .await?;
+
+        let native_obj = convert_altrep_to_native(ctx, class_info, state)?;
+        let final_obj = if !matches!(attributes_obj, RObject::Null) {
+            let attrs = parse_attributes(attributes_obj, ctx)?;
+            if !attrs.is_empty() {
+                RObject::WithAttributes {
+                    object: Box::new(native_obj),
+                    attributes: attrs,
+                }
+            } else {
+                native_obj
+            }
+        } else {
+            native_obj
+        };
+
+        if let Some(index) = ref_index {
+            ref_table.update(index, final_obj);
+            return Ok(RObject::Shared(
+                ref_table
+                    .get(index)
+                    .ok_or_else(|| Error::InvalidFormat(format!("Missing ref idx {}", index)))?,
+            ));
+        }
+
+        return Ok(final_obj);
+    }
+
     let mut obj = match sexp_type {
         NILSXP | NILVALUE_SXP => RObject::Null,
         SYMSXP => {
