@@ -1315,10 +1315,9 @@ where
             .await
             .map_err(StreamingError::Parse)?;
         let has_attr = (flags & HAS_ATTR_BIT) != 0;
-        let mut has_tag = (flags & HAS_TAG_BIT) != 0;
         // S4 objects store slots in the TAG pairlist even when HAS_TAG_BIT is not set.
         // Force tag parsing to mirror the sequential value parser behavior.
-        has_tag = true;
+        let has_tag = true;
 
         let mut emit_children = true;
         if emit {
@@ -2267,7 +2266,7 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
     let mut elements = Vec::new();
 
     loop {
-        let element_flags = read_u32_async(cursor).await?;
+        let _element_flags = read_u32_async(cursor).await?;
         let (tag, tag_obj) = if has_tag {
             std::pin::Pin::from(Box::new(parse_tag_sequential_value_async(
                 ctx, cursor, ref_table, symbol_table, dedup_table,
