@@ -2305,10 +2305,19 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
     mut has_tag: bool,
 ) -> Result<Vec<PairlistElement>> {
     let mut elements = Vec::new();
+    let force_s4_tag = ctx.parsing_s4_tag;
+    #[cfg(target_arch = "wasm32")]
+    if sequential_debug_enabled() && force_s4_tag {
+        let msg = format!(
+            "seq pairlist S4 tag parse start pos={}",
+            cursor.position()
+        );
+        web_sys::console::debug_1(&JsValue::from_str(&msg));
+    }
 
     loop {
         let _element_flags = read_u32_async(cursor).await?;
-        let (tag, tag_obj) = if has_tag {
+        let (tag, tag_obj) = if has_tag || force_s4_tag {
             std::pin::Pin::from(Box::new(parse_tag_sequential_value_async(
                 ctx, cursor, ref_table, symbol_table, dedup_table,
             )))
@@ -2334,6 +2343,18 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
             value,
             tag_object: tag_obj.map(Box::new),
         });
+        #[cfg(target_arch = "wasm32")]
+        if sequential_debug_enabled() && force_s4_tag {
+            let last = elements.last().expect("just pushed");
+            let tag_name = last.tag.as_deref().unwrap_or("None");
+            let msg = format!(
+                "seq pairlist S4 tag element tag='{}' value_type={:?} pos={}",
+                tag_name,
+                std::mem::discriminant(&last.value),
+                cursor.position()
+            );
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
+        }
 
         cursor.ensure_available(4).await?;
         let slice = cursor.as_sync_slice(4)?;
@@ -2372,7 +2393,7 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
         } else if continues_pairlist {
             // Do not consume the flags here; the next loop iteration will
             // read them as part of the next tag parse.
-            has_tag = has_tag_next;
+            has_tag = if force_s4_tag { true } else { has_tag_next };
             continue;
         } else {
             let _ = read_u32_async(cursor).await?;
@@ -2382,6 +2403,16 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
             .await?;
             break;
         }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    if sequential_debug_enabled() && force_s4_tag {
+        let tags: Vec<_> = elements
+            .iter()
+            .map(|elem| elem.tag.as_deref().unwrap_or("None"))
+            .collect();
+        let msg = format!("seq pairlist S4 tag parse end tags={:?}", tags);
+        web_sys::console::debug_1(&JsValue::from_str(&msg));
     }
 
     Ok(elements)
