@@ -2128,6 +2128,8 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
     };
 
     let attributes = if sexp_type == S4SXP && has_tag {
+        let prev = ctx.parsing_s4_tag;
+        ctx.parsing_s4_tag = true;
         let pairlist = std::pin::Pin::from(Box::new(parse_pairlist_sequential_value_async(
             ctx,
             cursor,
@@ -2137,6 +2139,7 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             true,
         )))
         .await?;
+        ctx.parsing_s4_tag = prev;
         parse_attributes(RObject::Pairlist(pairlist), ctx)?
     } else if let Some(attrs) = early_attributes {
         attrs
@@ -2372,10 +2375,17 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
         let value_start = cursor.position();
+        let prev_s4_tag = ctx.parsing_s4_tag;
+        if force_s4_tag {
+            ctx.parsing_s4_tag = false;
+        }
         let value = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
             ctx, cursor, ref_table, symbol_table, dedup_table,
         )))
         .await?;
+        if force_s4_tag {
+            ctx.parsing_s4_tag = prev_s4_tag;
+        }
         elements.push(PairlistElement {
             tag,
             value,
