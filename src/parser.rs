@@ -1315,9 +1315,7 @@ where
             .await
             .map_err(StreamingError::Parse)?;
         let has_attr = (flags & HAS_ATTR_BIT) != 0;
-        // S4 objects store slots in the TAG pairlist even when HAS_TAG_BIT is not set.
-        // Force tag parsing to mirror the sequential value parser behavior.
-        let has_tag = true;
+        let has_tag = (flags & HAS_TAG_BIT) != 0;
 
         let mut emit_children = true;
         if emit {
@@ -1354,8 +1352,10 @@ where
         }
 
         if has_attr {
-            let prev = ctx.parsing_attributes;
+            let prev_attrs = ctx.parsing_attributes;
+            let prev_s4 = ctx.parsing_s4_tag;
             ctx.parsing_attributes = true;
+            ctx.parsing_s4_tag = true;
             let attr_obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
                 ctx,
                 cursor,
@@ -1371,7 +1371,8 @@ where
                     attrs.insert(k, *v);
                 }
             }
-            ctx.parsing_attributes = prev;
+            ctx.parsing_attributes = prev_attrs;
+            ctx.parsing_s4_tag = prev_s4;
         }
         #[cfg(target_arch = "wasm32")]
         if sequential_debug_enabled() {
@@ -1803,14 +1804,11 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
     } else {
         (flags & HAS_ATTR_BIT) != 0
     };
-    let mut has_tag = if sexp_type == REFSXP {
+    let has_tag = if sexp_type == REFSXP {
         false
     } else {
         (flags & HAS_TAG_BIT) != 0
     };
-    if sexp_type == S4SXP {
-        has_tag = true;
-    }
 
     if sexp_type == REFSXP {
         let ref_index = flags >> 8;
@@ -2144,10 +2142,17 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
     } else if let Some(attrs) = early_attributes {
         attrs
     } else if has_attr {
+        let prev = ctx.parsing_s4_tag;
+        if sexp_type == S4SXP {
+            ctx.parsing_s4_tag = true;
+        }
         let attr_obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
             ctx, cursor, ref_table, symbol_table, dedup_table,
         )))
         .await?;
+        if sexp_type == S4SXP {
+            ctx.parsing_s4_tag = prev;
+        }
         parse_attributes(attr_obj, ctx)?
     } else {
         Attributes::new()
