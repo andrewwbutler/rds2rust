@@ -1315,7 +1315,10 @@ where
             .await
             .map_err(StreamingError::Parse)?;
         let has_attr = (flags & HAS_ATTR_BIT) != 0;
-        let has_tag = (flags & HAS_TAG_BIT) != 0;
+        let mut has_tag = (flags & HAS_TAG_BIT) != 0;
+        // S4 objects store slots in the TAG pairlist even when HAS_TAG_BIT is not set.
+        // Force tag parsing to mirror the sequential value parser behavior.
+        has_tag = true;
 
         let mut emit_children = true;
         if emit {
