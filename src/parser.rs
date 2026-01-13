@@ -1326,7 +1326,20 @@ where
             .await
             .map_err(StreamingError::Parse)?;
         let has_attr = (flags & HAS_ATTR_BIT) != 0;
-        let has_tag = (flags & HAS_TAG_BIT) != 0;
+        let raw_has_tag = (flags & HAS_TAG_BIT) != 0;
+        let has_tag = raw_has_tag;
+        #[cfg(target_arch = "wasm32")]
+        if sequential_debug_enabled() {
+            let source = if raw_has_tag {
+                "tag"
+            } else if has_attr {
+                "attr"
+            } else {
+                "none"
+            };
+            let msg = format!("sequential fallback S4 attrs source={}", source);
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
+        }
 
         let mut emit_children = true;
         if emit {
@@ -1389,8 +1402,8 @@ where
         if sequential_debug_enabled() {
             let keys: Vec<_> = attrs.attrs.iter().map(|(k, _)| k.as_ref()).collect();
             let msg = format!(
-                "sequential fallback S4 attrs keys={:?} has_tag={} has_attr={}",
-                keys, has_tag, has_attr
+                "sequential fallback S4 attrs keys={:?} has_tag={} has_attr={} raw_has_tag={} flags=0x{:08x}",
+                keys, has_tag, has_attr, raw_has_tag, flags
             );
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
@@ -2095,6 +2108,14 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             let start_pos = cursor.position();
             let length = read_u32_async(cursor).await? as usize;
             #[cfg(target_arch = "wasm32")]
+            if sequential_debug_enabled() {
+                let msg = format!(
+                    "seq vecsxp start pos={} length={} parsing_s4_tag={}",
+                    start_pos, length, ctx.parsing_s4_tag
+                );
+                web_sys::console::debug_1(&JsValue::from_str(&msg));
+            }
+            #[cfg(target_arch = "wasm32")]
             if sequential_debug_enabled() && ctx.parsing_s4_tag {
                 let msg = format!(
                     "seq vecsxp start pos={} length={}",
@@ -2382,7 +2403,16 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
     }
 
     loop {
-        let _element_flags = read_u32_async(cursor).await?;
+        let element_flags = read_u32_async(cursor).await?;
+        #[cfg(target_arch = "wasm32")]
+        if sequential_debug_enabled() && force_s4_tag {
+            let msg = format!(
+                "seq pairlist S4 element flags=0x{:08x} has_tag_bit={}",
+                element_flags,
+                (element_flags & HAS_TAG_BIT) != 0
+            );
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
+        }
         let (tag, tag_obj) = if has_tag || force_s4_tag {
             std::pin::Pin::from(Box::new(parse_tag_sequential_value_async(
                 ctx, cursor, ref_table, symbol_table, dedup_table,
@@ -2469,7 +2499,15 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
             );
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
-
+        cursor.ensure_available(1).await?;
+        let first_byte = cursor.as_sync_slice(1)?[0];
+        if first_byte >= 240 {
+            let _ = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                ctx, cursor, ref_table, symbol_table, dedup_table,
+            )))
+            .await?;
+            break;
+        }
         cursor.ensure_available(4).await?;
         let slice = cursor.as_sync_slice(4)?;
         let mut reader = std::io::Cursor::new(slice);
