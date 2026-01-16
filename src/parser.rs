@@ -237,6 +237,8 @@ struct ParserContext {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     lenient_skip_vectors: bool,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    streaming_parse_mode: bool,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     s4_slot_overrides: IndexMap<Arc<str>, RObject>,
 }
 
@@ -253,6 +255,7 @@ struct ParserContextSnapshot {
     stop_streaming: bool,
     force_materialize_vector: bool,
     lenient_skip_vectors: bool,
+    streaming_parse_mode: bool,
     s4_slot_overrides: IndexMap<Arc<str>, RObject>,
 }
 
@@ -276,6 +279,7 @@ impl ParserContext {
             stop_streaming: false,
             force_materialize_vector: false,
             lenient_skip_vectors: false,
+            streaming_parse_mode: false,
             s4_slot_overrides: IndexMap::new(),
         }
     }
@@ -293,6 +297,7 @@ impl ParserContext {
             stop_streaming: self.stop_streaming,
             force_materialize_vector: self.force_materialize_vector,
             lenient_skip_vectors: self.lenient_skip_vectors,
+            streaming_parse_mode: self.streaming_parse_mode,
             s4_slot_overrides: self.s4_slot_overrides.clone(),
         }
     }
@@ -309,6 +314,7 @@ impl ParserContext {
         self.stop_streaming = snapshot.stop_streaming;
         self.force_materialize_vector = snapshot.force_materialize_vector;
         self.lenient_skip_vectors = snapshot.lenient_skip_vectors;
+        self.streaming_parse_mode = snapshot.streaming_parse_mode;
         self.s4_slot_overrides = snapshot.s4_slot_overrides;
     }
 
@@ -389,6 +395,13 @@ fn guard_allocation(
     context: &str,
 ) -> Result<()> {
     guard_allocation_common(ctx, length, elem_size, context)?;
+
+    // Skip cursor length check in streaming parse mode, where cursor is a limited slice
+    // of the full data, not representing the complete file size
+    #[cfg(target_arch = "wasm32")]
+    if ctx.streaming_parse_mode {
+        return Ok(());
+    }
 
     let needed = length * elem_size;
     let remaining = (cursor.len() as usize).saturating_sub(cursor.position() as usize);
@@ -1272,6 +1285,7 @@ where
         let dedup_checkpoint = dedup_table.checkpoint();
 
         progress.base_offset = cursor.position();
+        ctx.streaming_parse_mode = true;
         let result = parse_object_streaming(
             ctx,
             &mut sync_cursor,
