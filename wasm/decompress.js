@@ -198,6 +198,14 @@ async function decompressStreamToBlob(stream, onProgress) {
   }
   const blob = new Blob(chunks);
   console.log(`[GZIP FIX DEBUG] Decompressed blob size: ${blob.size} bytes (${(blob.size / (1024 ** 3)).toFixed(2)} GB)`);
+  console.log(`[GZIP FIX DEBUG] Chunks count: ${chunks.length}, Total from chunks: ${total} bytes`);
+  console.log(`[GZIP FIX DEBUG] Blob size matches total: ${blob.size === total}`);
+
+  // Verify blob is actually correct
+  if (blob.size !== total) {
+    console.error(`[GZIP FIX DEBUG] ERROR: Blob size (${blob.size}) does not match decompressed total (${total})!`);
+  }
+
   return blob;
 }
 
