@@ -196,7 +196,9 @@ async function decompressStreamToBlob(stream, onProgress) {
       });
     }
   }
-  return new Blob(chunks);
+  const blob = new Blob(chunks);
+  console.log(`[GZIP FIX DEBUG] Decompressed blob size: ${blob.size} bytes (${(blob.size / (1024 ** 3)).toFixed(2)} GB)`);
+  return blob;
 }
 
 async function decompressMultiMemberGzip(blob, offsets, options = {}) {
