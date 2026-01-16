@@ -38,23 +38,38 @@ macro_rules! debug_log {
 
 #[cfg(target_arch = "wasm32")]
 fn sequential_debug_enabled() -> bool {
-    let global = js_sys::global();
-    if let Ok(value) = js_sys::Reflect::get(&global, &JsValue::from_str("SCONVERT_STREAMING_DEBUG"))
+    #[cfg(feature = "debug-logging")]
     {
-        return value.as_bool().unwrap_or(false);
+        let global = js_sys::global();
+        if let Ok(value) =
+            js_sys::Reflect::get(&global, &JsValue::from_str("SCONVERT_STREAMING_DEBUG"))
+        {
+            return value.as_bool().unwrap_or(false);
+        }
+        return false;
     }
-    false
+    #[cfg(not(feature = "debug-logging"))]
+    {
+        false
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
 fn sequential_list_debug_enabled() -> bool {
-    let global = js_sys::global();
-    if let Ok(value) =
-        js_sys::Reflect::get(&global, &JsValue::from_str("SCONVERT_STREAMING_DEBUG_LIST"))
+    #[cfg(feature = "debug-logging")]
     {
-        return value.as_bool().unwrap_or(false);
+        let global = js_sys::global();
+        if let Ok(value) =
+            js_sys::Reflect::get(&global, &JsValue::from_str("SCONVERT_STREAMING_DEBUG_LIST"))
+        {
+            return value.as_bool().unwrap_or(false);
+        }
+        return false;
     }
-    false
+    #[cfg(not(feature = "debug-logging"))]
+    {
+        false
+    }
 }
 
 struct RdsCursor<'a> {
@@ -154,7 +169,14 @@ impl Seek for RdsCursor<'_> {
 }
 
 fn debug_enabled() -> bool {
-    std::env::var("RDS_DEBUG").is_ok()
+    #[cfg(feature = "debug-logging")]
+    {
+        std::env::var("RDS_DEBUG").is_ok()
+    }
+    #[cfg(not(feature = "debug-logging"))]
+    {
+        false
+    }
 }
 
 fn ensure_bytes_available(cursor: &RdsCursor<'_>, needed: usize, context: &str) -> Result<()> {
