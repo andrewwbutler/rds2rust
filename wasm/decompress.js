@@ -289,15 +289,16 @@ export async function decompressBlobIfNeeded(blob, options = {}) {
     throw new Error("Unrecognized file format. Expected gzip or RDS.");
   }
 
-  let headerOffsets = [];
-  try {
-    headerOffsets = await findGzipMemberOffsetsFromBlob(blob);
-  } catch {
-    headerOffsets = [];
-  }
-  if (headerOffsets.length && headerOffsets[0] !== 0) {
-    headerOffsets.unshift(0);
-  }
+  // IMPORTANT: Skip multi-member detection and always use single-stream decompression.
+  // The browser's DecompressionStream("gzip") correctly handles both single-member
+  // and multi-member (concatenated) gzip files natively. Previous code scanned for
+  // gzip magic bytes (0x1f 0x8b) to detect members, but this produced thousands of
+  // false positives when those bytes appeared randomly in DEFLATE streams, causing
+  // incomplete decompression and parse failures for large files.
+  //
+  // Removed logic:
+  // - findGzipMemberOffsetsFromBlob() - buggy header scanning
+  // - decompressMultiMemberGzip() - unnecessary with native browser support
 
   if (budgetBytes) {
     const estimated = estimateDecompressedSize(blob.size, ratioEstimate);
@@ -316,19 +317,11 @@ export async function decompressBlobIfNeeded(blob, options = {}) {
     if (typeof testDelayMs === "number" && testDelayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, testDelayMs));
     }
-    let decompressed;
-    if (headerOffsets.length > 1) {
-      try {
-        decompressed = await decompressMultiMemberGzip(blob, headerOffsets, { onProgress });
-      } catch {
-        // Fallback to single-stream gzip decompression below.
-      }
-    }
-    if (!decompressed) {
-      const decompressor = new DecompressionStream("gzip");
-      const stream = blob.stream().pipeThrough(decompressor);
-      decompressed = await decompressStreamToBlob(stream, onProgress);
-    }
+
+    // Simple single-stream decompression - works for all gzip files
+    const decompressor = new DecompressionStream("gzip");
+    const stream = blob.stream().pipeThrough(decompressor);
+    const decompressed = await decompressStreamToBlob(stream, onProgress);
     if (decompressed.size > maxBytes) {
       throw new Error(
         `Compression ratio exceeded safety limit (${maxRatio}:1).`

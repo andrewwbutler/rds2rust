@@ -5,7 +5,7 @@
 //! memory usage.
 
 #[cfg(target_arch = "wasm32")]
-use js_sys::{Array, Promise, Reflect, Uint8Array};
+use js_sys::{Promise, Reflect, Uint8Array};
 #[cfg(target_arch = "wasm32")]
 use std::collections::VecDeque;
 #[cfg(target_arch = "wasm32")]
@@ -102,18 +102,8 @@ impl StreamingGzipDecompressor {
             )));
         }
 
-        let offsets_value = JsFuture::from(detect_gzip_member_offsets_js(&blob))
-            .await
-            .map_err(|e| {
-                Error::CompressionError(format!("Failed to detect gzip members: {:?}", e))
-            })?;
-        let offsets = Array::from(&offsets_value);
-        #[cfg(target_arch = "wasm32")]
-        {
-            let msg = format!("gzip members detected: {}", offsets.length());
-            web_sys::console::debug_1(&JsValue::from_str(&msg));
-        }
-
+        // Read expected size from gzip footer for informational purposes
+        // Note: This is modulo 2^32, so may be inaccurate for files > 4GB
         let expected_size = match read_gzip_expected_size(&blob).await {
             Ok(value) => Some(value),
             Err(err) => {
@@ -130,24 +120,13 @@ impl StreamingGzipDecompressor {
             let msg = format!("gzip footer ISIZE: {}", expected);
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
-        if offsets.length() > 1 {
-            let decompressed_stream = stream_multi_member_gzip_js(&blob, offsets.into());
-            let get_reader_fn = Reflect::get(&decompressed_stream, &JsValue::from_str("getReader"))
-                .map_err(|e| Error::CompressionError(format!("Failed to get getReader: {:?}", e)))?
-                .dyn_into::<js_sys::Function>()
-                .map_err(|_| Error::CompressionError("getReader is not a function".into()))?;
-            let reader = get_reader_fn
-                .call0(&decompressed_stream)
-                .map_err(|e| Error::CompressionError(format!("Failed to get reader: {:?}", e)))?;
-            return Ok(Self {
-                stream_reader: reader,
-                decompressed_buffer: VecDeque::new(),
-                position: 0,
-                finished: false,
-                total_size: None,
-                expected_size,
-            });
-        }
+
+        // IMPORTANT: Always use single-stream decompression.
+        // The browser's DecompressionStream("gzip") correctly handles both single-member
+        // and multi-member (concatenated) gzip files natively. Previous code attempted
+        // manual multi-member detection by scanning for gzip magic bytes, but this
+        // produced false positives when those bytes appeared in the DEFLATE stream,
+        // causing incomplete decompression and parse failures.
 
         // Check if DecompressionStream is available (window or worker global)
         let global = js_sys::global();
