@@ -15,6 +15,15 @@ use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::{fs, fs::File, io::BufWriter, path::Path};
 
+macro_rules! debug_log {
+    ($($arg:tt)*) => {{
+        #[cfg(feature = "debug-logging")]
+        {
+            debug_log!($($arg)*);
+        }
+    }};
+}
+
 // Note: Thread-local state (WRITE_STACK, WRITE_DEPTH, WRITE_CALLS) removed for thread safety.
 // These were only used for debugging and cycle detection.
 // Cycle detection is now handled by ref_table which already tracks object pointers.
@@ -340,7 +349,7 @@ fn write_symbol_with_tracking<W: Write>(
 
         // Debug logging
         if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
-            eprintln!(
+            debug_log!(
                 "[SYMBOL] REFSXP '{}' ptr={:?} obj={} sym={} ctx={:?} emit_idx={}",
                 name,
                 shared_ptr.map(|p| format!("{:#x}", p)),
@@ -377,7 +386,7 @@ fn write_symbol_with_tracking<W: Write>(
 
     // Debug logging
     if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
-        eprintln!(
+        debug_log!(
             "[SYMBOL] SYMSXP '{}' ptr={:?} obj={} sym={} ctx={:?}",
             name,
             shared_ptr.map(|p| format!("{:#x}", p)),
@@ -568,7 +577,7 @@ fn write_object_inner<W: Write>(
         Some(guard) => guard,
         None => {
             if std::env::var("RDS_DEBUG").is_ok() {
-                eprintln!(
+                debug_log!(
                     "[WRITE] Cycle detected for type={}, writing NULL",
                     obj.variant_name()
                 );
@@ -614,13 +623,13 @@ fn write_object_inner<W: Write>(
                 // and the parser would stack overflow trying to resolve it.
                 // Instead, write NULL to break the cycle.
                 if std::env::var("RDS_DEBUG").is_ok() {
-                    eprintln!(
+                    debug_log!(
                         "[WRITE] Cycle detected for key={:p}, writing NULL to break cycle",
                         ptr as *const ()
                     );
                 }
                 if std::env::var("RDS_DEBUG_CLOSURE").is_ok() {
-                    eprintln!(
+                    debug_log!(
                         "[WRITE_DBG] cycle hit type={:?} key={:p}, writing NULL",
                         mem::discriminant(obj),
                         ptr as *const ()
@@ -654,10 +663,10 @@ fn write_object_inner<W: Write>(
                     }
                 }
                 if std::env::var("RDS_DEBUG").is_ok() {
-                    eprintln!("[WRITE] REFSXP emit idx={} key={:p}", idx, ptr as *const ());
+                    debug_log!("[WRITE] REFSXP emit idx={} key={:p}", idx, ptr as *const ());
                 }
                 if std::env::var("RDS_DEBUG_REFSXP").is_ok() {
-                    eprintln!(
+                    debug_log!(
                         "[WRITE_REFSXP] idx={} type={} ctx={:?}",
                         idx,
                         obj.variant_name(),
@@ -665,7 +674,7 @@ fn write_object_inner<W: Write>(
                     );
                 }
                 if std::env::var("RDS_DEBUG_CLOSURE").is_ok() {
-                    eprintln!(
+                    debug_log!(
                         "[WRITE_DBG] reuse type={:?} key={:p} discr={:?}",
                         mem::discriminant(obj),
                         ptr as *const (),
@@ -675,7 +684,7 @@ fn write_object_inner<W: Write>(
                 if std::env::var("RDS_DEBUG_WITHATTR").is_ok()
                     && matches!(obj, RObject::WithAttributes { .. })
                 {
-                    eprintln!(
+                    debug_log!(
                         "[WITHATTR] REFSXP idx={} ptr={:p} type={}",
                         idx,
                         ptr as *const (),
@@ -690,7 +699,7 @@ fn write_object_inner<W: Write>(
             let idx = ref_table.register_object_ptr(ptr);
             current_ref_idx = Some(idx);
             if std::env::var("RDS_DEBUG").is_ok() {
-                eprintln!(
+                debug_log!(
                     "[WRITE] DEFINE idx={} key={:p} type={:?}",
                     idx,
                     ptr as *const (),
@@ -698,7 +707,7 @@ fn write_object_inner<W: Write>(
                 );
             }
             if std::env::var("RDS_DEBUG_CLOSURE").is_ok() {
-                eprintln!(
+                debug_log!(
                     "[WRITE_DBG] define idx={} key={:p} discr={:?}",
                     idx,
                     ptr as *const (),
@@ -708,7 +717,7 @@ fn write_object_inner<W: Write>(
             if std::env::var("RDS_DEBUG_WITHATTR").is_ok()
                 && matches!(obj, RObject::WithAttributes { .. })
             {
-                eprintln!(
+                debug_log!(
                     "[WITHATTR] DEFINE idx={} ptr={:p} type={}",
                     idx,
                     ptr as *const (),
@@ -730,18 +739,18 @@ fn write_object_inner<W: Write>(
                 };
 
                 if std::env::var("RDS_DEBUG").is_ok() {
-                    eprintln!("[WRITE] Unwrapping Shared at idx={}, arc_ptr={:p}, skipping inner's own tracking", idx, Arc::as_ptr(inner));
+                    debug_log!("[WRITE] Unwrapping Shared at idx={}, arc_ptr={:p}, skipping inner's own tracking", idx, Arc::as_ptr(inner));
                 }
                 let guard = inner.read().unwrap();
 
                 if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
-                    eprintln!(
+                    debug_log!(
                         "[SHARED] Unwrapping Shared at idx={} inner_type={:?}",
                         idx,
                         std::mem::discriminant(&*guard)
                     );
                     if let RObject::Symbol(name) = &*guard {
-                        eprintln!("[SHARED] Inner is Symbol('{}')", name);
+                        debug_log!("[SHARED] Inner is Symbol('{}')", name);
                     }
                 }
 
@@ -826,7 +835,7 @@ fn write_object_inner<W: Write>(
             let ptr_opt = shared_info.map(|si| si.arc_ptr);
 
             if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
-                eprintln!(
+                debug_log!(
                     "[SYMBOL ARM] Reached Symbol arm for '{}' ptr={:?}",
                     name,
                     ptr_opt.map(|p| format!("{:#x}", p))
@@ -1237,7 +1246,7 @@ fn write_language<W: Write>(
     let has_tag = false; // Language objects typically don't have tags
 
     if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
-        eprintln!(
+        debug_log!(
             "[LANGUAGE] function type: {:?}",
             std::mem::discriminant(function)
         );
@@ -1261,7 +1270,7 @@ fn write_language<W: Write>(
         match function {
             RObject::Character(vec) if vec.len() == 1 => {
                 if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
-                    eprintln!("[LANGUAGE] Writing function as symbol: '{}'", vec[0]);
+                    debug_log!("[LANGUAGE] Writing function as symbol: '{}'", vec[0]);
                 }
                 write_symbol_with_tracking(
                     writer,
@@ -1274,7 +1283,7 @@ fn write_language<W: Write>(
             }
             _ => {
                 if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
-                    eprintln!(
+                    debug_log!(
                         "[LANGUAGE] Writing function via write_object: {:?}",
                         std::mem::discriminant(function)
                     );
@@ -1438,7 +1447,7 @@ fn write_pairlist_internal<W: Write>(
         // Write the tag if present
         if let Some(ref tag) = element.tag {
             if debug_pairlist {
-                eprintln!(
+                debug_log!(
                     "[PAIRLIST] elem[{}] TAG='{}' (before write: obj_idx={}, sym_idx={})",
                     i, tag, ref_table.next_index, ref_table.next_symbol_index
                 );
@@ -1465,7 +1474,7 @@ fn write_pairlist_internal<W: Write>(
             )?;
 
             if debug_pairlist {
-                eprintln!(
+                debug_log!(
                     "[PAIRLIST] elem[{}] TAG='{}' (after write: obj_idx={}, sym_idx={})",
                     i, tag, ref_table.next_index, ref_table.next_symbol_index
                 );
@@ -1474,7 +1483,7 @@ fn write_pairlist_internal<W: Write>(
 
         // Write the value
         if debug_pairlist {
-            eprintln!(
+            debug_log!(
                 "[PAIRLIST] elem[{}] VALUE type={} (before write: obj_idx={}, sym_idx={})",
                 i,
                 element.value.variant_name(),
@@ -1528,7 +1537,7 @@ fn write_pairlist_internal<W: Write>(
         }
 
         if debug_pairlist {
-            eprintln!(
+            debug_log!(
                 "[PAIRLIST] elem[{}] VALUE type={} (after write: obj_idx={}, sym_idx={})",
                 i,
                 element.value.variant_name(),
@@ -2470,7 +2479,7 @@ fn write_attributes<W: Write>(
 
     let debug_attrs = std::env::var("RDS_DEBUG_ATTRS").is_ok();
     if debug_attrs {
-        eprintln!(
+        debug_log!(
             "[ATTRS] Writing {} attributes, is_s4={}",
             attrs_iter.len(),
             is_s4_object
@@ -2479,7 +2488,7 @@ fn write_attributes<W: Write>(
 
     for (key, value) in attrs_iter {
         if debug_attrs {
-            eprintln!(
+            debug_log!(
                 "[ATTRS]   tag='{}' value_type={} next_obj_idx={} next_sym_idx={}",
                 key,
                 value.variant_name(),

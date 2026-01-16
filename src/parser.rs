@@ -23,6 +23,15 @@ use crate::wasm::{AsyncBufferedCursor, AsyncCursor, AsyncCursorConfig, AsyncRdsI
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsValue;
 
+macro_rules! debug_log {
+    ($($arg:tt)*) => {{
+        #[cfg(feature = "debug-logging")]
+        {
+            debug_log!($($arg)*);
+        }
+    }};
+}
+
 #[cfg(target_arch = "wasm32")]
 fn sequential_debug_enabled() -> bool {
     let global = js_sys::global();
@@ -150,7 +159,7 @@ fn ensure_bytes_available(cursor: &RdsCursor<'_>, needed: usize, context: &str) 
     let available = total.saturating_sub(pos);
     if available < needed {
         if debug_enabled() {
-            eprintln!(
+            debug_log!(
                 "[ENSURE_BYTES] EOF at pos={}, needed={}, available={}, ctx={}",
                 pos, needed, available, context
             );
@@ -431,7 +440,7 @@ impl RefTable {
         let arc = Arc::new(RwLock::new(obj));
         if std::env::var("RDS_DEBUG_REF_ORDER").is_ok() {
             let name = arc.read().unwrap().variant_name();
-            eprintln!("[PARSE_REF] idx={} type={}", index, name);
+            debug_log!("[PARSE_REF] idx={} type={}", index, name);
         }
         #[cfg(target_arch = "wasm32")]
         if sequential_debug_enabled() {
@@ -460,7 +469,7 @@ impl RefTable {
             *guard = obj;
             if std::env::var("RDS_DEBUG_REF_ORDER").is_ok() {
                 let name = guard.variant_name();
-                eprintln!("[PARSE_REF_UPDATE] idx={} type={}", index, name);
+                debug_log!("[PARSE_REF_UPDATE] idx={} type={}", index, name);
             }
             #[cfg(target_arch = "wasm32")]
             if sequential_debug_enabled() {
@@ -781,7 +790,7 @@ fn parse_rds_internal_cursor(
 
     // Parse the actual object
     if debug_enabled() {
-        eprintln!(
+        debug_log!(
             "[PARSE_RDS] About to parse root object at pos={}",
             cursor.position()
         );
@@ -795,11 +804,11 @@ fn parse_rds_internal_cursor(
     );
     if debug_enabled() {
         match &result {
-            Ok(_) => eprintln!(
+            Ok(_) => debug_log!(
                 "[PARSE_RDS] Root object parsed successfully, pos={}",
                 cursor.position()
             ),
-            Err(e) => eprintln!(
+            Err(e) => debug_log!(
                 "[PARSE_RDS] Root object parse FAILED: {} (pos={}, remaining={})",
                 e,
                 cursor.position(),
@@ -3710,7 +3719,7 @@ fn parse_object(
     if debug_enabled() {
         let stream_len = cursor.len();
         if pos + 16 >= stream_len {
-            eprintln!(
+            debug_log!(
                 "[PARSE_OBJECT] Near EOF: pos={}, total={}, remaining={}",
                 pos,
                 stream_len,
@@ -3751,7 +3760,7 @@ fn parse_object(
     ensure_bytes_available(cursor, 4, "parse_object:flags")?;
     let flags = cursor.read_u32::<BigEndian>()?;
     if debug_enabled() {
-        eprintln!(
+        debug_log!(
             "[PARSE_OBJECT] Flags=0x{:08x} at pos={}, first_byte={}",
             flags,
             cursor.position(),
@@ -3876,7 +3885,7 @@ fn parse_object(
             // R usually replaces these with NULL on deserialization
             // Skip the external pointer data and return NULL
             if std::env::var("RDS_WARN_EXTPTR").is_ok() || debug_enabled() {
-                eprintln!("Warning: External pointer (EXTPTRSXP) encountered - returning NULL");
+                debug_log!("Warning: External pointer (EXTPTRSXP) encountered - returning NULL");
             }
             RObject::Null
         }
@@ -3884,7 +3893,7 @@ fn parse_object(
             // Weak reference - similar to external pointers
             // These typically cannot be meaningfully deserialized
             if std::env::var("RDS_WARN_EXTPTR").is_ok() || debug_enabled() {
-                eprintln!("Warning: Weak reference (WEAKREFSXP) encountered - returning NULL");
+                debug_log!("Warning: Weak reference (WEAKREFSXP) encountered - returning NULL");
             }
             RObject::Null
         }
@@ -3925,7 +3934,7 @@ fn parse_object(
                 } else if let Some(obj) = ref_table.get(ref_index_val) {
                     if std::env::var("RDS_DEBUG_REF_FALLBACK").is_ok() {
                         let obj_type = obj.read().unwrap().variant_name();
-                        eprintln!(
+                        debug_log!(
                             "[CLOSURE_REF_FALLBACK] idx={} sym_table={} ref_table={} type={}",
                             ref_index_val,
                             symbol_table.len(),
@@ -4110,7 +4119,7 @@ fn parse_object(
             }
         };
         if std::env::var("RDS_DEBUG_ATTR_POS").is_ok() {
-            eprintln!(
+            debug_log!(
                 "[ATTR_POS] type={} pos_before={} pos_after={}, remaining={}",
                 sexp_type,
                 pos_before_attr,
@@ -4125,10 +4134,10 @@ fn parse_object(
                         .iter()
                         .map(|p| p.tag.as_deref().unwrap_or("<none>").to_string())
                         .collect();
-                    eprintln!("[S4_ATTR_OBJ] pairlist len={} tags={:?}", list.len(), tags);
+                    debug_log!("[S4_ATTR_OBJ] pairlist len={} tags={:?}", list.len(), tags);
                 }
                 other => {
-                    eprintln!(
+                    debug_log!(
                         "[S4_ATTR_OBJ] non-pairlist attr type={:?}",
                         std::mem::discriminant(other)
                     );
@@ -4164,7 +4173,7 @@ fn parse_object(
                 .iter()
                 .map(|(k, v)| (k.as_ref(), std::mem::discriminant(v.as_ref())))
                 .collect();
-            eprintln!("[S4_ATTRS] len={} keys={:?}", keys.len(), keys);
+            debug_log!("[S4_ATTRS] len={} keys={:?}", keys.len(), keys);
         }
         // S4 object: all attributes become slots, except class
         obj = convert_to_s4_object(attributes);
@@ -4193,7 +4202,7 @@ fn parse_object(
                     .iter()
                     .map(|(k, v)| (k.as_ref(), std::mem::discriminant(v.as_ref())))
                     .collect();
-                eprintln!("[S4_ATTRS] len={} keys={:?}", keys.len(), keys);
+                debug_log!("[S4_ATTRS] len={} keys={:?}", keys.len(), keys);
             }
             // S4 object: all attributes become slots, except class
             obj = convert_to_s4_object(attributes);
@@ -4268,7 +4277,7 @@ fn parse_object(
         if std::env::var("RDS_DEBUG_SYM").is_ok() {
             if let RObject::Character(names) = &obj {
                 if let Some(name) = names.first() {
-                    eprintln!("[SYMBOL_ADD] {}", name);
+                    debug_log!("[SYMBOL_ADD] {}", name);
                 }
             }
         }
@@ -6790,7 +6799,7 @@ fn parse_character_vector_full(
 ) -> Result<RObject> {
     if debug_enabled() {
         let remaining = cursor.len().saturating_sub(cursor.position());
-        eprintln!(
+        debug_log!(
             "[STRSXP] Parsing character vector of length {} (now at pos {}), remaining={}",
             length,
             cursor.position(),
@@ -6894,7 +6903,7 @@ fn parse_character_vector_full(
                 let obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
                 let pos_after_parse = cursor.position();
                 if debug_enabled() {
-                    eprintln!(
+                    debug_log!(
                         "[STRSXP] Non-CHARSXP element parsed at pos {}-{} => {:?}",
                         pos_before_parse,
                         pos_after_parse,
@@ -7067,7 +7076,7 @@ fn parse_list(
 
     if debug_enabled() {
         let remaining = cursor.len().saturating_sub(cursor.position());
-        eprintln!(
+        debug_log!(
             "[PARSE_LIST] At pos={}, length={}, remaining bytes={}",
             pos_before_length, length, remaining
         );
@@ -7080,7 +7089,7 @@ fn parse_list(
         let total = cursor.len() as usize;
         let remaining = total.saturating_sub(pos);
         if debug_enabled() {
-            eprintln!(
+            debug_log!(
                 "[PARSE_LIST] Parsing element {}/{} at pos={}, remaining={}",
                 i, length, pos, remaining
             );
@@ -7639,7 +7648,7 @@ fn parse_pairlist_element(
                         let name = extract_tag_name(sym.clone())
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| "<unknown>".to_string());
-                        eprintln!(
+                        debug_log!(
                             "[TAG_REF] flags=0x{:08x} idx={} name={}",
                             flags, sym_index, name
                         );
@@ -7647,7 +7656,7 @@ fn parse_pairlist_element(
                     sym.clone()
                 } else if let Some(obj) = ref_table.get(sym_index) {
                     if std::env::var("RDS_DEBUG_REF_FALLBACK").is_ok() {
-                        eprintln!(
+                        debug_log!(
                             "[TAG_REF_FALLBACK] idx={} sym_table={} ref_table={}",
                             sym_index,
                             symbol_table.len(),
@@ -7667,7 +7676,7 @@ fn parse_pairlist_element(
                 let obj_val = obj.read().unwrap().clone();
                 if let Some(name) = extract_tag_name(obj_val.clone()) {
                     if std::env::var("RDS_DEBUG_TAG").is_ok() {
-                        eprintln!(
+                        debug_log!(
                             "[TAG_REF] flags=0x{:08x} idx={} name={}",
                             flags, sym_index, name
                         );
@@ -7678,7 +7687,7 @@ fn parse_pairlist_element(
                         let name = extract_tag_name(sym.clone())
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| "<unknown>".to_string());
-                        eprintln!(
+                        debug_log!(
                             "[TAG_REF] flags=0x{:08x} idx={} name={}",
                             flags, sym_index, name
                         );
@@ -7697,7 +7706,7 @@ fn parse_pairlist_element(
                     let name = extract_tag_name(sym.clone())
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| "<unknown>".to_string());
-                    eprintln!(
+                    debug_log!(
                         "[TAG_REF] flags=0x{:08x} idx={} name={}",
                         flags, sym_index, name
                     );
@@ -7747,7 +7756,7 @@ fn parse_pairlist(
     let mut iterations: usize = 0;
 
     if debug_enabled() {
-        eprintln!(
+        debug_log!(
             "[PAIRLIST] Start parse, has_tag={}, pos={}",
             has_tag,
             cursor.position()
@@ -7777,7 +7786,7 @@ fn parse_pairlist(
         }
         if remaining == 0 {
             if debug_enabled() {
-                eprintln!(
+                debug_log!(
                     "[PAIRLIST_LOOP] No bytes remaining at pos={}, treating as NIL CDR termination",
                     pos
                 );
@@ -7789,7 +7798,7 @@ fn parse_pairlist(
         let flags = cursor.read_u32::<BigEndian>()?;
         let next_type = flags & 0xFF;
         if debug_enabled() {
-            eprintln!(
+            debug_log!(
                 "[PAIRLIST_LOOP] At byte {}: flags=0x{:08x}, type={}",
                 pos, flags, next_type
             );
@@ -7809,7 +7818,7 @@ fn parse_pairlist(
             && !continues_pairlist
             && next_type != REFSXP
         {
-            eprintln!(
+            debug_log!(
                 "[PAIRLIST_TERM] Terminating at {} elements, next_type={}, flags=0x{:08x}",
                 elements.len(),
                 next_type,
@@ -7839,7 +7848,7 @@ fn parse_pairlist(
             // Continue building the pairlist - this is another element
             // The flags are already consumed, so parse_pairlist_element will read the TAG and CAR
             if debug_enabled() {
-                eprintln!(
+                debug_log!(
                     "[PAIRLIST_LOOP] Continuing pairlist, has_tag={}",
                     has_tag_next
                 );
@@ -7873,13 +7882,13 @@ fn parse_pairlist(
                     // INSTRUMENTATION: Check if there's more data after NULL terminator
                     if std::env::var("RDS_DEBUG_PAIRLIST_AFTER_NULL").is_ok() {
                         let remaining = cursor.len().saturating_sub(cursor.position());
-                        eprintln!("[PAIRLIST_AFTER_NULL] {} elements parsed, {} bytes remaining at pos={}",
+                        debug_log!("[PAIRLIST_AFTER_NULL] {} elements parsed, {} bytes remaining at pos={}",
                             elements.len(), remaining, cursor.position());
                         if remaining >= 4 {
                             let pos_save = cursor.position();
                             if let Ok(next_flags) = cursor.read_u32::<BigEndian>() {
                                 let next_type = next_flags & 0xFF;
-                                eprintln!(
+                                debug_log!(
                                     "[PAIRLIST_AFTER_NULL] Next: flags=0x{:08x}, type={}",
                                     next_flags, next_type
                                 );
@@ -7917,9 +7926,9 @@ fn parse_pairlist(
 
     // INSTRUMENTATION: Log all tags in the final pairlist
     if std::env::var("RDS_DEBUG_PAIRLIST_FINAL").is_ok() && !elements.is_empty() {
-        eprintln!("[PAIRLIST_FINAL] Returning {} elements:", elements.len());
+        debug_log!("[PAIRLIST_FINAL] Returning {} elements:", elements.len());
         for (i, elem) in elements.iter().enumerate() {
-            eprintln!("  [{}] tag={:?}", i, elem.tag.as_deref());
+            debug_log!("  [{}] tag={:?}", i, elem.tag.as_deref());
         }
     }
 
@@ -8336,11 +8345,11 @@ fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<
 
     // If we get here, the flags don't contain CHARSXP type
     // This shouldn't happen in a well-formed file - it indicates a parsing error
-    eprintln!("[DEBUG parse_charsxp] Unexpected type:");
-    eprintln!("  Full flags: 0x{:08x}", flags);
-    eprintln!("  Type from bits 0-7: {}", type_from_0_7);
-    eprintln!("  Type from bits 8-15: {}", type_from_8_15);
-    eprintln!("  Position: {}", cursor.position());
+    debug_log!("[DEBUG parse_charsxp] Unexpected type:");
+    debug_log!("  Full flags: 0x{:08x}", flags);
+    debug_log!("  Type from bits 0-7: {}", type_from_0_7);
+    debug_log!("  Type from bits 8-15: {}", type_from_8_15);
+    debug_log!("  Position: {}", cursor.position());
 
     Err(Error::InvalidFormat(format!(
         "Expected CHARSXP ({}), got {} (flags: 0x{:08x})",
@@ -8362,7 +8371,7 @@ fn parse_charsxp_content(
 ) -> Result<String> {
     let pos_before = cursor.position();
     if debug_enabled() {
-        eprintln!("[parse_charsxp_content] Starting at pos {}", pos_before);
+        debug_log!("[parse_charsxp_content] Starting at pos {}", pos_before);
     }
 
     // Check if this uses compact 3-byte length encoding.
@@ -8433,7 +8442,7 @@ fn parse_attributes(attr_obj: RObject, ctx: &mut ParserContext) -> Result<Attrib
             c.set(n);
             n
         });
-        eprintln!(
+        debug_log!(
             "[PARSE_ATTRS_PRE #{}] Received type: {:?}, is_shared={}",
             count,
             std::mem::discriminant(&attr_obj),
@@ -8441,19 +8450,19 @@ fn parse_attributes(attr_obj: RObject, ctx: &mut ParserContext) -> Result<Attrib
         );
         if let RObject::Shared(ref inner) = attr_obj {
             let inner_obj = inner.read().unwrap();
-            eprintln!(
+            debug_log!(
                 "[PARSE_ATTRS_PRE #{}] Shared wraps: {:?}",
                 count,
                 std::mem::discriminant(&*inner_obj)
             );
             if let RObject::Pairlist(ref elems) = *inner_obj {
-                eprintln!(
+                debug_log!(
                     "[PARSE_ATTRS_PRE #{}] Shared->Pairlist with {} elements",
                     count,
                     elems.len()
                 );
             } else if let RObject::Symbol(ref name) = *inner_obj {
-                eprintln!("[PARSE_ATTRS_PRE #{}] Shared->Symbol: '{}'", count, name);
+                debug_log!("[PARSE_ATTRS_PRE #{}] Shared->Symbol: '{}'", count, name);
             }
         }
     }
@@ -8478,7 +8487,7 @@ fn parse_attributes(attr_obj: RObject, ctx: &mut ParserContext) -> Result<Attrib
     }
 
     if debug_enabled() {
-        eprintln!(
+        debug_log!(
             "[PARSE_ATTRS] Received attr_obj type: {:?}",
             std::mem::discriminant(&attr_obj)
         );
@@ -8495,7 +8504,7 @@ fn parse_attributes(attr_obj: RObject, ctx: &mut ParserContext) -> Result<Attrib
         RObject::Pairlist(elements) => {
             // Extract TAG (name) and CAR (value) from each pairlist element
             if debug_enabled() && !elements.is_empty() {
-                eprintln!("[PARSE_ATTRS] Pairlist with {} elements", elements.len());
+                debug_log!("[PARSE_ATTRS] Pairlist with {} elements", elements.len());
             }
             for elem in elements {
                 // SPECIAL CASE: Check if tag_object contains an S4Object
@@ -8514,14 +8523,14 @@ fn parse_attributes(attr_obj: RObject, ctx: &mut ParserContext) -> Result<Attrib
 
                 if let Some(name) = elem.tag {
                     if std::env::var("RDS_DEBUG_ATTR_VALUES").is_ok() {
-                        eprintln!(
+                        debug_log!(
                             "[ATTR_VAL] name='{}' type={:?}",
                             name,
                             std::mem::discriminant(&elem.value)
                         );
                     }
                     if debug_enabled() {
-                        eprintln!(
+                        debug_log!(
                             "[PARSE_ATTRS]   Tag: '{}' -> {:?}",
                             name,
                             std::mem::discriminant(&elem.value)
@@ -8854,7 +8863,7 @@ fn convert_to_s3_object(obj: RObject, mut attributes: Attributes) -> RObject {
 fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
     let debug_s4 = std::env::var("RDS_DEBUG_S4").is_ok();
     if debug_s4 {
-        eprintln!(
+        debug_log!(
             "[S4] starting convert_to_s4_object with attrs: {:?}",
             attributes
                 .attrs
@@ -8876,7 +8885,7 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
             let class_obj = attributes.attrs[idx].1.as_concrete();
 
             if debug_s4 {
-                eprintln!("[S4] class attribute variant: {}", class_obj.variant_name());
+                debug_log!("[S4] class attribute variant: {}", class_obj.variant_name());
             }
 
             match class_obj {
@@ -8913,13 +8922,13 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
                 }
                 RObject::Symbol(ref name) => {
                     if debug_s4 {
-                        eprintln!("[S4] WARNING: class is Symbol: '{}'", name);
+                        debug_log!("[S4] WARNING: class is Symbol: '{}'", name);
                     }
                     (vec![], None)
                 }
                 _ => {
                     if debug_s4 {
-                        eprintln!(
+                        debug_log!(
                             "[S4] WARNING: Unexpected class attribute type: {}",
                             class_obj.variant_name()
                         );
@@ -8943,7 +8952,7 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
     }
 
     if debug_s4 {
-        eprintln!("[S4] extracted class {:?}, package {:?}", class, package);
+        debug_log!("[S4] extracted class {:?}, package {:?}", class, package);
     }
 
     // WORKAROUND: Check if we have an S4Object from a TAG position that matches this class
