@@ -65,4 +65,7 @@ pub enum Error {
 
     #[error("Parse error: {0}")]
     ParseError(String),
+
+    #[error("Streaming parse halted")]
+    StreamingStop,
 }

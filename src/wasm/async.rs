@@ -557,6 +557,9 @@ impl<'a, I: AsyncSequentialInput> SequentialCursor<'a, I> {
             remaining = remaining.saturating_sub(chunk.len());
         }
 
+        // Buffer is empty after skipping; align start position to the new cursor.
+        self.buffer_start_pos = self.position;
+
         Ok(())
     }
 }

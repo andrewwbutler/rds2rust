@@ -120,6 +120,27 @@ pub enum ParseMode {
     },
 }
 
+/// Policy controlling how S4 slot pairlists are handled during lazy parsing.
+///
+/// This is intentionally generic; higher-level callers can provide slot names
+/// appropriate for their domain.
+#[derive(Debug, Clone, Default)]
+pub struct S4SlotPolicy {
+    /// Slot names to skip entirely during lazy parsing.
+    pub skip_slots: Vec<Arc<str>>,
+    /// Slot names to keep when parsing S4 slot pairlists. If empty, all slots
+    /// are kept unless present in `skip_slots`.
+    pub keep_slots: Vec<Arc<str>>,
+    /// Slot names whose values should be captured into overrides during parsing.
+    pub capture_slots: Vec<Arc<str>>,
+    /// Slot names whose values should be captured regardless of context.
+    pub capture_any_slots: Vec<Arc<str>>,
+    /// Tag names that should force small vector materialization in lazy mode.
+    pub materialize_vector_tags: Vec<Arc<str>>,
+    /// Slot names that, once all observed, trigger an early streaming stop.
+    pub stop_after_slots: Vec<Arc<str>>,
+}
+
 /// Structured path for selective loading.
 ///
 /// Uses interned string segments to avoid parsing ambiguity and
@@ -214,6 +235,9 @@ pub struct ParseConfig {
     ///
     /// Only used by helpers that construct `ChunkedRdsSource`.
     pub chunk_size_bytes: Option<usize>,
+
+    /// Policy controlling how S4 slot pairlists are handled in lazy modes.
+    pub s4_slot_policy: S4SlotPolicy,
 }
 
 impl Default for ParseConfig {
@@ -227,6 +251,7 @@ impl Default for ParseConfig {
             memory_budget_bytes: None,
             chunk_cache_max_bytes: None,
             chunk_size_bytes: None,
+            s4_slot_policy: S4SlotPolicy::default(),
         }
     }
 }
@@ -255,6 +280,12 @@ impl ParseConfig {
     /// Set the parsing mode.
     pub fn with_mode(mut self, mode: ParseMode) -> Self {
         self.mode = mode;
+        self
+    }
+
+    /// Set the S4 slot policy used during lazy parsing.
+    pub fn with_s4_slot_policy(mut self, policy: S4SlotPolicy) -> Self {
+        self.s4_slot_policy = policy;
         self
     }
 
@@ -322,6 +353,7 @@ impl ParseConfig {
             memory_budget_bytes: None,
             chunk_cache_max_bytes: None,
             chunk_size_bytes: None,
+            s4_slot_policy: S4SlotPolicy::default(),
         }
     }
 
@@ -338,6 +370,7 @@ impl ParseConfig {
             memory_budget_bytes: None,
             chunk_cache_max_bytes: None,
             chunk_size_bytes: None,
+            s4_slot_policy: S4SlotPolicy::default(),
         }
     }
 
@@ -354,6 +387,7 @@ impl ParseConfig {
             memory_budget_bytes: None,
             chunk_cache_max_bytes: None,
             chunk_size_bytes: None,
+            s4_slot_policy: S4SlotPolicy::default(),
         }
     }
 
@@ -366,6 +400,7 @@ impl ParseConfig {
             lazy_threshold: 0,
             bytecode_lazy_threshold: 0,
             memory_budget_bytes: None,
+            s4_slot_policy: S4SlotPolicy::default(),
             ..Default::default()
         }
     }
@@ -383,6 +418,7 @@ impl ParseConfig {
             memory_budget_bytes: Some(budget_mb * 1024 * 1024),
             chunk_cache_max_bytes: None,
             chunk_size_bytes: None,
+            s4_slot_policy: S4SlotPolicy::default(),
         }
     }
 }
@@ -830,8 +866,8 @@ mod tests {
             crate::RObject::Integer(crate::VectorData::Owned(vec![1])),
         );
         let obj = crate::RObject::S4Object(Box::new(crate::S4ObjectData {
-            class: vec![std::sync::Arc::from("Seurat")],
-            package: Some(std::sync::Arc::from("SeuratObject")),
+            class: vec![std::sync::Arc::from("ExampleClass")],
+            package: Some(std::sync::Arc::from("ExamplePackage")),
             slots,
         }));
         let gzip_bytes = crate::write_rds(&obj).expect("write rds");
@@ -855,8 +891,8 @@ mod tests {
         .into_concrete();
         match parsed {
             crate::RObject::S4Object(s4) => {
-                assert_eq!(s4.class, vec![std::sync::Arc::from("Seurat")]);
-                assert_eq!(s4.package, Some(std::sync::Arc::from("SeuratObject")));
+                assert_eq!(s4.class, vec![std::sync::Arc::from("ExampleClass")]);
+                assert_eq!(s4.package, Some(std::sync::Arc::from("ExamplePackage")));
             }
             other => panic!("unexpected object: {:?}", other),
         }

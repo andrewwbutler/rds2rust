@@ -11,7 +11,7 @@ fn assert_dimnames_list(obj: &RObject, visited_shared: &mut HashSet<usize>, chec
                 matches!(
                     *c,
                     "dgCMatrix" | "CsparseMatrix" | "sparseMatrix" | "generalMatrix" | "dMatrix"
-                ) || c.contains("Graph")
+                ) || c.contains("Network")
             });
             let has_sparse_slots = is_sparse_class
                 && data.slots.contains_key(&Arc::from("Dimnames"))
