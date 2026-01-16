@@ -27,7 +27,11 @@ macro_rules! debug_log {
     ($($arg:tt)*) => {{
         #[cfg(feature = "debug-logging")]
         {
-            debug_log!($($arg)*);
+            eprintln!($($arg)*);
+        }
+        #[cfg(not(feature = "debug-logging"))]
+        {
+            let _ = format_args!($($arg)*);
         }
     }};
 }
@@ -161,7 +165,10 @@ fn ensure_bytes_available(cursor: &RdsCursor<'_>, needed: usize, context: &str) 
         if debug_enabled() {
             debug_log!(
                 "[ENSURE_BYTES] EOF at pos={}, needed={}, available={}, ctx={}",
-                pos, needed, available, context
+                pos,
+                needed,
+                available,
+                context
             );
         }
         return Err(Error::UnexpectedEofDetail {
@@ -177,6 +184,7 @@ fn ensure_bytes_available(cursor: &RdsCursor<'_>, needed: usize, context: &str) 
 const MAX_VECTOR_LENGTH: usize = 50_000_000;
 #[allow(dead_code)]
 const MAX_ALLOCATION_BYTES: usize = 128 * 1024 * 1024;
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 const MAX_FORCE_MATERIALIZE_VECTOR_LEN: usize = 100_000;
 
 /// Parser context holding configuration and state
@@ -186,6 +194,7 @@ struct ParserContext {
     mode: crate::ParseMode,
     lazy_threshold: usize,
     bytecode_lazy_threshold: usize,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     s4_slot_policy: crate::S4SlotPolicy,
     /// True when parsing bytecode constants (use bytecode_lazy_threshold)
     in_bytecode_context: bool,
@@ -195,11 +204,17 @@ struct ParserContext {
     parsing_attributes: bool,
     parsing_closure_body: bool,
     parsing_s4_tag: bool,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     parsing_pairlist_root: bool,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     suppress_ref_tracking: bool,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     stop_streaming: bool,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     force_materialize_vector: bool,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     lenient_skip_vectors: bool,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     s4_slot_overrides: IndexMap<Arc<str>, RObject>,
 }
 
@@ -1170,10 +1185,7 @@ where
         .await;
     }
     if cursor.total_len().is_none()
-        && matches!(
-            sexp_type,
-            INTSXP | REALSXP | LGLSXP | RAWSXP | CPLXSXP
-        )
+        && matches!(sexp_type, INTSXP | REALSXP | LGLSXP | RAWSXP | CPLXSXP)
     {
         match std::pin::Pin::from(Box::new(try_parse_large_vector_streaming_async(
             ctx,
@@ -2068,11 +2080,14 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
         None
     };
 
-    let early_attributes = if has_attr
-        && matches!(sexp_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP)
+    let early_attributes = if has_attr && matches!(sexp_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP)
     {
         let attr_obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-            ctx, cursor, ref_table, symbol_table, dedup_table,
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
         )))
         .await?;
         Some(parse_attributes(attr_obj, ctx)?)
@@ -2082,15 +2097,27 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
 
     if sexp_type == ALTREP_SXP {
         let class_info = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-            ctx, cursor, ref_table, symbol_table, dedup_table,
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
         )))
         .await?;
         let state = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-            ctx, cursor, ref_table, symbol_table, dedup_table,
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
         )))
         .await?;
         let attributes_obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-            ctx, cursor, ref_table, symbol_table, dedup_table,
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
         )))
         .await?;
 
@@ -2111,11 +2138,9 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
 
         if let Some(index) = ref_index {
             ref_table.update(index, final_obj);
-            return Ok(RObject::Shared(
-                ref_table
-                    .get(index)
-                    .ok_or_else(|| Error::InvalidFormat(format!("Missing ref idx {}", index)))?,
-            ));
+            return Ok(RObject::Shared(ref_table.get(index).ok_or_else(|| {
+                Error::InvalidFormat(format!("Missing ref idx {}", index))
+            })?));
         }
 
         return Ok(final_obj);
@@ -2135,7 +2160,11 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                     Arc::from("NA")
                 }
             } else if name_type_from_0_7 == CHARSXP || name_type_from_8_15 == CHARSXP {
-                Arc::from(parse_charsxp_content_async(ctx, cursor, name_flags).await?.as_str())
+                Arc::from(
+                    parse_charsxp_content_async(ctx, cursor, name_flags)
+                        .await?
+                        .as_str(),
+                )
             } else {
                 Arc::from("NA")
             };
@@ -2295,7 +2324,12 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
         }
         CPLXSXP => {
             let length = read_u32_async(cursor).await? as usize;
-            guard_allocation_common(ctx, length, std::mem::size_of::<Complex>(), "complex vector")?;
+            guard_allocation_common(
+                ctx,
+                length,
+                std::mem::size_of::<Complex>(),
+                "complex vector",
+            )?;
             let offset = cursor.position();
             let byte_len = length * std::mem::size_of::<Complex>();
             if matches!(ctx.mode, crate::ParseMode::LazyMetadata)
@@ -2332,10 +2366,7 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             }
             #[cfg(target_arch = "wasm32")]
             if sequential_debug_enabled() && ctx.parsing_s4_tag {
-                let msg = format!(
-                    "seq vecsxp start pos={} length={}",
-                    start_pos, length
-                );
+                let msg = format!("seq vecsxp start pos={} length={}", start_pos, length);
                 web_sys::console::debug_1(&JsValue::from_str(&msg));
             }
             #[cfg(target_arch = "wasm32")]
@@ -2350,7 +2381,11 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             let mut values = Vec::with_capacity(length);
             for idx in 0..length {
                 let value = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-                    ctx, cursor, ref_table, symbol_table, dedup_table,
+                    ctx,
+                    cursor,
+                    ref_table,
+                    symbol_table,
+                    dedup_table,
                 )))
                 .await?;
                 #[cfg(target_arch = "wasm32")]
@@ -2466,15 +2501,16 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             ctx.parsing_pairlist_root = true;
         }
         let attr_obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-            ctx, cursor, ref_table, symbol_table, dedup_table,
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
         )))
         .await?;
         #[cfg(target_arch = "wasm32")]
         if sequential_debug_enabled() && sexp_type == S4SXP {
-            let mut msg = format!(
-                "seq value S4 attr_obj type={}",
-                object_type_name(&attr_obj)
-            );
+            let mut msg = format!("seq value S4 attr_obj type={}", object_type_name(&attr_obj));
             if let RObject::Pairlist(ref elems) = attr_obj {
                 let tags: Vec<_> = elems
                     .iter()
@@ -2623,7 +2659,11 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
                 Arc::from("NA")
             }
         } else if name_type_from_0_7 == CHARSXP || name_type_from_8_15 == CHARSXP {
-            Arc::from(parse_charsxp_content_async(ctx, cursor, name_flags).await?.as_str())
+            Arc::from(
+                parse_charsxp_content_async(ctx, cursor, name_flags)
+                    .await?
+                    .as_str(),
+            )
         } else {
             Arc::from("NA")
         };
@@ -2652,7 +2692,11 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
     }
 
     let obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-        ctx, cursor, ref_table, symbol_table, dedup_table,
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
     )))
     .await?;
     #[cfg(target_arch = "wasm32")]
@@ -2689,17 +2733,18 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
     let mut stop_seen = vec![false; stop_tags.len()];
     #[cfg(target_arch = "wasm32")]
     if sequential_debug_enabled() && force_s4_tag {
-        let msg = format!(
-            "seq pairlist S4 tag parse start pos={}",
-            cursor.position()
-        );
+        let msg = format!("seq pairlist S4 tag parse start pos={}", cursor.position());
         web_sys::console::debug_1(&JsValue::from_str(&msg));
     }
 
     loop {
         let (tag, tag_obj) = if has_tag_current || force_s4_tag {
             std::pin::Pin::from(Box::new(parse_tag_sequential_value_async(
-                ctx, cursor, ref_table, symbol_table, dedup_table,
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
             )))
             .await?
         } else {
@@ -2712,8 +2757,9 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
             && !stop_tags.is_empty()
         {
             if let Some(tag_name) = tag.as_deref() {
-                if let Some(index) =
-                    stop_tags.iter().position(|entry| entry.as_ref() == tag_name)
+                if let Some(index) = stop_tags
+                    .iter()
+                    .position(|entry| entry.as_ref() == tag_name)
                 {
                     stop_seen[index] = true;
                 }
@@ -2825,24 +2871,40 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
         }
         let value = if ctx.mode == crate::ParseMode::LazyMetadata && skip_slot {
             std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
-                ctx, cursor, ref_table, symbol_table, dedup_table,
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
             )))
             .await?
         } else if force_s4_tag && ctx.mode == crate::ParseMode::LazyMetadata {
             if keep_slot {
                 std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-                    ctx, cursor, ref_table, symbol_table, dedup_table,
+                    ctx,
+                    cursor,
+                    ref_table,
+                    symbol_table,
+                    dedup_table,
                 )))
                 .await?
             } else {
                 std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
-                    ctx, cursor, ref_table, symbol_table, dedup_table,
+                    ctx,
+                    cursor,
+                    ref_table,
+                    symbol_table,
+                    dedup_table,
                 )))
                 .await?
             }
         } else {
             std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-                ctx, cursor, ref_table, symbol_table, dedup_table,
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
             )))
             .await?
         };
@@ -2857,9 +2919,8 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
         #[cfg(target_arch = "wasm32")]
         if ctx.mode == crate::ParseMode::LazyMetadata {
             let capture_any = should_capture_any_slot(ctx, &tag);
-            let capture_slot = force_s4_tag
-                && ctx.parsing_pairlist_root
-                && should_capture_s4_slot(ctx, &tag);
+            let capture_slot =
+                force_s4_tag && ctx.parsing_pairlist_root && should_capture_s4_slot(ctx, &tag);
             if capture_any || capture_slot {
                 if let Some(name) = tag.as_deref() {
                     ctx.s4_slot_overrides
@@ -2887,10 +2948,7 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
             let value_delta = value_end.saturating_sub(value_start);
             let msg = format!(
                 "seq pairlist S4 tag element tag='{}' value_type={:?} pos={} delta={}",
-                debug_tag_name,
-                debug_value_type,
-                value_end,
-                value_delta
+                debug_tag_name, debug_value_type, value_end, value_delta
             );
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
@@ -2912,7 +2970,11 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
         let first_byte = cursor.as_sync_slice(1)?[0];
         if first_byte >= 240 {
             let _ = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-                ctx, cursor, ref_table, symbol_table, dedup_table,
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
             )))
             .await?;
             break;
@@ -2923,19 +2985,19 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
         let flags = reader.read_u32::<BigEndian>()?;
         let type_from_8_15 = (flags >> 8) & 0xFF;
         let type_from_0_7 = flags & 0xFF;
-        let next_type =
-            if type_from_0_7 == REFSXP || (2..=S4SXP).contains(&type_from_0_7) || type_from_0_7 == 1
-            {
-                type_from_0_7
-            } else if type_from_0_7 == 0 && type_from_8_15 >= 2 {
-                type_from_8_15
-            } else {
-                type_from_0_7
-            };
+        let next_type = if type_from_0_7 == REFSXP
+            || (2..=S4SXP).contains(&type_from_0_7)
+            || type_from_0_7 == 1
+        {
+            type_from_0_7
+        } else if type_from_0_7 == 0 && type_from_8_15 >= 2 {
+            type_from_8_15
+        } else {
+            type_from_0_7
+        };
         let has_tag_next = (flags & HAS_TAG_BIT) != 0;
-        let is_tagless_s4_next = force_s4_tag
-            && ctx.parsing_pairlist_root
-            && matches!(next_type, SYMSXP | CHARSXP);
+        let is_tagless_s4_next =
+            force_s4_tag && ctx.parsing_pairlist_root && matches!(next_type, SYMSXP | CHARSXP);
         let continues_pairlist = has_tag_next
             || matches!(next_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP)
             || is_tagless_s4_next;
@@ -2944,10 +3006,7 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
         if sequential_debug_enabled() {
             let msg = format!(
                 "seq pairlist next flags=0x{:08x} next_type={} has_tag_next={} continues={}",
-                flags,
-                next_type,
-                has_tag_next,
-                continues_pairlist
+                flags, next_type, has_tag_next, continues_pairlist
             );
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
@@ -2969,7 +3028,11 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
                 web_sys::console::debug_1(&JsValue::from_str(&msg));
             }
             let referenced = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-                ctx, cursor, ref_table, symbol_table, dedup_table,
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
             )))
             .await?;
             match referenced.into_concrete() {
@@ -2996,7 +3059,11 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
             continue;
         } else {
             let referenced = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-                ctx, cursor, ref_table, symbol_table, dedup_table,
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
             )))
             .await?;
             match referenced.into_concrete() {
@@ -3052,11 +3119,14 @@ async fn skip_pairlist_sequential_value_async<C: AsyncCursor>(
     loop {
         let mut tag_name: Option<Arc<str>> = None;
         if has_tag_current {
-            let (tag, _tag_obj) =
-                std::pin::Pin::from(Box::new(parse_tag_sequential_value_async(
-                    ctx, cursor, ref_table, symbol_table, dedup_table,
-                )))
-                .await?;
+            let (tag, _tag_obj) = std::pin::Pin::from(Box::new(parse_tag_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
             tag_name = tag;
         }
 
@@ -3067,7 +3137,11 @@ async fn skip_pairlist_sequential_value_async<C: AsyncCursor>(
                 ctx.force_materialize_vector = true;
                 ctx.mode = crate::ParseMode::Full;
                 let value = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-                    ctx, cursor, ref_table, symbol_table, dedup_table,
+                    ctx,
+                    cursor,
+                    ref_table,
+                    symbol_table,
+                    dedup_table,
                 )))
                 .await?;
                 ctx.mode = prev_mode;
@@ -3079,13 +3153,21 @@ async fn skip_pairlist_sequential_value_async<C: AsyncCursor>(
                 }
             } else {
                 let _ = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
-                    ctx, cursor, ref_table, symbol_table, dedup_table,
+                    ctx,
+                    cursor,
+                    ref_table,
+                    symbol_table,
+                    dedup_table,
                 )))
                 .await?;
             }
         } else {
             let _ = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
-                ctx, cursor, ref_table, symbol_table, dedup_table,
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
             )))
             .await?;
         }
@@ -3094,7 +3176,11 @@ async fn skip_pairlist_sequential_value_async<C: AsyncCursor>(
         let first_byte = cursor.as_sync_slice(1)?[0];
         if first_byte >= 240 {
             let _ = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
-                ctx, cursor, ref_table, symbol_table, dedup_table,
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
             )))
             .await?;
             break;
@@ -3106,22 +3192,27 @@ async fn skip_pairlist_sequential_value_async<C: AsyncCursor>(
         let flags = reader.read_u32::<BigEndian>()?;
         let type_from_8_15 = (flags >> 8) & 0xFF;
         let type_from_0_7 = flags & 0xFF;
-        let next_type =
-            if type_from_0_7 == REFSXP || (2..=S4SXP).contains(&type_from_0_7) || type_from_0_7 == 1
-            {
-                type_from_0_7
-            } else if type_from_0_7 == 0 && type_from_8_15 >= 2 {
-                type_from_8_15
-            } else {
-                type_from_0_7
-            };
+        let next_type = if type_from_0_7 == REFSXP
+            || (2..=S4SXP).contains(&type_from_0_7)
+            || type_from_0_7 == 1
+        {
+            type_from_0_7
+        } else if type_from_0_7 == 0 && type_from_8_15 >= 2 {
+            type_from_8_15
+        } else {
+            type_from_0_7
+        };
         let has_tag_next = (flags & HAS_TAG_BIT) != 0;
         let continues_pairlist =
             has_tag_next || matches!(next_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP);
 
         if next_type == REFSXP {
             let _ = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
-                ctx, cursor, ref_table, symbol_table, dedup_table,
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
             )))
             .await?;
             break;
@@ -3131,7 +3222,11 @@ async fn skip_pairlist_sequential_value_async<C: AsyncCursor>(
             continue;
         } else {
             let _ = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
-                ctx, cursor, ref_table, symbol_table, dedup_table,
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
             )))
             .await?;
             break;
@@ -3189,11 +3284,14 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
         None
     };
 
-    let early_attributes = if has_attr
-        && matches!(sexp_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP)
+    let early_attributes = if has_attr && matches!(sexp_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP)
     {
         let attr_obj = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
-            ctx, cursor, ref_table, symbol_table, dedup_table,
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
         )))
         .await?;
         Some(parse_attributes(attr_obj, ctx)?)
@@ -3203,15 +3301,27 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
 
     if sexp_type == ALTREP_SXP {
         let class_info = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
-            ctx, cursor, ref_table, symbol_table, dedup_table,
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
         )))
         .await?;
         let state = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
-            ctx, cursor, ref_table, symbol_table, dedup_table,
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
         )))
         .await?;
         let attributes_obj = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
-            ctx, cursor, ref_table, symbol_table, dedup_table,
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
         )))
         .await?;
 
@@ -3232,11 +3342,9 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
 
         if let Some(index) = ref_index {
             ref_table.update(index, final_obj.clone());
-            return Ok(RObject::Shared(
-                ref_table
-                    .get(index)
-                    .ok_or_else(|| Error::InvalidFormat(format!("Missing ref idx {}", index)))?,
-            ));
+            return Ok(RObject::Shared(ref_table.get(index).ok_or_else(|| {
+                Error::InvalidFormat(format!("Missing ref idx {}", index))
+            })?));
         }
 
         return Ok(final_obj);
@@ -3258,7 +3366,11 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
                     Arc::from("NA")
                 }
             } else if name_type_from_0_7 == CHARSXP || name_type_from_8_15 == CHARSXP {
-                Arc::from(parse_charsxp_content_async(ctx, cursor, name_flags).await?.as_str())
+                Arc::from(
+                    parse_charsxp_content_async(ctx, cursor, name_flags)
+                        .await?
+                        .as_str(),
+                )
             } else {
                 Arc::from("NA")
             };
@@ -3321,12 +3433,7 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
         INTSXP => {
             let length = read_u32_async(cursor).await? as usize;
             if ctx.lenient_skip_vectors {
-                guard_skip_allocation(
-                    length,
-                    std::mem::size_of::<i32>(),
-                    cursor,
-                    "int vector",
-                )?;
+                guard_skip_allocation(length, std::mem::size_of::<i32>(), cursor, "int vector")?;
             } else {
                 guard_allocation_common(ctx, length, std::mem::size_of::<i32>(), "int vector")?;
             }
@@ -3349,12 +3456,7 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
         REALSXP => {
             let length = read_u32_async(cursor).await? as usize;
             if ctx.lenient_skip_vectors {
-                guard_skip_allocation(
-                    length,
-                    std::mem::size_of::<f64>(),
-                    cursor,
-                    "real vector",
-                )?;
+                guard_skip_allocation(length, std::mem::size_of::<f64>(), cursor, "real vector")?;
             } else {
                 guard_allocation_common(ctx, length, std::mem::size_of::<f64>(), "real vector")?;
             }
@@ -3459,12 +3561,20 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
                 let value_start = cursor.position();
                 let value = if ctx.mode == crate::ParseMode::LazyMetadata {
                     std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
-                        ctx, cursor, ref_table, symbol_table, dedup_table,
+                        ctx,
+                        cursor,
+                        ref_table,
+                        symbol_table,
+                        dedup_table,
                     )))
                     .await?
                 } else {
                     std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-                        ctx, cursor, ref_table, symbol_table, dedup_table,
+                        ctx,
+                        cursor,
+                        ref_table,
+                        symbol_table,
+                        dedup_table,
                     )))
                     .await?
                 };
@@ -3546,12 +3656,20 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
         }
         let attr_obj = if sexp_type == S4SXP {
             std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-                ctx, cursor, ref_table, symbol_table, dedup_table,
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
             )))
             .await?
         } else {
             std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
-                ctx, cursor, ref_table, symbol_table, dedup_table,
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
             )))
             .await?
         };
@@ -5010,10 +5128,7 @@ where
 {
     #[cfg(target_arch = "wasm32")]
     {
-        let msg = format!(
-            "sequential tag parse start pos={}",
-            cursor.position()
-        );
+        let msg = format!("sequential tag parse start pos={}", cursor.position());
         web_sys::console::debug_1(&JsValue::from_str(&msg));
     }
     let flags = read_u32_async(cursor)
@@ -5064,10 +5179,7 @@ where
     if sexp_type == SYMSXP {
         #[cfg(target_arch = "wasm32")]
         {
-            let msg = format!(
-                "sequential tag SYMSXP at pos={}",
-                cursor.position()
-            );
+            let msg = format!("sequential tag SYMSXP at pos={}", cursor.position());
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
         let name_flags = read_u32_async(cursor)
@@ -5141,10 +5253,7 @@ where
     if sexp_type == CHARSXP {
         #[cfg(target_arch = "wasm32")]
         {
-            let msg = format!(
-                "sequential tag CHARSXP at pos={}",
-                cursor.position()
-            );
+            let msg = format!("sequential tag CHARSXP at pos={}", cursor.position());
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
         let has_attr = (flags & HAS_ATTR_BIT) != 0;
@@ -7078,7 +7187,9 @@ fn parse_list(
         let remaining = cursor.len().saturating_sub(cursor.position());
         debug_log!(
             "[PARSE_LIST] At pos={}, length={}, remaining bytes={}",
-            pos_before_length, length, remaining
+            pos_before_length,
+            length,
+            remaining
         );
     }
 
@@ -7091,7 +7202,10 @@ fn parse_list(
         if debug_enabled() {
             debug_log!(
                 "[PARSE_LIST] Parsing element {}/{} at pos={}, remaining={}",
-                i, length, pos, remaining
+                i,
+                length,
+                pos,
+                remaining
             );
         }
         if remaining == 0 {
@@ -7650,7 +7764,9 @@ fn parse_pairlist_element(
                             .unwrap_or_else(|| "<unknown>".to_string());
                         debug_log!(
                             "[TAG_REF] flags=0x{:08x} idx={} name={}",
-                            flags, sym_index, name
+                            flags,
+                            sym_index,
+                            name
                         );
                     }
                     sym.clone()
@@ -7678,7 +7794,9 @@ fn parse_pairlist_element(
                     if std::env::var("RDS_DEBUG_TAG").is_ok() {
                         debug_log!(
                             "[TAG_REF] flags=0x{:08x} idx={} name={}",
-                            flags, sym_index, name
+                            flags,
+                            sym_index,
+                            name
                         );
                     }
                     obj_val
@@ -7689,7 +7807,9 @@ fn parse_pairlist_element(
                             .unwrap_or_else(|| "<unknown>".to_string());
                         debug_log!(
                             "[TAG_REF] flags=0x{:08x} idx={} name={}",
-                            flags, sym_index, name
+                            flags,
+                            sym_index,
+                            name
                         );
                     }
                     sym.clone()
@@ -7708,7 +7828,9 @@ fn parse_pairlist_element(
                         .unwrap_or_else(|| "<unknown>".to_string());
                     debug_log!(
                         "[TAG_REF] flags=0x{:08x} idx={} name={}",
-                        flags, sym_index, name
+                        flags,
+                        sym_index,
+                        name
                     );
                 }
                 sym.clone()
@@ -7800,7 +7922,9 @@ fn parse_pairlist(
         if debug_enabled() {
             debug_log!(
                 "[PAIRLIST_LOOP] At byte {}: flags=0x{:08x}, type={}",
-                pos, flags, next_type
+                pos,
+                flags,
+                next_type
             );
         }
 
@@ -7890,7 +8014,8 @@ fn parse_pairlist(
                                 let next_type = next_flags & 0xFF;
                                 debug_log!(
                                     "[PAIRLIST_AFTER_NULL] Next: flags=0x{:08x}, type={}",
-                                    next_flags, next_type
+                                    next_flags,
+                                    next_type
                                 );
                                 cursor.set_position(pos_save);
                             }

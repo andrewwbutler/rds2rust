@@ -26,3 +26,6 @@ js-sys = "0.3"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
+
+[features]
+debug-logging = []

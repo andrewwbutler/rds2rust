@@ -19,7 +19,11 @@ macro_rules! debug_log {
     ($($arg:tt)*) => {{
         #[cfg(feature = "debug-logging")]
         {
-            debug_log!($($arg)*);
+            eprintln!($($arg)*);
+        }
+        #[cfg(not(feature = "debug-logging"))]
+        {
+            let _ = format_args!($($arg)*);
         }
     }};
 }
@@ -1449,7 +1453,10 @@ fn write_pairlist_internal<W: Write>(
             if debug_pairlist {
                 debug_log!(
                     "[PAIRLIST] elem[{}] TAG='{}' (before write: obj_idx={}, sym_idx={})",
-                    i, tag, ref_table.next_index, ref_table.next_symbol_index
+                    i,
+                    tag,
+                    ref_table.next_index,
+                    ref_table.next_symbol_index
                 );
             }
 
@@ -1476,7 +1483,10 @@ fn write_pairlist_internal<W: Write>(
             if debug_pairlist {
                 debug_log!(
                     "[PAIRLIST] elem[{}] TAG='{}' (after write: obj_idx={}, sym_idx={})",
-                    i, tag, ref_table.next_index, ref_table.next_symbol_index
+                    i,
+                    tag,
+                    ref_table.next_index,
+                    ref_table.next_symbol_index
                 );
             }
         }
