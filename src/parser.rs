@@ -2006,9 +2006,14 @@ where
                 cursor.advance(sync_cursor.position())?;
                 return Ok(value);
             }
-            Err(Error::UnexpectedEof)
-            | Err(Error::UnexpectedEofDetail { .. })
-            | Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+            Err(Error::UnexpectedEof) | Err(Error::UnexpectedEofDetail { .. }) => {
+                if size >= max_size {
+                    return result;
+                }
+                size = std::cmp::min(max_size, size.saturating_mul(2));
+                continue;
+            }
+            Err(Error::Io(ref err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
                 if size >= max_size {
                     return result;
                 }
