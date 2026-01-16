@@ -1148,6 +1148,7 @@ async fn parse_object_async(
         let symbol_checkpoint = symbol_table.checkpoint();
         let dedup_checkpoint = dedup_table.checkpoint();
 
+        ctx.streaming_parse_mode = true;
         let result = parse_object(ctx, &mut sync_cursor, ref_table, symbol_table, dedup_table);
 
         match result {
@@ -1952,6 +1953,7 @@ where
     if has_attr {
         let prev = ctx.parsing_attributes;
         ctx.parsing_attributes = true;
+        ctx.streaming_parse_mode = true;
         let attr_obj = parse_with_sync_cursor_retry(cursor, 4096, cursor.max_buffer_size(), |c| {
             parse_object(ctx, c, ref_table, symbol_table, dedup_table)
         })
