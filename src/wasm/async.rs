@@ -174,7 +174,21 @@ impl<'a> AsyncBufferedCursor<'a> {
     }
 
     pub fn total_len(&self) -> Option<u64> {
-        self.source.len()
+        let total = self.source.len();
+
+        // DEBUG: Log what AsyncBufferedCursor is returning
+        #[cfg(target_arch = "wasm32")]
+        {
+            use wasm_bindgen::JsValue;
+            let msg = match total {
+                Some(size) => format!("[RUST DEBUG] AsyncBufferedCursor::total_len() returning {} bytes ({:.2} GB)",
+                                     size, size as f64 / (1024.0 * 1024.0 * 1024.0)),
+                None => "[RUST DEBUG] AsyncBufferedCursor::total_len() returning None".to_string(),
+            };
+            web_sys::console::log_1(&JsValue::from_str(&msg));
+        }
+
+        total
     }
 
     pub fn buffer_size(&self) -> usize {

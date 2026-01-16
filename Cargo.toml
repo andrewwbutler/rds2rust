@@ -5,6 +5,9 @@ edition = "2021"
 license = "MIT"
 description = "A pure Rust library for reading and writing R's RDS (R Data Serialization) files without requiring an R runtime."
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 byteorder = "1.5"
 thiserror = "2.0"

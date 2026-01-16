@@ -440,8 +440,21 @@ fn guard_skip_allocation<C: AsyncCursor>(
         Error::InvalidFormat(format!("Length overflow while parsing {}", context))
     })?;
     if let Some(total) = cursor.total_len() {
-        let remaining = total.saturating_sub(cursor.position());
+        let position = cursor.position();
+        let remaining = total.saturating_sub(position);
         let needed_u64 = u64::try_from(needed).unwrap_or(u64::MAX);
+
+        // DEBUG: Log the guard check values
+        {
+            use wasm_bindgen::JsValue;
+            let msg = format!("[RUST DEBUG] guard_skip_allocation: context={}, total={} ({:.2} GB), position={} ({:.2} MB), remaining={} ({:.2} MB), needed={}",
+                             context, total, total as f64 / (1024.0 * 1024.0 * 1024.0),
+                             position, position as f64 / (1024.0 * 1024.0),
+                             remaining, remaining as f64 / (1024.0 * 1024.0),
+                             needed);
+            web_sys::console::log_1(&JsValue::from_str(&msg));
+        }
+
         if needed_u64 > remaining.saturating_add(16) {
             return Err(Error::InvalidFormat(format!(
                 "Length {} ({} bytes) exceeds remaining {} bytes while parsing {}",
