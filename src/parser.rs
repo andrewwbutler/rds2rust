@@ -2006,7 +2006,9 @@ where
                 cursor.advance(sync_cursor.position())?;
                 return Ok(value);
             }
-            Err(Error::UnexpectedEof) | Err(Error::UnexpectedEofDetail { .. }) => {
+            Err(Error::UnexpectedEof)
+            | Err(Error::UnexpectedEofDetail { .. })
+            | Err(Error::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
                 if size >= max_size {
                     return result;
                 }
