@@ -1169,6 +1169,17 @@ async fn parse_object_async(
                 size = std::cmp::min(max_size, size.saturating_mul(2));
                 continue;
             }
+            Err(Error::Io(ref err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                ctx.restore(ctx_snapshot);
+                ref_table.rollback(ref_checkpoint);
+                symbol_table.rollback(symbol_checkpoint);
+                dedup_table.rollback(dedup_checkpoint);
+                if size >= max_size {
+                    return result;
+                }
+                size = std::cmp::min(max_size, size.saturating_mul(2));
+                continue;
+            }
             Err(Error::InvalidFormat(message))
                 if message.contains("exceeds remaining") && size < max_size =>
             {
@@ -1314,6 +1325,18 @@ where
             Err(StreamingError::Visitor(err)) => return Err(StreamingError::Visitor(err)),
             Err(StreamingError::Parse(Error::UnexpectedEof))
             | Err(StreamingError::Parse(Error::UnexpectedEofDetail { .. })) => {
+                ctx.restore(ctx_snapshot);
+                ref_table.rollback(ref_checkpoint);
+                symbol_table.rollback(symbol_checkpoint);
+                dedup_table.rollback(dedup_checkpoint);
+                if size >= max_size {
+                    return result;
+                }
+                size = std::cmp::min(max_size, size.saturating_mul(2));
+            }
+            Err(StreamingError::Parse(Error::Io(ref err)))
+                if err.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
                 ctx.restore(ctx_snapshot);
                 ref_table.rollback(ref_checkpoint);
                 symbol_table.rollback(symbol_checkpoint);
