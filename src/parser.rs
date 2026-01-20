@@ -1170,6 +1170,11 @@ async fn parse_object_async(
                 continue;
             }
             Err(Error::Io(ref err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let msg = format!("IO UnexpectedEof caught, retrying with larger buffer: {} -> {}", size, size.saturating_mul(2).min(max_size));
+                    web_sys::console::debug_1(&wasm_bindgen::JsValue::from_str(&msg));
+                }
                 ctx.restore(ctx_snapshot);
                 ref_table.rollback(ref_checkpoint);
                 symbol_table.rollback(symbol_checkpoint);
