@@ -5070,6 +5070,9 @@ fn emit_parsed_object_streaming<V: RdsVisitor>(
                 }
             }
             RObject::WithAttributes { object, attributes } => {
+                visitor
+                    .on_attributes(path, attributes)
+                    .map_err(StreamingError::Visitor)?;
                 emit_attribute_values_streaming(attributes, path, visitor)?;
                 emit_parsed_object_streaming(object, path, visitor)?;
             }
@@ -5140,12 +5143,22 @@ fn emit_parsed_object_streaming<V: RdsVisitor>(
                 path.pop();
             }
             RObject::S3Object(data) => {
+                visitor
+                    .on_attributes(path, &data.attributes)
+                    .map_err(StreamingError::Visitor)?;
                 emit_attribute_values_streaming(&data.attributes, path, visitor)?;
                 path.push(Arc::from("base"));
                 emit_parsed_object_streaming(&data.base, path, visitor)?;
                 path.pop();
             }
             RObject::S4Object(data) => {
+                let mut attrs = Attributes::new();
+                for (name, slot) in data.slots.iter() {
+                    attrs.insert(Arc::clone(name), slot.clone());
+                }
+                visitor
+                    .on_attributes(path, &attrs)
+                    .map_err(StreamingError::Visitor)?;
                 for (name, slot) in data.slots.iter() {
                     path.push(Arc::clone(name));
                     emit_parsed_object_streaming(slot, path, visitor)?;
