@@ -6802,9 +6802,8 @@ fn parse_integer_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> 
         let elem_size = std::mem::size_of::<i32>();
         let byte_len = (length * elem_size) as u64;
 
-        // Skip the data
-        let mut buf = vec![0u8; length * elem_size];
-        cursor.read_exact(&mut buf)?;
+        // Skip the data by seeking forward instead of reading into a buffer
+        cursor.set_position(cursor.position() + byte_len);
 
         return Ok(RObject::Integer(VectorData::Lazy(LazyVector {
             length,
@@ -6843,9 +6842,8 @@ fn parse_real_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Res
         let elem_size = std::mem::size_of::<f64>();
         let byte_len = (length * elem_size) as u64;
 
-        // Skip the data
-        let mut buf = vec![0u8; length * elem_size];
-        cursor.read_exact(&mut buf)?;
+        // Skip the data by seeking forward instead of reading into a buffer
+        cursor.set_position(cursor.position() + byte_len);
 
         return Ok(RObject::Real(VectorData::Lazy(LazyVector {
             length,
@@ -6884,9 +6882,8 @@ fn parse_logical_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> 
         let elem_size = std::mem::size_of::<i32>(); // Logicals are stored as i32
         let byte_len = (length * elem_size) as u64;
 
-        // Skip the data
-        let mut buf = vec![0u8; length * elem_size];
-        cursor.read_exact(&mut buf)?;
+        // Skip the data by seeking forward instead of reading into a buffer
+        cursor.set_position(cursor.position() + byte_len);
 
         return Ok(RObject::Logical(VectorData::Lazy(LazyVector {
             length,
@@ -7147,9 +7144,8 @@ fn parse_raw_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Resu
         let offset = cursor.position();
         let byte_len = length as u64;
 
-        // Skip the data
-        let mut buf = vec![0u8; length];
-        cursor.read_exact(&mut buf)?;
+        // Skip the data by seeking forward instead of reading into a buffer
+        cursor.set_position(cursor.position() + byte_len);
 
         return Ok(RObject::Raw(VectorData::Lazy(LazyVector {
             length,
@@ -7187,9 +7183,8 @@ fn parse_complex_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> 
         let elem_size = std::mem::size_of::<Complex>(); // 2 * f64 = 16 bytes
         let byte_len = (length * elem_size) as u64;
 
-        // Skip the data
-        let mut buf = vec![0u8; length * elem_size];
-        cursor.read_exact(&mut buf)?;
+        // Skip the data by seeking forward instead of reading into a buffer
+        cursor.set_position(cursor.position() + byte_len);
 
         return Ok(RObject::Complex(VectorData::Lazy(LazyVector {
             length,
