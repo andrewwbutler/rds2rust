@@ -239,6 +239,8 @@ struct ParserContext {
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     streaming_parse_mode: bool,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    async_parse_mode: bool,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     s4_slot_overrides: IndexMap<Arc<str>, RObject>,
 }
 
@@ -256,6 +258,7 @@ struct ParserContextSnapshot {
     force_materialize_vector: bool,
     lenient_skip_vectors: bool,
     streaming_parse_mode: bool,
+    async_parse_mode: bool,
     s4_slot_overrides: IndexMap<Arc<str>, RObject>,
 }
 
@@ -280,6 +283,7 @@ impl ParserContext {
             force_materialize_vector: false,
             lenient_skip_vectors: false,
             streaming_parse_mode: false,
+            async_parse_mode: false,
             s4_slot_overrides: IndexMap::new(),
         }
     }
@@ -298,6 +302,7 @@ impl ParserContext {
             force_materialize_vector: self.force_materialize_vector,
             lenient_skip_vectors: self.lenient_skip_vectors,
             streaming_parse_mode: self.streaming_parse_mode,
+            async_parse_mode: self.async_parse_mode,
             s4_slot_overrides: self.s4_slot_overrides.clone(),
         }
     }
@@ -315,6 +320,7 @@ impl ParserContext {
         self.force_materialize_vector = snapshot.force_materialize_vector;
         self.lenient_skip_vectors = snapshot.lenient_skip_vectors;
         self.streaming_parse_mode = snapshot.streaming_parse_mode;
+        self.async_parse_mode = snapshot.async_parse_mode;
         self.s4_slot_overrides = snapshot.s4_slot_overrides;
     }
 
@@ -988,6 +994,17 @@ async fn parse_rds_internal_async(
     let mut symbol_table = SymbolTable::new();
     let mut dedup_table = DedupTable::new();
 
+    if ctx.mode == crate::ParseMode::LazyMetadata {
+        return parse_object_sequential_value_async(
+            ctx,
+            cursor,
+            &mut ref_table,
+            &mut symbol_table,
+            &mut dedup_table,
+        )
+        .await;
+    }
+
     parse_object_async(
         ctx,
         cursor,
@@ -1122,6 +1139,19 @@ async fn traverse_rds_internal_async_streaming<V: RdsVisitor>(
 }
 
 #[cfg(target_arch = "wasm32")]
+fn calculate_lazy_vector_bytes(obj: &RObject) -> u64 {
+    use crate::types::VectorData;
+    match obj {
+        RObject::Integer(VectorData::Lazy(v)) => v.byte_len,
+        RObject::Real(VectorData::Lazy(v)) => v.byte_len,
+        RObject::Logical(VectorData::Lazy(v)) => v.byte_len,
+        RObject::Complex(VectorData::Lazy(v)) => v.byte_len,
+        RObject::Raw(VectorData::Lazy(v)) => v.byte_len,
+        _ => 0,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 async fn parse_object_async(
     ctx: &mut ParserContext,
     cursor: &mut AsyncBufferedCursor<'_>,
@@ -1145,6 +1175,7 @@ async fn parse_object_async(
 
         // Set streaming mode BEFORE taking snapshot so it persists across retries
         ctx.streaming_parse_mode = true;
+        ctx.async_parse_mode = true;
 
         let ctx_snapshot = ctx.snapshot();
         let ref_checkpoint = ref_table.checkpoint();
@@ -1155,7 +1186,22 @@ async fn parse_object_async(
 
         match result {
             Ok(value) => {
-                cursor.advance(sync_cursor.position())?;
+                let sync_pos = sync_cursor.position();
+                cursor.advance(sync_pos)?;
+
+                // In WASM streaming mode, if the value contains lazy vectors, we need to skip past them
+                // since the sync cursor didn't advance past the vector data
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let bytes_to_skip = calculate_lazy_vector_bytes(&value);
+                    if bytes_to_skip > 0 {
+                        let msg = format!("Skipping lazy vector: sync_pos={}, bytes_to_skip={}, cursor_pos_before={}, cursor_pos_after={}",
+                            sync_pos, bytes_to_skip, cursor.position(), cursor.position() + bytes_to_skip as u64);
+                        web_sys::console::debug_1(&wasm_bindgen::JsValue::from_str(&msg));
+                        cursor.skip_bytes(bytes_to_skip as usize).await?;
+                    }
+                }
+
                 return Ok(value);
             }
             Err(Error::UnexpectedEof) | Err(Error::UnexpectedEofDetail { .. }) => {
@@ -1251,9 +1297,7 @@ where
         )))
         .await;
     }
-    if cursor.total_len().is_none()
-        && matches!(sexp_type, INTSXP | REALSXP | LGLSXP | RAWSXP | CPLXSXP)
-    {
+    if matches!(sexp_type, INTSXP | REALSXP | LGLSXP | RAWSXP | CPLXSXP) {
         match std::pin::Pin::from(Box::new(try_parse_large_vector_streaming_async(
             ctx,
             cursor,
@@ -1300,6 +1344,7 @@ where
 
         // Set streaming mode BEFORE taking snapshot so it persists across retries
         ctx.streaming_parse_mode = true;
+        ctx.async_parse_mode = false;
 
         let ctx_snapshot = ctx.snapshot();
         let ref_checkpoint = ref_table.checkpoint();
@@ -1335,7 +1380,20 @@ where
                 symbol_table.rollback(symbol_checkpoint);
                 dedup_table.rollback(dedup_checkpoint);
                 if size >= max_size {
-                    return result;
+                    let obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                        ctx,
+                        cursor,
+                        ref_table,
+                        symbol_table,
+                        dedup_table,
+                    )))
+                    .await
+                    .map_err(StreamingError::Parse)?;
+                    if emit {
+                        emit_parsed_object_streaming(&obj, path, visitor)?;
+                    }
+                    progress.report_object(cursor.position());
+                    return Ok(StreamControl::Continue);
                 }
                 size = std::cmp::min(max_size, size.saturating_mul(2));
             }
@@ -1924,11 +1982,9 @@ where
         }
     };
 
-    cursor
-        .ensure_available(4)
+    let flags = read_u32_async(cursor)
         .await
         .map_err(StreamingError::Parse)?;
-    let flags = cursor.peek_u32().map_err(StreamingError::Parse)?;
     let has_attr = (flags & HAS_ATTR_BIT) != 0;
 
     let mut emit_children = true;
@@ -1985,10 +2041,13 @@ where
     if has_attr {
         let prev = ctx.parsing_attributes;
         ctx.parsing_attributes = true;
-        ctx.streaming_parse_mode = true;
-        let attr_obj = parse_with_sync_cursor_retry(cursor, 4096, cursor.max_buffer_size(), |c| {
-            parse_object(ctx, c, ref_table, symbol_table, dedup_table)
-        })
+        let attr_obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+        )))
         .await
         .map_err(StreamingError::Parse)?;
         ctx.parsing_attributes = prev;
@@ -6802,8 +6861,19 @@ fn parse_integer_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> 
         let elem_size = std::mem::size_of::<i32>();
         let byte_len = (length * elem_size) as u64;
 
-        // Skip the data by seeking forward instead of reading into a buffer
-        cursor.set_position(cursor.position() + byte_len);
+        // In non-WASM mode, skip the data by reading into a buffer
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut buf = vec![0u8; length * elem_size];
+            cursor.read_exact(&mut buf)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if !ctx.async_parse_mode {
+                ensure_bytes_available(cursor, length * elem_size, "integer vector lazy skip")?;
+                cursor.seek(SeekFrom::Current((length * elem_size) as i64))?;
+            }
+        }
 
         return Ok(RObject::Integer(VectorData::Lazy(LazyVector {
             length,
@@ -6842,8 +6912,19 @@ fn parse_real_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Res
         let elem_size = std::mem::size_of::<f64>();
         let byte_len = (length * elem_size) as u64;
 
-        // Skip the data by seeking forward instead of reading into a buffer
-        cursor.set_position(cursor.position() + byte_len);
+        // In non-WASM mode, skip the data by reading into a buffer
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut buf = vec![0u8; length * elem_size];
+            cursor.read_exact(&mut buf)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if !ctx.async_parse_mode {
+                ensure_bytes_available(cursor, length * elem_size, "real vector lazy skip")?;
+                cursor.seek(SeekFrom::Current((length * elem_size) as i64))?;
+            }
+        }
 
         return Ok(RObject::Real(VectorData::Lazy(LazyVector {
             length,
@@ -6882,8 +6963,19 @@ fn parse_logical_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> 
         let elem_size = std::mem::size_of::<i32>(); // Logicals are stored as i32
         let byte_len = (length * elem_size) as u64;
 
-        // Skip the data by seeking forward instead of reading into a buffer
-        cursor.set_position(cursor.position() + byte_len);
+        // In non-WASM mode, skip the data by reading into a buffer
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut buf = vec![0u8; length * elem_size];
+            cursor.read_exact(&mut buf)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if !ctx.async_parse_mode {
+                ensure_bytes_available(cursor, length * elem_size, "logical vector lazy skip")?;
+                cursor.seek(SeekFrom::Current((length * elem_size) as i64))?;
+            }
+        }
 
         return Ok(RObject::Logical(VectorData::Lazy(LazyVector {
             length,
@@ -7144,8 +7236,19 @@ fn parse_raw_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Resu
         let offset = cursor.position();
         let byte_len = length as u64;
 
-        // Skip the data by seeking forward instead of reading into a buffer
-        cursor.set_position(cursor.position() + byte_len);
+        // In non-WASM mode, skip the data by reading into a buffer
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut buf = vec![0u8; length];
+            cursor.read_exact(&mut buf)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if !ctx.async_parse_mode {
+                ensure_bytes_available(cursor, length, "raw vector lazy skip")?;
+                cursor.seek(SeekFrom::Current(length as i64))?;
+            }
+        }
 
         return Ok(RObject::Raw(VectorData::Lazy(LazyVector {
             length,
@@ -7183,8 +7286,19 @@ fn parse_complex_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> 
         let elem_size = std::mem::size_of::<Complex>(); // 2 * f64 = 16 bytes
         let byte_len = (length * elem_size) as u64;
 
-        // Skip the data by seeking forward instead of reading into a buffer
-        cursor.set_position(cursor.position() + byte_len);
+        // In non-WASM mode, skip the data by reading into a buffer
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut buf = vec![0u8; length * elem_size];
+            cursor.read_exact(&mut buf)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            if !ctx.async_parse_mode {
+                ensure_bytes_available(cursor, length * elem_size, "complex vector lazy skip")?;
+                cursor.seek(SeekFrom::Current((length * elem_size) as i64))?;
+            }
+        }
 
         return Ok(RObject::Complex(VectorData::Lazy(LazyVector {
             length,
