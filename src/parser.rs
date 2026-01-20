@@ -1143,12 +1143,14 @@ async fn parse_object_async(
         let slice = cursor.as_sync_slice(size)?;
         let mut sync_cursor = RdsCursor::new_slice(slice);
 
+        // Set streaming mode BEFORE taking snapshot so it persists across retries
+        ctx.streaming_parse_mode = true;
+
         let ctx_snapshot = ctx.snapshot();
         let ref_checkpoint = ref_table.checkpoint();
         let symbol_checkpoint = symbol_table.checkpoint();
         let dedup_checkpoint = dedup_table.checkpoint();
 
-        ctx.streaming_parse_mode = true;
         let result = parse_object(ctx, &mut sync_cursor, ref_table, symbol_table, dedup_table);
 
         match result {
@@ -1280,13 +1282,15 @@ where
         let slice = cursor.as_sync_slice(size).map_err(StreamingError::Parse)?;
         let mut sync_cursor = RdsCursor::new_slice(slice);
 
+        // Set streaming mode BEFORE taking snapshot so it persists across retries
+        ctx.streaming_parse_mode = true;
+
         let ctx_snapshot = ctx.snapshot();
         let ref_checkpoint = ref_table.checkpoint();
         let symbol_checkpoint = symbol_table.checkpoint();
         let dedup_checkpoint = dedup_table.checkpoint();
 
         progress.base_offset = cursor.position();
-        ctx.streaming_parse_mode = true;
         let result = parse_object_streaming(
             ctx,
             &mut sync_cursor,
