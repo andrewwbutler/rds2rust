@@ -217,8 +217,27 @@ function canUseOpfs() {
   );
 }
 
+async function cleanupOpfsTempFiles(prefix = "rds-decompressed-") {
+  if (!canUseOpfs()) return;
+  try {
+    const root = await navigator.storage.getDirectory();
+    for await (const [name] of root.entries()) {
+      if (name.startsWith(prefix)) {
+        try {
+          await root.removeEntry(name);
+        } catch (err) {
+          console.warn("OPFS cleanup failed", err);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("OPFS cleanup skipped", err);
+  }
+}
+
 async function decompressStreamToOpfsFile(stream, options = {}) {
   const { onProgress, filename } = options;
+  await cleanupOpfsTempFiles();
   const reader = stream.getReader();
   const root = await navigator.storage.getDirectory();
   const name = filename || `rds-decompressed-${Date.now()}-${Math.random().toString(16).slice(2)}.bin`;
