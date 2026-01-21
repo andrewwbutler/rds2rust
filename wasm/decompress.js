@@ -225,6 +225,7 @@ async function decompressStreamToOpfsFile(stream, options = {}) {
   const handle = await root.getFileHandle(name, { create: true });
   const writable = await handle.createWritable();
   let total = 0;
+  let closed = false;
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -242,7 +243,14 @@ async function decompressStreamToOpfsFile(stream, options = {}) {
       }
     }
   } finally {
-    await writable.close();
+    if (!closed) {
+      try {
+        await writable.close();
+        closed = true;
+      } catch (err) {
+        console.warn("OPFS close failed", err);
+      }
+    }
   }
   return await handle.getFile();
 }
