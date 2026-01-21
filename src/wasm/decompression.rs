@@ -124,8 +124,11 @@ pub async fn read_rds_from_blob(
     #[cfg(target_arch = "wasm32")]
     {
         let blob_size = decompressed.size() as u64;
-        let msg = format!("[RUST DEBUG] Decompressed blob size from Rust: {} bytes ({:.2} GB)",
-                         blob_size, blob_size as f64 / (1024.0 * 1024.0 * 1024.0));
+        let msg = format!(
+            "[RUST DEBUG] Decompressed blob size from Rust: {} bytes ({:.2} GB)",
+            blob_size,
+            blob_size as f64 / (1024.0 * 1024.0 * 1024.0)
+        );
         web_sys::console::log_1(&JsValue::from_str(&msg));
     }
 
