@@ -447,8 +447,10 @@ export async function decompressBlobForRandomAccess(blob, options = {}) {
       try {
         decompressed = await decompressStreamToOpfsFile(stream, { onProgress, filename });
       } catch (err) {
+        const name = err && err.name ? String(err.name) : '';
         const message = err && err.message ? String(err.message) : String(err);
-        const isQuota = message.includes('QuotaExceededError') || message.includes('quota');
+        const haystack = `${name} ${message}`.toLowerCase();
+        const isQuota = haystack.includes('quota');
         if (isQuota && !allowMemoryFallback) {
           throw new Error(
             "OPFS quota exceeded while decompressing. Increase browser storage quota or disable streaming."
