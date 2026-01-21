@@ -403,6 +403,7 @@ export async function decompressBlobForRandomAccess(blob, options = {}) {
     ratioEstimate = 3,
     timeoutMs,
     preferOpfs = true,
+    allowMemoryFallback = false,
   } = options;
 
   if (typeof DecompressionStream === "undefined") {
@@ -443,7 +444,22 @@ export async function decompressBlobForRandomAccess(blob, options = {}) {
     const stream = blob.stream().pipeThrough(decompressor);
     let decompressed;
     if (preferOpfs && canUseOpfs()) {
-      decompressed = await decompressStreamToOpfsFile(stream, { onProgress, filename });
+      try {
+        decompressed = await decompressStreamToOpfsFile(stream, { onProgress, filename });
+      } catch (err) {
+        const message = err && err.message ? String(err.message) : String(err);
+        const isQuota = message.includes('QuotaExceededError') || message.includes('quota');
+        if (isQuota && !allowMemoryFallback) {
+          throw new Error(
+            "OPFS quota exceeded while decompressing. Increase browser storage quota or disable streaming."
+          );
+        }
+        if (isQuota && allowMemoryFallback) {
+          decompressed = await decompressStreamToBlob(stream, onProgress);
+        } else {
+          throw err;
+        }
+      }
     } else {
       decompressed = await decompressStreamToBlob(stream, onProgress);
     }
