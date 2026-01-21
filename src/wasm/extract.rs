@@ -95,6 +95,15 @@ pub async fn extract_vector_to_js(
 }
 
 #[cfg(target_arch = "wasm32")]
+pub async fn read_lazy_character_vector(
+    input: &dyn AsyncRdsInput,
+    span: LazyVector,
+) -> Result<Vec<std::sync::Arc<str>>> {
+    let bytes = read_span_bytes(input, span).await?;
+    parse_character_vec(&bytes, span.length)
+}
+
+#[cfg(target_arch = "wasm32")]
 pub async fn extract_vector_chunked(
     obj: &RObject,
     input: &dyn AsyncRdsInput,

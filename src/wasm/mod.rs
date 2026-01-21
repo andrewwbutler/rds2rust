@@ -26,7 +26,10 @@ pub use decompression::{
     WasmDecompressionMode, WasmDecompressionThresholds,
 };
 #[cfg(target_arch = "wasm32")]
-pub use extract::{extract_vector_chunked, extract_vector_to_js, read_lazy_vector_range};
+pub use extract::{
+    extract_vector_chunked, extract_vector_to_js, read_lazy_character_vector,
+    read_lazy_vector_range,
+};
 #[cfg(target_arch = "wasm32")]
 pub use r#async::{
     estimate_parse_size, AsyncBufferedCursor, AsyncCursor, AsyncCursorConfig, AsyncRdsInput,
