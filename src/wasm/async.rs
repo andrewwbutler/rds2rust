@@ -175,19 +175,6 @@ impl<'a> AsyncBufferedCursor<'a> {
 
     pub fn total_len(&self) -> Option<u64> {
         let total = self.source.len();
-
-        // DEBUG: Log what AsyncBufferedCursor is returning
-        #[cfg(target_arch = "wasm32")]
-        {
-            use wasm_bindgen::JsValue;
-            let msg = match total {
-                Some(size) => format!("[RUST DEBUG] AsyncBufferedCursor::total_len() returning {} bytes ({:.2} GB)",
-                                     size, size as f64 / (1024.0 * 1024.0 * 1024.0)),
-                None => "[RUST DEBUG] AsyncBufferedCursor::total_len() returning None".to_string(),
-            };
-            web_sys::console::log_1(&JsValue::from_str(&msg));
-        }
-
         total
     }
 
@@ -323,8 +310,27 @@ impl<'a> AsyncCursor for AsyncBufferedCursor<'a> {
             if len == 0 {
                 return Ok(());
             }
-            self.ensure_available(len).await?;
-            self.advance(len as u64)?;
+            let available = self.available_in_buffer();
+            if len <= available {
+                self.advance(len as u64)?;
+                return Ok(());
+            }
+
+            let new_pos = self.position.saturating_add(len as u64);
+            if let Some(total_len) = self.source.len() {
+                if new_pos > total_len {
+                    return Err(Error::UnexpectedEofDetail {
+                        position: self.position as usize,
+                        needed: len,
+                        available: total_len.saturating_sub(self.position) as usize,
+                    });
+                }
+            }
+
+            // For random-access inputs, skipping does not require buffering the skipped bytes.
+            self.position = new_pos;
+            self.buffer.clear();
+            self.buffer_offset = self.position;
             Ok(())
         })
     }

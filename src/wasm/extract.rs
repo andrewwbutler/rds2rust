@@ -193,6 +193,55 @@ async fn read_span_bytes(input: &dyn AsyncRdsInput, span: LazyVector) -> Result<
 }
 
 #[cfg(target_arch = "wasm32")]
+pub async fn read_lazy_vector_range(
+    input: &dyn AsyncRdsInput,
+    span: LazyVector,
+    elem_size: usize,
+    start_index: usize,
+    count: usize,
+) -> Result<Vec<u8>> {
+    if start_index > span.length {
+        return Err(Error::InvalidFormat(format!(
+            "lazy vector range start {} exceeds length {}",
+            start_index, span.length
+        )));
+    }
+    let max_count = span.length.saturating_sub(start_index);
+    if count > max_count {
+        return Err(Error::InvalidFormat(format!(
+            "lazy vector range count {} exceeds available {}",
+            count, max_count
+        )));
+    }
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let byte_len = count
+        .checked_mul(elem_size)
+        .ok_or_else(|| Error::InvalidFormat("lazy vector byte length overflow".to_string()))?;
+    let mut remaining = byte_len;
+    let mut offset = span.offset + (start_index * elem_size) as u64;
+    let mut out = Vec::with_capacity(byte_len);
+
+    while remaining > 0 {
+        let to_read = remaining.min(4 * 1024 * 1024);
+        let chunk = input.read_at(offset, to_read).await?;
+        if chunk.len() != to_read {
+            return Err(Error::TruncatedLazyPayload {
+                expected: byte_len as u64,
+                actual: out.len() as u64 + chunk.len() as u64,
+            });
+        }
+        out.extend_from_slice(&chunk);
+        remaining -= to_read;
+        offset += to_read as u64;
+    }
+
+    Ok(out)
+}
+
+#[cfg(target_arch = "wasm32")]
 fn parse_i32_vec(bytes: &[u8], length: usize) -> Result<Vec<i32>> {
     let mut cursor = std::io::Cursor::new(bytes);
     let mut vec = Vec::with_capacity(length);

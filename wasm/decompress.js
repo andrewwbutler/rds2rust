@@ -209,6 +209,44 @@ async function decompressStreamToBlob(stream, onProgress) {
   return blob;
 }
 
+function canUseOpfs() {
+  return (
+    typeof navigator !== "undefined" &&
+    navigator.storage &&
+    typeof navigator.storage.getDirectory === "function"
+  );
+}
+
+async function decompressStreamToOpfsFile(stream, options = {}) {
+  const { onProgress, filename } = options;
+  const reader = stream.getReader();
+  const root = await navigator.storage.getDirectory();
+  const name = filename || `rds-decompressed-${Date.now()}-${Math.random().toString(16).slice(2)}.bin`;
+  const handle = await root.getFileHandle(name, { create: true });
+  const writable = await handle.createWritable();
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value && value.byteLength) {
+        await writable.write(value);
+        total += value.byteLength;
+        if (onProgress) {
+          onProgress({
+            phase: "decompressing",
+            bytesProcessed: total,
+            message: `Decompressed ${(total / (1024 ** 2)).toFixed(1)}MB`,
+          });
+        }
+      }
+    }
+  } finally {
+    await writable.close();
+  }
+  return await handle.getFile();
+}
+
 async function decompressMultiMemberGzip(blob, offsets, options = {}) {
   const { onProgress } = options;
   const pieces = [];
@@ -338,6 +376,75 @@ export async function decompressBlobIfNeeded(blob, options = {}) {
       );
     }
     if (budgetBytes && decompressed.size > budgetBytes) {
+      throw new Error(
+        `Decompressed size exceeds budget (${decompressed.size} > ${budgetBytes}).`
+      );
+    }
+    return decompressed;
+  })();
+
+  return decompressWithTimeout(decompressPromise, effectiveTimeoutMs);
+}
+
+export async function decompressBlobForRandomAccess(blob, options = {}) {
+  const {
+    filename,
+    onProgress,
+    budgetBytes,
+    maxRatio = DEFAULT_MAX_RATIO,
+    ratioEstimate = 3,
+    timeoutMs,
+    preferOpfs = true,
+  } = options;
+
+  if (typeof DecompressionStream === "undefined") {
+    throw new Error(
+      "DecompressionStream not available. Use Chrome 89+, Firefox 102+, or Safari 16.4+."
+    );
+  }
+
+  const compression = await detectCompression(blob);
+  if (compression === "rds") {
+    return blob;
+  }
+  if (compression === "bzip2") {
+    throw new Error("bzip2 not supported in WASM. Please decompress first.");
+  }
+  if (compression === "xz") {
+    throw new Error("xz not supported in WASM. Please decompress first.");
+  }
+  if (compression !== "gzip") {
+    throw new Error("Unrecognized file format. Expected gzip or RDS.");
+  }
+
+  if (budgetBytes) {
+    const estimated = estimateDecompressedSize(blob.size, ratioEstimate);
+    if (estimated > budgetBytes && !(preferOpfs && canUseOpfs())) {
+      throw new Error(
+        `Estimated decompressed size exceeds budget (${Math.round(estimated)} > ${budgetBytes}).`
+      );
+    }
+  }
+
+  const maxBytes = blob.size * maxRatio;
+  const effectiveTimeoutMs =
+    typeof timeoutMs === "number" ? timeoutMs : calculateTimeoutMs(blob.size);
+
+  const decompressPromise = (async () => {
+    const decompressor = new DecompressionStream("gzip");
+    const stream = blob.stream().pipeThrough(decompressor);
+    let decompressed;
+    if (preferOpfs && canUseOpfs()) {
+      decompressed = await decompressStreamToOpfsFile(stream, { onProgress, filename });
+    } else {
+      decompressed = await decompressStreamToBlob(stream, onProgress);
+    }
+    if (decompressed.size > maxBytes) {
+      throw new Error(
+        `Compression ratio exceeded safety limit (${maxRatio}:1).`
+      );
+    }
+    if (budgetBytes && decompressed.size > budgetBytes && !(preferOpfs && canUseOpfs())) {
       throw new Error(
         `Decompressed size exceeds budget (${decompressed.size} > ${budgetBytes}).`
       );

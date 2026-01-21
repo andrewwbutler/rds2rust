@@ -76,6 +76,8 @@ pub fn memory_warning(file_size: u64, device_memory_gb: Option<f64>) -> Option<S
 extern "C" {
     #[wasm_bindgen(js_name = decompressBlobIfNeeded)]
     fn decompress_blob_if_needed_js(blob: Blob, options: JsValue) -> Promise;
+    #[wasm_bindgen(js_name = decompressBlobForRandomAccess)]
+    fn decompress_blob_for_random_access_js(blob: Blob, options: JsValue) -> Promise;
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -85,6 +87,21 @@ pub async fn decompress_blob_if_needed(
 ) -> crate::Result<Blob> {
     let opts = options.unwrap_or(JsValue::UNDEFINED);
     let promise = decompress_blob_if_needed_js(blob, opts);
+    let value = JsFuture::from(promise)
+        .await
+        .map_err(|err| crate::Error::Unsupported(format!("decompression error: {:?}", err)))?;
+    value
+        .dyn_into::<Blob>()
+        .map_err(|err| crate::Error::Unsupported(format!("decompression error: {:?}", err)))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn decompress_blob_for_random_access(
+    blob: Blob,
+    options: Option<JsValue>,
+) -> crate::Result<Blob> {
+    let opts = options.unwrap_or(JsValue::UNDEFINED);
+    let promise = decompress_blob_for_random_access_js(blob, opts);
     let value = JsFuture::from(promise)
         .await
         .map_err(|err| crate::Error::Unsupported(format!("decompression error: {:?}", err)))?;

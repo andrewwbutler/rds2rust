@@ -270,14 +270,6 @@ impl AsyncRdsInput for BlobChunkedSource {
     fn len(&self) -> Option<u64> {
         let blob_size = self.inner.blob.size() as u64;
 
-        // DEBUG: Log blob size as seen by BlobChunkedSource
-        #[cfg(target_arch = "wasm32")]
-        {
-            let msg = format!("[RUST DEBUG] BlobChunkedSource::len() returning {} bytes ({:.2} GB)",
-                             blob_size, blob_size as f64 / (1024.0 * 1024.0 * 1024.0));
-            web_sys::console::log_1(&JsValue::from_str(&msg));
-        }
-
         Some(blob_size)
     }
 }
