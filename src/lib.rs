@@ -80,9 +80,9 @@ pub use types::{
 pub use wasm::{
     check_streaming_decompression_support, decompress_blob_for_random_access,
     decompress_blob_if_needed, detect_blob_compression, estimate_parse_size,
-    extract_vector_chunked, extract_vector_to_js, memory_warning, read_lazy_vector_range,
-    read_rds_async, read_rds_from_blob, recommend_decompression_mode, recommended_chunk_size_mb,
-    traverse_rds_blob_streaming, traverse_rds_blob_streaming_with_progress,
+    extract_vector_chunked, extract_vector_to_js, memory_warning, read_lazy_character_vector,
+    read_lazy_vector_range, read_rds_async, read_rds_from_blob, recommend_decompression_mode,
+    recommended_chunk_size_mb, traverse_rds_blob_streaming, traverse_rds_blob_streaming_with_progress,
     write_rds_with_callback, write_rds_with_callback_and_compression, write_rds_with_progress,
     write_rds_with_progress_and_compression, AsyncBufferedCursor, AsyncCursor, AsyncCursorConfig,
     AsyncParseConfig, AsyncRdsInput, AsyncReadFuture, AsyncSequentialInput, BlobChunkedSource,
