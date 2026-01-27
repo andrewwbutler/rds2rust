@@ -100,6 +100,22 @@ pub async fn decompress_blob_for_random_access(
     blob: Blob,
     options: Option<JsValue>,
 ) -> crate::Result<Blob> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let size = blob.size() as u64;
+        let msg = format!(
+            "[rds2rust] decompress_blob_for_random_access blob_size={} bytes",
+            size
+        );
+        web_sys::console::log_1(&JsValue::from_str(&msg));
+        if let Some(opts) = options.as_ref() {
+            if !opts.is_undefined() {
+                web_sys::console::log_1(&JsValue::from_str(
+                    "[rds2rust] decompress_blob_for_random_access options provided",
+                ));
+            }
+        }
+    }
     let opts = options.unwrap_or(JsValue::UNDEFINED);
     let promise = decompress_blob_for_random_access_js(blob, opts);
     let value = JsFuture::from(promise)
