@@ -27,7 +27,9 @@ fn test_s4_simple() {
     }
 
     let data = read_test_file("s4_simple.rds");
-    let obj = read_rds(&data).expect("Failed to parse simple S4 object");
+    let obj = read_rds(&data)
+        .expect("Failed to parse simple S4 object")
+        .object;
 
     match obj {
         RObject::S4Object(s4_data) => {
@@ -80,7 +82,9 @@ fn test_s4_inheritance() {
     }
 
     let data = read_test_file("s4_inheritance.rds");
-    let obj = read_rds(&data).expect("Failed to parse S4 object with inheritance");
+    let obj = read_rds(&data)
+        .expect("Failed to parse S4 object with inheritance")
+        .object;
 
     match obj {
         RObject::S4Object(s4_data) => {
@@ -128,7 +132,9 @@ fn test_s4_complex() {
     }
 
     let data = read_test_file("s4_complex.rds");
-    let obj = read_rds(&data).expect("Failed to parse complex S4 object");
+    let obj = read_rds(&data)
+        .expect("Failed to parse complex S4 object")
+        .object;
 
     match obj {
         RObject::S4Object(s4_data) => {
@@ -189,10 +195,14 @@ fn test_s4_simple_roundtrip() {
     }
 
     let data = read_test_file("s4_simple.rds");
-    let obj = read_rds(&data).expect("Failed to read existing S4 object");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing S4 object")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write S4 object");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized S4 object");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized S4 object")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -205,11 +215,14 @@ fn test_s4_inheritance_roundtrip() {
     }
 
     let data = read_test_file("s4_inheritance.rds");
-    let obj = read_rds(&data).expect("Failed to read existing S4 inheritance object");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing S4 inheritance object")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write S4 inheritance object");
-    let deserialized =
-        read_rds(&serialized).expect("Failed to read serialized S4 inheritance object");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized S4 inheritance object")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -222,10 +235,14 @@ fn test_s4_complex_roundtrip() {
     }
 
     let data = read_test_file("s4_complex.rds");
-    let obj = read_rds(&data).expect("Failed to read existing S4 complex object");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing S4 complex object")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write S4 complex object");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized S4 complex object");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized S4 complex object")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -259,7 +276,9 @@ fn test_s4_as_attribute_container() {
 
     // Serialize and deserialize
     let serialized = write_rds(&s4_obj).expect("Failed to serialize S4 object");
-    let deserialized = read_rds(&serialized).expect("Failed to deserialize S4 object");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to deserialize S4 object")
+        .object;
 
     // Verify the object structure is preserved
     match deserialized {
@@ -330,7 +349,9 @@ fn test_s4_nested_as_attribute() {
 
     // Serialize and deserialize
     let serialized = write_rds(&outer_s4).expect("Failed to serialize nested S4 object");
-    let deserialized = read_rds(&serialized).expect("Failed to deserialize nested S4 object");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to deserialize nested S4 object")
+        .object;
 
     // Verify the structure
     match deserialized {
@@ -454,7 +475,9 @@ fn test_s4_flags_correctly_set() {
     );
 
     // Also verify roundtrip works
-    let deserialized = read_rds(&serialized).expect("Failed to deserialize S4 object");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to deserialize S4 object")
+        .object;
     match deserialized {
         RObject::S4Object(s4_data) => {
             assert_eq!(s4_data.class[0].as_ref(), "dgCMatrix");
@@ -570,7 +593,9 @@ fn test_data_part_s4_roundtrip_preserves_class_attributes() {
     };
 
     let serialized = write_rds(&obj).expect("Failed to serialize data-part S4 object");
-    let deserialized = read_rds(&serialized).expect("Failed to deserialize data-part S4 object");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to deserialize data-part S4 object")
+        .object;
 
     let (base, attributes) = match deserialized {
         RObject::WithAttributes { object, attributes } => (object, attributes),
@@ -647,7 +672,7 @@ fn test_s4_package_attribute_preserved() {
         }));
 
         let serialized = write_rds(&s4_obj).expect("Failed to serialize");
-        let deserialized = read_rds(&serialized).expect("Failed to deserialize");
+        let deserialized = read_rds(&serialized).expect("Failed to deserialize").object;
 
         match deserialized {
             RObject::S4Object(s4_data) => {
@@ -685,7 +710,7 @@ fn test_s4_default_package_fallback() {
     }));
 
     let serialized = write_rds(&s4_obj).expect("Failed to serialize");
-    let deserialized = read_rds(&serialized).expect("Failed to deserialize");
+    let deserialized = read_rds(&serialized).expect("Failed to deserialize").object;
 
     match deserialized {
         RObject::S4Object(s4_data) => {
@@ -714,8 +739,12 @@ fn test_cross_parse_state_isolation() {
     // Parse the same S4 file twice to ensure identical results
     let data = read_test_file("s4_complex.rds");
 
-    let obj1 = read_rds(&data).expect("Failed to parse S4 object (first read)");
-    let obj2 = read_rds(&data).expect("Failed to parse S4 object (second read)");
+    let obj1 = read_rds(&data)
+        .expect("Failed to parse S4 object (first read)")
+        .object;
+    let obj2 = read_rds(&data)
+        .expect("Failed to parse S4 object (second read)")
+        .object;
 
     // Extract slot values from both parses
     let extract_slots = |obj: &RObject| -> IndexMap<Arc<str>, RObject> {
@@ -769,11 +798,17 @@ fn test_cross_file_parse_isolation() {
     let complex_data = read_test_file("s4_complex.rds");
 
     // Parse simple, then complex
-    let simple_obj = read_rds(&simple_data).expect("Failed to parse simple S4");
-    let complex_obj = read_rds(&complex_data).expect("Failed to parse complex S4");
+    let simple_obj = read_rds(&simple_data)
+        .expect("Failed to parse simple S4")
+        .object;
+    let complex_obj = read_rds(&complex_data)
+        .expect("Failed to parse complex S4")
+        .object;
 
     // Now parse complex again - it should be identical to the previous parse
-    let complex_obj2 = read_rds(&complex_data).expect("Failed to parse complex S4 (second time)");
+    let complex_obj2 = read_rds(&complex_data)
+        .expect("Failed to parse complex S4 (second time)")
+        .object;
 
     // Extract slots
     let extract_slots = |obj: &RObject| -> IndexMap<Arc<str>, RObject> {
@@ -803,7 +838,9 @@ fn test_cross_file_parse_isolation() {
     }
 
     // Verify simple is still correct when parsed after complex
-    let simple_obj2 = read_rds(&simple_data).expect("Failed to parse simple S4 (second time)");
+    let simple_obj2 = read_rds(&simple_data)
+        .expect("Failed to parse simple S4 (second time)")
+        .object;
     let simple_slots1 = extract_slots(&simple_obj);
     let simple_slots2 = extract_slots(&simple_obj2);
 
@@ -916,7 +953,7 @@ fn test_s4_with_logical_matrix_data_slot() {
 
     // Write and read back
     let bytes = write_rds(&s4_obj).unwrap();
-    let result = read_rds(&bytes[..]).unwrap();
+    let result = read_rds(&bytes[..]).unwrap().object;
 
     assert_eq!(s4_obj, result);
 }
@@ -945,7 +982,7 @@ fn test_s4_with_logical_matrix_different_package() {
     }));
 
     let bytes = write_rds(&obj).unwrap();
-    let result = read_rds(&bytes[..]).unwrap();
+    let result = read_rds(&bytes[..]).unwrap().object;
     assert_eq!(obj, result);
 }
 
@@ -981,7 +1018,7 @@ fn test_s4_with_outer_attributes_basic() {
 
     // Write and read back
     let bytes = write_rds(&obj).unwrap();
-    let result = read_rds(&bytes[..]).unwrap();
+    let result = read_rds(&bytes[..]).unwrap().object;
 
     // Parser reads S4 with merged attributes as S4Object with attributes in slots
     // (R doesn't distinguish between outer attributes and slots in serialization)
@@ -1039,7 +1076,7 @@ fn test_s4_with_dim_attributes() {
 
     // Write and read back
     let bytes = write_rds(&obj).unwrap();
-    let result = read_rds(&bytes[..]).unwrap();
+    let result = read_rds(&bytes[..]).unwrap().object;
 
     // Parser reads S4 with merged attributes as S4Object
     match &result {
@@ -1083,8 +1120,8 @@ fn test_s4_with_empty_outer_attributes() {
     let bytes_bare = write_rds(&s4_obj).unwrap();
 
     // Both should produce valid RDS
-    let result_with = read_rds(&bytes_with[..]).unwrap();
-    let result_bare = read_rds(&bytes_bare[..]).unwrap();
+    let result_with = read_rds(&bytes_with[..]).unwrap().object;
+    let result_bare = read_rds(&bytes_bare[..]).unwrap().object;
 
     // Results should be equivalent (both are S4 objects with same structure)
     assert!(matches!(
@@ -1123,7 +1160,7 @@ fn test_s4_class_attribute_cannot_be_overridden() {
 
     // Write and read back
     let bytes = write_rds(&obj).unwrap();
-    let result = read_rds(&bytes[..]).unwrap();
+    let result = read_rds(&bytes[..]).unwrap().object;
 
     // Verify S4 class was preserved (not overridden)
     match &result {
@@ -1169,7 +1206,7 @@ fn test_s4_outer_attribute_shadows_slot() {
 
     // Write and read back
     let bytes = write_rds(&obj).unwrap();
-    let _result = read_rds(&bytes[..]).unwrap();
+    let _result = read_rds(&bytes[..]).unwrap().object;
 
     // This test documents that outer attributes CAN shadow slots
     // The behavior is: outer attributes take precedence (explicit user intent)
@@ -1216,7 +1253,7 @@ fn test_s4_with_nested_withattributes_in_slot() {
 
     // Write and read back
     let bytes = write_rds(&obj).unwrap();
-    let result = read_rds(&bytes[..]).unwrap();
+    let result = read_rds(&bytes[..]).unwrap().object;
 
     // Parser reads S4 with merged attributes as S4Object
     match &result {

@@ -87,7 +87,9 @@ fn assert_dimnames_list(obj: &RObject, visited_shared: &mut HashSet<usize>, chec
 fn sparse_matrices_have_list_dimnames() {
     let data = std::fs::read("tests/data/sparse_dimnames.rds")
         .expect("fixture tests/data/sparse_dimnames.rds missing");
-    let obj = read_rds(&data).expect("failed to parse sparse dimnames fixture");
+    let obj = read_rds(&data)
+        .expect("failed to parse sparse dimnames fixture")
+        .object;
 
     let mut visited_shared = HashSet::new();
     let mut checked = 0;

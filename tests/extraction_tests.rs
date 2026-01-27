@@ -297,7 +297,9 @@ fn extract_object_to_raw_files_with_kind_and_input_streaming_writes_manifest() {
 
     let source = rds2rust::MmapRdsSource::from_path(&input_path).expect("open source");
     let config = rds2rust::ParseConfig::for_trusted_large_file();
-    let parsed = rds2rust::read_rds_with_input(&source, config).expect("parse rds");
+    let parsed = rds2rust::read_rds_with_input(&source, config)
+        .expect("parse rds")
+        .object;
 
     let out_dir = dir.path().join("out");
     let output = extract_object_to_raw_files_with_kind_and_input_streaming(

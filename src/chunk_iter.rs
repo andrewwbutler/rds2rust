@@ -603,6 +603,150 @@ impl VectorData<Arc<str>> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn read_lazy_fixed_range<T: ChunkElement>(
+    source: &dyn RdsInput,
+    span: LazyVector,
+    start: usize,
+    count: usize,
+) -> Result<Vec<T>> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    let end = start
+        .checked_add(count)
+        .ok_or_else(|| Error::InvalidFormat("lazy range overflow".to_string()))?;
+    if end > span.length {
+        return Err(Error::InvalidFormat(
+            "lazy range exceeds vector length".to_string(),
+        ));
+    }
+
+    let offset_bytes = span
+        .offset
+        .checked_add((start * T::BYTES) as u64)
+        .ok_or_else(|| Error::InvalidFormat("lazy span overflow".to_string()))?;
+    let total_bytes = count
+        .checked_mul(T::BYTES)
+        .ok_or_else(|| Error::InvalidFormat("lazy range overflow".to_string()))?;
+    let bytes = source.read_at(offset_bytes, total_bytes)?;
+    if bytes.len() != total_bytes {
+        return Err(Error::TruncatedLazyPayload {
+            expected: span.byte_len,
+            actual: (start * T::BYTES + bytes.len()) as u64,
+        });
+    }
+
+    let mut cursor = Cursor::new(bytes.as_slice());
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        out.push(T::read_from(&mut cursor)?);
+    }
+    Ok(out)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_lazy_integer_range(
+    source: &dyn RdsInput,
+    span: LazyVector,
+    start: usize,
+    count: usize,
+) -> Result<Vec<i32>> {
+    read_lazy_fixed_range::<i32>(source, span, start, count)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_lazy_real_range(
+    source: &dyn RdsInput,
+    span: LazyVector,
+    start: usize,
+    count: usize,
+) -> Result<Vec<f64>> {
+    read_lazy_fixed_range::<f64>(source, span, start, count)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_lazy_logical_range(
+    source: &dyn RdsInput,
+    span: LazyVector,
+    start: usize,
+    count: usize,
+) -> Result<Vec<Logical>> {
+    read_lazy_fixed_range::<Logical>(source, span, start, count)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_lazy_raw_range(
+    source: &dyn RdsInput,
+    span: LazyVector,
+    start: usize,
+    count: usize,
+) -> Result<Vec<u8>> {
+    read_lazy_fixed_range::<u8>(source, span, start, count)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_lazy_complex_range(
+    source: &dyn RdsInput,
+    span: LazyVector,
+    start: usize,
+    count: usize,
+) -> Result<Vec<Complex>> {
+    read_lazy_fixed_range::<Complex>(source, span, start, count)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_lazy_character_range(
+    source: &dyn RdsInput,
+    span: LazyVector,
+    start: usize,
+    count: usize,
+) -> Result<Vec<Arc<str>>> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    let end = start
+        .checked_add(count)
+        .ok_or_else(|| Error::InvalidFormat("lazy range overflow".to_string()))?;
+    if end > span.length {
+        return Err(Error::InvalidFormat(
+            "lazy range exceeds vector length".to_string(),
+        ));
+    }
+
+    let mut iter = LazyCharacterChunkIter::new(source, span, ChunkConfig::default())?;
+    let mut skipped = 0usize;
+    let mut out = Vec::with_capacity(count);
+
+    while out.len() < count {
+        let chunk = match iter.next() {
+            Some(Ok(chunk)) => chunk,
+            Some(Err(err)) => return Err(err),
+            None => {
+                return Err(Error::InvalidFormat(
+                    "lazy character range exceeded available data".to_string(),
+                ))
+            }
+        };
+
+        if skipped < start {
+            if skipped + chunk.len() <= start {
+                skipped += chunk.len();
+                continue;
+            }
+            let offset = start - skipped;
+            let take = (chunk.len() - offset).min(count - out.len());
+            out.extend(chunk[offset..offset + take].iter().cloned());
+            skipped = start;
+        } else {
+            let take = chunk.len().min(count - out.len());
+            out.extend(chunk[..take].iter().cloned());
+        }
+    }
+
+    Ok(out)
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
@@ -668,5 +812,37 @@ mod tests {
         let second = iter.next().unwrap().unwrap();
         assert_eq!(first, vec![Arc::from("alpha")]);
         assert_eq!(second, vec![Arc::from("beta"), Arc::from("g")]);
+    }
+
+    #[test]
+    fn read_lazy_integer_range_reads_slice() {
+        let mut data = Vec::new();
+        for value in [1i32, 2, 3, 4] {
+            data.extend_from_slice(&value.to_be_bytes());
+        }
+        let input = TestInput { data };
+        let span = LazyVector {
+            length: 4,
+            offset: 0,
+            byte_len: 16,
+        };
+        let range = read_lazy_integer_range(&input, span, 1, 2).unwrap();
+        assert_eq!(range, vec![2, 3]);
+    }
+
+    #[test]
+    fn read_lazy_integer_range_rejects_out_of_bounds() {
+        let mut data = Vec::new();
+        for value in [1i32, 2, 3, 4] {
+            data.extend_from_slice(&value.to_be_bytes());
+        }
+        let input = TestInput { data };
+        let span = LazyVector {
+            length: 4,
+            offset: 0,
+            byte_len: 16,
+        };
+        let result = read_lazy_integer_range(&input, span, 3, 2);
+        assert!(result.is_err());
     }
 }

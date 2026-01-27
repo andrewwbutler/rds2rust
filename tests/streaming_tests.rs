@@ -117,7 +117,9 @@ fn streaming_emits_shared_refs() {
     let source = read_source("ref_shared_list.rds");
     let bytes = std::fs::read("tests/data/ref_shared_list.rds")
         .expect("failed to read ref_shared_list.rds");
-    let obj = read_rds(&bytes).expect("failed to parse ref_shared_list.rds");
+    let obj = read_rds(&bytes)
+        .expect("failed to parse ref_shared_list.rds")
+        .object;
     if !contains_shared(&obj) {
         eprintln!("Skipping test: no shared references detected in ref_shared_list.rds");
         return;
@@ -190,7 +192,9 @@ fn streaming_pairlist_attributes_before_children() {
 
     let bytes =
         std::fs::read("tests/data/pairlist_mixed.rds").expect("failed to read pairlist_mixed.rds");
-    let obj = read_rds(&bytes).expect("failed to parse pairlist_mixed.rds");
+    let obj = read_rds(&bytes)
+        .expect("failed to parse pairlist_mixed.rds")
+        .object;
     if !contains_pairlist_with_attrs(&obj) {
         eprintln!("Skipping test: no pairlist attributes detected");
         return;

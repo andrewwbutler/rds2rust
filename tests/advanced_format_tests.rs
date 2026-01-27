@@ -35,7 +35,9 @@ fn test_compact_strings() {
     }
 
     let data = read_test_file("compact_strings.rds");
-    let obj = read_rds(&data).expect("Failed to parse compact strings");
+    let obj = read_rds(&data)
+        .expect("Failed to parse compact strings")
+        .object;
 
     match obj {
         RObject::Character(vec) => {
@@ -58,7 +60,9 @@ fn test_string_lengths() {
 
     // Very short string
     let data = read_test_file("string_very_short.rds");
-    let obj = read_rds(&data).expect("Failed to parse very short string");
+    let obj = read_rds(&data)
+        .expect("Failed to parse very short string")
+        .object;
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 1);
@@ -69,7 +73,9 @@ fn test_string_lengths() {
 
     // Medium string (500 characters)
     let data = read_test_file("string_medium.rds");
-    let obj = read_rds(&data).expect("Failed to parse medium string");
+    let obj = read_rds(&data)
+        .expect("Failed to parse medium string")
+        .object;
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 1);
@@ -80,7 +86,7 @@ fn test_string_lengths() {
 
     // Long string (70000 characters)
     let data = read_test_file("string_long.rds");
-    let obj = read_rds(&data).expect("Failed to parse long string");
+    let obj = read_rds(&data).expect("Failed to parse long string").object;
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 1);
@@ -99,7 +105,9 @@ fn test_string_encodings() {
 
     // UTF-8 string
     let data = read_test_file("string_utf8.rds");
-    let obj = read_rds(&data).expect("Failed to parse UTF-8 string");
+    let obj = read_rds(&data)
+        .expect("Failed to parse UTF-8 string")
+        .object;
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 1);
@@ -111,7 +119,9 @@ fn test_string_encodings() {
 
     // Latin1 string
     let data = read_test_file("string_latin1.rds");
-    let obj = read_rds(&data).expect("Failed to parse Latin1 string");
+    let obj = read_rds(&data)
+        .expect("Failed to parse Latin1 string")
+        .object;
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 1);
@@ -134,7 +144,9 @@ fn test_nested_char_vectors() {
     }
 
     let data = read_test_file("nested_char_vectors.rds");
-    let obj = read_rds(&data).expect("Failed to parse nested char vectors");
+    let obj = read_rds(&data)
+        .expect("Failed to parse nested char vectors")
+        .object;
 
     match obj {
         RObject::WithAttributes { object, attributes } => {
@@ -191,7 +203,9 @@ fn test_mixed_types_list() {
     }
 
     let data = read_test_file("mixed_types_list.rds");
-    let obj = read_rds(&data).expect("Failed to parse mixed types list");
+    let obj = read_rds(&data)
+        .expect("Failed to parse mixed types list")
+        .object;
 
     // Extract the list (may be wrapped in WithAttributes)
     let list = match obj {
@@ -238,7 +252,9 @@ fn test_s3_rich_attributes() {
     }
 
     let data = read_test_file("s3_rich_attributes.rds");
-    let obj = read_rds(&data).expect("Failed to parse S3 with rich attributes");
+    let obj = read_rds(&data)
+        .expect("Failed to parse S3 with rich attributes")
+        .object;
 
     match obj {
         RObject::S3Object(s3) => {
@@ -266,7 +282,9 @@ fn test_package_function() {
     }
 
     let data = read_test_file("package_function.rds");
-    let obj = read_rds(&data).expect("Failed to parse package function");
+    let obj = read_rds(&data)
+        .expect("Failed to parse package function")
+        .object;
 
     // Package functions are typically closures or builtins
     match obj {
@@ -291,7 +309,9 @@ fn test_complex_pseudo_types() {
     }
 
     let data = read_test_file("complex_pseudo_types.rds");
-    let obj = read_rds(&data).expect("Failed to parse complex pseudo types");
+    let obj = read_rds(&data)
+        .expect("Failed to parse complex pseudo types")
+        .object;
 
     // Extract the list
     let list = match obj {
@@ -340,7 +360,9 @@ fn test_multi_level_refs() {
     }
 
     let data = read_test_file("multi_level_refs.rds");
-    let obj = read_rds(&data).expect("Failed to parse multi-level refs");
+    let obj = read_rds(&data)
+        .expect("Failed to parse multi-level refs")
+        .object;
 
     let list = match obj {
         RObject::WithAttributes { object, .. } => object,
@@ -404,7 +426,9 @@ fn test_repeated_symbol_names() {
     }
 
     let data = read_test_file("repeated_symbol_names.rds");
-    let obj = read_rds(&data).expect("Failed to parse repeated symbol names");
+    let obj = read_rds(&data)
+        .expect("Failed to parse repeated symbol names")
+        .object;
 
     let list = match obj {
         RObject::WithAttributes { object, .. } => object,
@@ -449,7 +473,9 @@ fn test_no_attributes() {
     }
 
     let data = read_test_file("no_attributes.rds");
-    let obj = read_rds(&data).expect("Failed to parse object with no attributes");
+    let obj = read_rds(&data)
+        .expect("Failed to parse object with no attributes")
+        .object;
 
     match obj {
         RObject::Real(vec) => {
@@ -468,7 +494,9 @@ fn test_custom_attributes() {
 
     // Integer with custom attributes
     let data = read_test_file("int_with_custom_attrs.rds");
-    let obj = read_rds(&data).expect("Failed to parse int with custom attrs");
+    let obj = read_rds(&data)
+        .expect("Failed to parse int with custom attrs")
+        .object;
 
     eprintln!("DEBUG: obj type = {:?}", std::mem::discriminant(&obj));
     match obj {
@@ -489,7 +517,9 @@ fn test_custom_attributes() {
 
     // Real with custom attributes
     let data = read_test_file("real_with_custom_attrs.rds");
-    let obj = read_rds(&data).expect("Failed to parse real with custom attrs");
+    let obj = read_rds(&data)
+        .expect("Failed to parse real with custom attrs")
+        .object;
 
     match obj {
         RObject::WithAttributes { object, attributes } => {
@@ -506,7 +536,9 @@ fn test_custom_attributes() {
 
     // Character with custom attributes
     let data = read_test_file("char_with_custom_attrs.rds");
-    let obj = read_rds(&data).expect("Failed to parse char with custom attrs");
+    let obj = read_rds(&data)
+        .expect("Failed to parse char with custom attrs")
+        .object;
 
     match obj {
         RObject::WithAttributes { object, attributes } => {
@@ -530,7 +562,9 @@ fn test_all_types_attributes() {
     }
 
     let data = read_test_file("all_types_attributes.rds");
-    let obj = read_rds(&data).expect("Failed to parse all types attributes");
+    let obj = read_rds(&data)
+        .expect("Failed to parse all types attributes")
+        .object;
 
     match obj {
         RObject::WithAttributes { object, attributes } => {
@@ -564,12 +598,14 @@ fn test_null_variants() {
 
     // Plain NULL
     let data = read_test_file("null_plain.rds");
-    let obj = read_rds(&data).expect("Failed to parse plain NULL");
+    let obj = read_rds(&data).expect("Failed to parse plain NULL").object;
     assert!(matches!(obj, RObject::Null));
 
     // NULL in list
     let data = read_test_file("null_in_list.rds");
-    let obj = read_rds(&data).expect("Failed to parse NULL in list");
+    let obj = read_rds(&data)
+        .expect("Failed to parse NULL in list")
+        .object;
 
     let list = match obj {
         RObject::WithAttributes { object, .. } => object,
@@ -587,7 +623,7 @@ fn test_null_variants() {
 
     // Multiple NULLs
     let data = read_test_file("multi_null.rds");
-    let obj = read_rds(&data).expect("Failed to parse multi NULL");
+    let obj = read_rds(&data).expect("Failed to parse multi NULL").object;
 
     match obj {
         RObject::List(elements) => {
@@ -613,17 +649,21 @@ fn test_language_variants() {
 
     // Simple call
     let data = read_test_file("lang_simple_call.rds");
-    let obj = read_rds(&data).expect("Failed to parse simple call");
+    let obj = read_rds(&data).expect("Failed to parse simple call").object;
     assert!(matches!(obj, RObject::Language { .. }));
 
     // Named arguments
     let data = read_test_file("lang_named_args.rds");
-    let obj = read_rds(&data).expect("Failed to parse named args call");
+    let obj = read_rds(&data)
+        .expect("Failed to parse named args call")
+        .object;
     assert!(matches!(obj, RObject::Language { .. }));
 
     // Deeply nested
     let data = read_test_file("lang_deep_nested.rds");
-    let obj = read_rds(&data).expect("Failed to parse deep nested call");
+    let obj = read_rds(&data)
+        .expect("Failed to parse deep nested call")
+        .object;
     assert!(matches!(obj, RObject::Language { .. }));
 }
 
@@ -639,7 +679,9 @@ fn test_pairlist_mixed() {
     }
 
     let data = read_test_file("pairlist_mixed.rds");
-    let obj = read_rds(&data).expect("Failed to parse mixed pairlist");
+    let obj = read_rds(&data)
+        .expect("Failed to parse mixed pairlist")
+        .object;
 
     match obj {
         RObject::Pairlist(elements) => {
@@ -667,7 +709,9 @@ fn test_environment_variants() {
 
     // Empty environment
     let data = read_test_file("environment_empty.rds");
-    let obj = read_rds(&data).expect("Failed to parse empty environment");
+    let obj = read_rds(&data)
+        .expect("Failed to parse empty environment")
+        .object;
     // Environments may be represented as Environment or Null
     match obj {
         RObject::Environment { .. } | RObject::Null => {
@@ -678,7 +722,9 @@ fn test_environment_variants() {
 
     // Rich environment
     let data = read_test_file("environment_rich.rds");
-    let obj = read_rds(&data).expect("Failed to parse rich environment");
+    let obj = read_rds(&data)
+        .expect("Failed to parse rich environment")
+        .object;
     match obj {
         RObject::Environment { .. } | RObject::Null => {
             // Success
@@ -699,7 +745,7 @@ fn test_tiny_object() {
     }
 
     let data = read_test_file("tiny_object.rds");
-    let obj = read_rds(&data).expect("Failed to parse tiny object");
+    let obj = read_rds(&data).expect("Failed to parse tiny object").object;
 
     match obj {
         RObject::Integer(vec) => {
@@ -718,7 +764,9 @@ fn test_list_with_large_int() {
     }
 
     let data = read_test_file("list_with_large_int.rds");
-    let obj = read_rds(&data).expect("Failed to parse list with large int");
+    let obj = read_rds(&data)
+        .expect("Failed to parse list with large int")
+        .object;
 
     let list = match obj {
         RObject::WithAttributes { object, .. } => object,
@@ -762,7 +810,9 @@ fn test_namespace_roundtrip() {
     let serialized = write_rds(&namespace).expect("Failed to serialize namespace");
 
     // Deserialize
-    let deserialized = read_rds(&serialized).expect("Failed to deserialize namespace");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to deserialize namespace")
+        .object;
 
     // Verify
     match deserialized {
@@ -783,7 +833,7 @@ fn test_namespace_multiple_components() {
     let namespace = RObject::Namespace(vec![Arc::from("ExamplePkg"), Arc::from("1.0.0")]);
 
     let serialized = write_rds(&namespace).expect("Failed to serialize");
-    let deserialized = read_rds(&serialized).expect("Failed to deserialize");
+    let deserialized = read_rds(&serialized).expect("Failed to deserialize").object;
 
     match deserialized {
         RObject::Namespace(names) => {
@@ -808,7 +858,7 @@ fn test_namespace_in_list() {
     ]);
 
     let serialized = write_rds(&list).expect("Failed to serialize");
-    let deserialized = read_rds(&serialized).expect("Failed to deserialize");
+    let deserialized = read_rds(&serialized).expect("Failed to deserialize").object;
 
     match deserialized {
         RObject::List(elements) => {
@@ -909,7 +959,9 @@ fn test_closure_with_namespace_environment() {
     let serialized = write_rds(&closure).expect("Failed to serialize closure");
 
     // Deserialize
-    let deserialized = read_rds(&serialized).expect("Failed to deserialize closure");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to deserialize closure")
+        .object;
 
     // Verify the closure structure is preserved
     match deserialized {
@@ -946,7 +998,9 @@ fn test_environment_chain_with_namespace() {
     let serialized = write_rds(&env).expect("Failed to serialize environment");
 
     // Deserialize
-    let deserialized = read_rds(&serialized).expect("Failed to deserialize environment");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to deserialize environment")
+        .object;
 
     // Verify
     match deserialized {

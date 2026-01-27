@@ -83,7 +83,9 @@ fn test_named_list_roundtrip() {
 
     // Write and read back
     let serialized = write_rds(&named_list).expect("Failed to write named list");
-    let deserialized = read_rds(&serialized).expect("Failed to read named list");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read named list")
+        .object;
 
     // Verify it matches
     assert_eq!(named_list, deserialized);
@@ -140,7 +142,7 @@ fn test_named_vector_roundtrip() {
     };
 
     let serialized = write_rds(&named_vec).expect("Failed to write");
-    let deserialized = read_rds(&serialized).expect("Failed to read");
+    let deserialized = read_rds(&serialized).expect("Failed to read").object;
 
     assert_eq!(named_vec, deserialized);
 }
@@ -230,7 +232,7 @@ fn test_multiple_attributes_roundtrip() {
     };
 
     let serialized = write_rds(&obj).expect("Failed to write");
-    let deserialized = read_rds(&serialized).expect("Failed to read");
+    let deserialized = read_rds(&serialized).expect("Failed to read").object;
 
     // Verify the object and attributes separately since attribute order may vary
     match deserialized {
@@ -396,7 +398,7 @@ fn test_nested_with_attributes() {
 
     // Roundtrip test
     let serialized = write_rds(&named_list).expect("Failed to write");
-    let deserialized = read_rds(&serialized).expect("Failed to read");
+    let deserialized = read_rds(&serialized).expect("Failed to read").object;
 
     assert_eq!(named_list, deserialized);
 }

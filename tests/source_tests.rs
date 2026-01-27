@@ -47,7 +47,9 @@ fn read_rds_from_chunked_source() {
     let file = tempfile::NamedTempFile::new().expect("temp file");
     std::fs::write(file.path(), bytes).expect("write file");
 
-    let parsed = rds2rust::read_rds_from_path_chunked(file.path()).expect("read chunked");
+    let parsed = rds2rust::read_rds_from_path_chunked(file.path())
+        .expect("read chunked")
+        .object;
     match parsed {
         rds2rust::RObject::Integer(vec) => {
             assert_eq!(vec.as_vec(), &vec![1, 2, 3]);

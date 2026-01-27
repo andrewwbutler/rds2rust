@@ -1,5 +1,5 @@
 #[cfg(target_arch = "wasm32")]
-use crate::{ParseConfig, RObject, Result};
+use crate::{ParseConfig, ParseResult, Result};
 
 #[cfg(target_arch = "wasm32")]
 use crate::wasm::{AsyncCursorConfig, AsyncRdsInput};
@@ -26,10 +26,12 @@ pub async fn read_rds_async(
     input: &dyn AsyncRdsInput,
     parse_config: ParseConfig,
     async_config: AsyncParseConfig,
-) -> Result<RObject> {
+) -> Result<ParseResult> {
     let config = AsyncCursorConfig {
         max_buffer_size: async_config.max_bytes,
         ..async_config.cursor
     };
-    crate::parser::parse_rds_with_async_input(input, parse_config, config).await
+    let mut result = crate::parser::parse_rds_with_async_input(input, parse_config, config).await?;
+    result.object = crate::unwrap_top_level_shared(result.object);
+    Ok(result)
 }

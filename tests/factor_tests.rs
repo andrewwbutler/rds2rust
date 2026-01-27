@@ -26,7 +26,9 @@ fn test_factor_simple() {
     }
 
     let data = read_test_file("factor_simple.rds");
-    let obj = read_rds(&data).expect("Failed to parse simple factor");
+    let obj = read_rds(&data)
+        .expect("Failed to parse simple factor")
+        .object;
 
     match obj {
         RObject::Factor(factor_data) => {
@@ -66,7 +68,9 @@ fn test_factor_ordered() {
     }
 
     let data = read_test_file("factor_ordered.rds");
-    let obj = read_rds(&data).expect("Failed to parse ordered factor");
+    let obj = read_rds(&data)
+        .expect("Failed to parse ordered factor")
+        .object;
 
     match obj {
         RObject::Factor(factor_data) => {
@@ -108,10 +112,14 @@ fn test_factor_simple_roundtrip() {
     }
 
     let data = read_test_file("factor_simple.rds");
-    let obj = read_rds(&data).expect("Failed to read existing factor");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing factor")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write factor");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized factor");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized factor")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -124,10 +132,14 @@ fn test_factor_ordered_roundtrip() {
     }
 
     let data = read_test_file("factor_ordered.rds");
-    let obj = read_rds(&data).expect("Failed to read existing ordered factor");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing ordered factor")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write ordered factor");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized ordered factor");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized ordered factor")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -155,7 +167,9 @@ fn test_factor_with_names_roundtrip() {
     let obj = factor.clone().with_attributes(attrs);
 
     let serialized = write_rds(&obj).expect("Failed to write factor with names");
-    let deserialized = read_rds(&serialized).expect("Failed to read factor with names");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read factor with names")
+        .object;
 
     match deserialized {
         RObject::WithAttributes { object, attributes } => {

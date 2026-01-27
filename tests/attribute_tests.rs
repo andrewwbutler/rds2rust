@@ -27,7 +27,9 @@ fn test_int_named() {
     }
 
     let data = read_test_file("int_named.rds");
-    let obj = read_rds(&data).expect("Failed to parse named integer vector");
+    let obj = read_rds(&data)
+        .expect("Failed to parse named integer vector")
+        .object;
 
     // Named vectors have a "names" attribute
     match obj {
@@ -70,7 +72,9 @@ fn test_real_named() {
     }
 
     let data = read_test_file("real_named.rds");
-    let obj = read_rds(&data).expect("Failed to parse named real vector");
+    let obj = read_rds(&data)
+        .expect("Failed to parse named real vector")
+        .object;
 
     match obj {
         RObject::WithAttributes { object, attributes } => {
@@ -115,7 +119,9 @@ fn test_matrix_int() {
     }
 
     let data = read_test_file("matrix_int.rds");
-    let obj = read_rds(&data).expect("Failed to parse integer matrix");
+    let obj = read_rds(&data)
+        .expect("Failed to parse integer matrix")
+        .object;
 
     match obj {
         RObject::WithAttributes { object, attributes } => {
@@ -167,7 +173,9 @@ fn test_symbol_table_attribute_names() {
     }
 
     let data = read_test_file("symbol_table_test.rds");
-    let obj = read_rds(&data).expect("Failed to parse symbol table test");
+    let obj = read_rds(&data)
+        .expect("Failed to parse symbol table test")
+        .object;
 
     // The object should be a list with attributes (the "names" attribute)
     let (outer_list, outer_attrs) = match obj {

@@ -168,7 +168,8 @@ fn main() {
                 } else {
                     rds2rust::ParseConfig::for_trusted_large_file()
                 };
-                let obj = rds2rust::read_rds_with_input(&source, config).expect("parse rds");
+                let result = rds2rust::read_rds_with_input(&source, config).expect("parse rds");
+                let obj = result.object;
                 let chunk_bytes = chunk_size_mb.map(|mb| mb * 1024 * 1024);
                 rds2rust::extract_object_to_raw_files_with_kind_and_input_streaming(
                     &obj,
@@ -189,7 +190,8 @@ fn main() {
                 } else {
                     rds2rust::ParseConfig::for_trusted_large_file()
                 };
-                let obj = rds2rust::read_rds_with_input(&source, config).expect("parse rds");
+                let result = rds2rust::read_rds_with_input(&source, config).expect("parse rds");
+                let obj = result.object;
                 let chunk_bytes = chunk_size_mb.map(|mb| mb * 1024 * 1024);
                 rds2rust::extract_object_to_raw_files_with_kind_and_input_streaming(
                     &obj,
@@ -228,7 +230,8 @@ fn main() {
                 } else {
                     rds2rust::ParseConfig::for_trusted_large_file()
                 };
-                let obj = rds2rust::read_rds_with_input(&source, config).expect("parse rds");
+                let result = rds2rust::read_rds_with_input(&source, config).expect("parse rds");
+                let obj = result.object;
                 let chunk_bytes = chunk_size_mb.map(|mb| mb * 1024 * 1024);
                 rds2rust::extract_object_to_raw_files_with_input_streaming(
                     &obj,
@@ -248,7 +251,8 @@ fn main() {
                 } else {
                     rds2rust::ParseConfig::for_trusted_large_file()
                 };
-                let obj = rds2rust::read_rds_with_input(&source, config).expect("parse rds");
+                let result = rds2rust::read_rds_with_input(&source, config).expect("parse rds");
+                let obj = result.object;
                 let chunk_bytes = chunk_size_mb.map(|mb| mb * 1024 * 1024);
                 rds2rust::extract_object_to_raw_files_with_input_streaming(
                     &obj,
@@ -296,7 +300,8 @@ fn main() {
             } else {
                 rds2rust::ParseConfig::for_trusted_large_file()
             };
-            let obj = rds2rust::read_rds_with_input(source.as_ref(), config).expect("parse rds");
+            let result = rds2rust::read_rds_with_input(source.as_ref(), config).expect("parse rds");
+            let obj = result.object;
             let chunk_bytes = chunk_size_mb.map(|mb| mb * 1024 * 1024);
             let result = extract_vectors_streaming(
                 &obj,

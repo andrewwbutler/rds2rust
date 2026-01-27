@@ -26,7 +26,9 @@ fn test_dataframe_simple() {
     }
 
     let data = read_test_file("dataframe_simple.rds");
-    let obj = read_rds(&data).expect("Failed to parse simple data frame");
+    let obj = read_rds(&data)
+        .expect("Failed to parse simple data frame")
+        .object;
 
     match obj {
         RObject::DataFrame(data) => {
@@ -82,7 +84,9 @@ fn test_dataframe_mixed() {
     }
 
     let data = read_test_file("dataframe_mixed.rds");
-    let obj = read_rds(&data).expect("Failed to parse mixed data frame");
+    let obj = read_rds(&data)
+        .expect("Failed to parse mixed data frame")
+        .object;
 
     match obj {
         RObject::DataFrame(data) => {
@@ -141,7 +145,9 @@ fn test_dataframe_rownames() {
     }
 
     let data = read_test_file("dataframe_rownames.rds");
-    let obj = read_rds(&data).expect("Failed to parse data frame with row names");
+    let obj = read_rds(&data)
+        .expect("Failed to parse data frame with row names")
+        .object;
 
     match obj {
         RObject::DataFrame(data) => {
@@ -190,10 +196,14 @@ fn test_dataframe_simple_roundtrip() {
     }
 
     let data = read_test_file("dataframe_simple.rds");
-    let obj = read_rds(&data).expect("Failed to read existing dataframe");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing dataframe")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write dataframe");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized dataframe");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized dataframe")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -206,10 +216,14 @@ fn test_dataframe_mixed_roundtrip() {
     }
 
     let data = read_test_file("dataframe_mixed.rds");
-    let obj = read_rds(&data).expect("Failed to read existing mixed dataframe");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing mixed dataframe")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write mixed dataframe");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized mixed dataframe");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized mixed dataframe")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -222,11 +236,14 @@ fn test_dataframe_rownames_roundtrip() {
     }
 
     let data = read_test_file("dataframe_rownames.rds");
-    let obj = read_rds(&data).expect("Failed to read existing dataframe with rownames");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing dataframe with rownames")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write dataframe with rownames");
-    let deserialized =
-        read_rds(&serialized).expect("Failed to read serialized dataframe with rownames");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized dataframe with rownames")
+        .object;
 
     assert_eq!(obj, deserialized);
 }

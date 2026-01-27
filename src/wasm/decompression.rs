@@ -133,7 +133,7 @@ pub async fn read_rds_from_blob(
     async_config: crate::AsyncParseConfig,
     cache_config: crate::CacheConfig,
     options: Option<JsValue>,
-) -> crate::Result<crate::RObject> {
+) -> crate::Result<crate::ParseResult> {
     let decompressed = decompress_blob_if_needed(blob, options).await?;
 
     // DEBUG: Log blob size as seen by Rust

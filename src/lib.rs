@@ -22,7 +22,11 @@ mod wasm;
 mod writer;
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use chunk_iter::{CharacterChunkIter, ChunkConfig, VectorChunkIter};
+pub use chunk_iter::{
+    read_lazy_character_range, read_lazy_complex_range, read_lazy_integer_range,
+    read_lazy_logical_range, read_lazy_raw_range, read_lazy_real_range, CharacterChunkIter,
+    ChunkConfig, VectorChunkIter,
+};
 pub use error::{Error, Result};
 pub use extraction::{
     convert_object_to_raw_dump, convert_object_to_raw_dump_at_path, expand_dataframe_paths,
@@ -82,8 +86,9 @@ pub use wasm::{
     decompress_blob_if_needed, detect_blob_compression, estimate_parse_size,
     extract_vector_chunked, extract_vector_to_js, memory_warning, read_lazy_character_vector,
     read_lazy_vector_range, read_rds_async, read_rds_from_blob, recommend_decompression_mode,
-    recommended_chunk_size_mb, traverse_rds_blob_streaming, traverse_rds_blob_streaming_with_progress,
-    write_rds_with_callback, write_rds_with_callback_and_compression, write_rds_with_progress,
+    recommended_chunk_size_mb, traverse_rds_blob_streaming,
+    traverse_rds_blob_streaming_with_progress, write_rds_with_callback,
+    write_rds_with_callback_and_compression, write_rds_with_progress,
     write_rds_with_progress_and_compression, AsyncBufferedCursor, AsyncCursor, AsyncCursorConfig,
     AsyncParseConfig, AsyncRdsInput, AsyncReadFuture, AsyncSequentialInput, BlobChunkedSource,
     CacheConfig, CacheMetrics, SequentialAdapter, SequentialCursor, StreamingGzipDecompressor,
@@ -196,8 +201,9 @@ impl ObjectPath {
 ///
 /// # Safety Guardrails
 ///
-/// Note: `mode` does NOT override safety guardrails (`max_vector_length`, `max_allocation_bytes`).
-/// These limits are enforced even in `LazyMetadata` mode to protect against corrupt headers.
+/// Note: `mode` does not disable safety guardrails for materialized allocations.
+/// In `LazyMetadata` mode, vector length limits are relaxed for spans that remain lazy,
+/// but overflow checks are still enforced to protect against corrupt headers.
 #[derive(Debug, Clone)]
 pub struct ParseConfig {
     /// Maximum number of elements allowed in a vector (default: 50,000,000)
@@ -239,6 +245,12 @@ pub struct ParseConfig {
 
     /// Policy controlling how S4 slot pairlists are handled in lazy modes.
     pub s4_slot_policy: S4SlotPolicy,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParseResult {
+    pub object: RObject,
+    pub warnings: Vec<MetadataWarning>,
 }
 
 impl Default for ParseConfig {
@@ -428,7 +440,7 @@ impl ParseConfig {
 ///
 /// For large files, consider using [`read_rds_with_config`] with [`ParseConfig::large_data()`].
 /// For lazy parsing (metadata only), use [`read_rds_lazy`].
-pub fn read_rds(data: &[u8]) -> Result<RObject> {
+pub fn read_rds(data: &[u8]) -> Result<ParseResult> {
     read_rds_with_config(data, ParseConfig::default())
 }
 
@@ -447,7 +459,8 @@ pub fn read_rds(data: &[u8]) -> Result<RObject> {
 ///
 /// # fn example(data: &[u8]) -> rds2rust::Result<()> {
 /// // Parse metadata only
-/// let obj = read_rds_lazy(data)?;
+/// let result = read_rds_lazy(data)?;
+/// let obj = result.object;
 ///
 /// // Check if object is fully loaded
 /// assert!(!obj.is_fully_loaded());
@@ -464,11 +477,11 @@ pub fn read_rds(data: &[u8]) -> Result<RObject> {
 /// # Note
 ///
 /// Safety guardrails (`max_vector_length`, `max_allocation_bytes`) are
-/// still enforced to protect against corrupt headers.
+/// still enforced for materialized allocations to protect against corrupt headers.
 ///
 /// Attempting to write a lazy object will fail - materialize it first
 /// or re-parse in full mode.
-pub fn read_rds_lazy(data: &[u8]) -> Result<RObject> {
+pub fn read_rds_lazy(data: &[u8]) -> Result<ParseResult> {
     read_rds_with_config(data, ParseConfig::lazy_metadata())
 }
 
@@ -481,30 +494,32 @@ pub fn read_rds_lazy(data: &[u8]) -> Result<RObject> {
 ///
 /// // For large scientific datasets
 /// let config = ParseConfig::large_data();
-/// // let obj = read_rds_with_config(&data, config)?;
+/// // let result = read_rds_with_config(&data, config)?;
 ///
 /// // For custom limits
 /// let config = ParseConfig::new()
 ///     .with_max_allocation_bytes(512 * 1024 * 1024); // 512 MB
-/// // let obj = read_rds_with_config(&data, config)?;
+/// // let result = read_rds_with_config(&data, config)?;
 /// ```
-pub fn read_rds_with_config(data: &[u8], config: ParseConfig) -> Result<RObject> {
-    let obj = parser::parse_rds_with_config(data, config)?;
-    Ok(unwrap_top_level_shared(obj))
+pub fn read_rds_with_config(data: &[u8], config: ParseConfig) -> Result<ParseResult> {
+    let mut result = parser::parse_rds_with_config(data, config)?;
+    result.object = unwrap_top_level_shared(result.object);
+    Ok(result)
 }
 
 /// Read an RDS file from an input source with custom configuration.
 ///
 /// This uses `RdsInput` to support chunked backing stores.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn read_rds_with_input(input: &dyn RdsInput, config: ParseConfig) -> Result<RObject> {
-    let obj = parser::parse_rds_with_input(input, config)?;
-    Ok(unwrap_top_level_shared(obj))
+pub fn read_rds_with_input(input: &dyn RdsInput, config: ParseConfig) -> Result<ParseResult> {
+    let mut result = parser::parse_rds_with_input(input, config)?;
+    result.object = unwrap_top_level_shared(result.object);
+    Ok(result)
 }
 
 /// Read an RDS file from an input source in lazy metadata mode.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn read_rds_lazy_with_input(input: &dyn RdsInput) -> Result<RObject> {
+pub fn read_rds_lazy_with_input(input: &dyn RdsInput) -> Result<ParseResult> {
     read_rds_with_input(input, ParseConfig::lazy_metadata())
 }
 
@@ -516,7 +531,7 @@ pub fn read_rds_lazy_with_input(input: &dyn RdsInput) -> Result<RObject> {
 pub fn read_rds_from_path_with_config<P: AsRef<std::path::Path>>(
     path: P,
     config: ParseConfig,
-) -> Result<RObject> {
+) -> Result<ParseResult> {
     let source = MmapRdsSource::from_path(path.as_ref())?;
     read_rds_with_config(source.as_slice(), config)
 }
@@ -526,7 +541,7 @@ pub fn read_rds_from_path_with_config<P: AsRef<std::path::Path>>(
 pub fn read_rds_from_path_chunked_with_config<P: AsRef<std::path::Path>>(
     path: P,
     config: ParseConfig,
-) -> Result<RObject> {
+) -> Result<ParseResult> {
     let source = ChunkedRdsSource::from_path_with_cache_config(
         path.as_ref(),
         config.chunk_cache_max_bytes,
@@ -537,26 +552,26 @@ pub fn read_rds_from_path_chunked_with_config<P: AsRef<std::path::Path>>(
 
 /// Read an RDS file from a file path with default configuration.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn read_rds_from_path<P: AsRef<std::path::Path>>(path: P) -> Result<RObject> {
+pub fn read_rds_from_path<P: AsRef<std::path::Path>>(path: P) -> Result<ParseResult> {
     read_rds_from_path_with_config(path, ParseConfig::default())
 }
 
 /// Read an RDS file from a file path with default configuration, backed by chunked reads.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn read_rds_from_path_chunked<P: AsRef<std::path::Path>>(path: P) -> Result<RObject> {
+pub fn read_rds_from_path_chunked<P: AsRef<std::path::Path>>(path: P) -> Result<ParseResult> {
     read_rds_from_path_chunked_with_config(path, ParseConfig::default())
 }
 
 /// Read an RDS file from a file path in lazy metadata mode, backed by chunked reads.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn read_rds_lazy_from_path_chunked<P: AsRef<std::path::Path>>(path: P) -> Result<RObject> {
+pub fn read_rds_lazy_from_path_chunked<P: AsRef<std::path::Path>>(path: P) -> Result<ParseResult> {
     let source = ChunkedRdsSource::from_path(path.as_ref())?;
     read_rds_lazy_with_input(&source)
 }
 
 /// Read an RDS file from a file path in lazy metadata mode.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn read_rds_lazy_from_path<P: AsRef<std::path::Path>>(path: P) -> Result<RObject> {
+pub fn read_rds_lazy_from_path<P: AsRef<std::path::Path>>(path: P) -> Result<ParseResult> {
     read_rds_from_path_with_config(path, ParseConfig::lazy_metadata())
 }
 
@@ -567,7 +582,7 @@ pub fn read_rds_lazy_from_path<P: AsRef<std::path::Path>>(path: P) -> Result<ROb
 /// that only have one strong reference (not actually shared via REFSXP).
 ///
 /// Objects with multiple references (actual shared references from REFSXP) are kept as Shared.
-fn unwrap_top_level_shared(obj: RObject) -> RObject {
+pub(crate) fn unwrap_top_level_shared(obj: RObject) -> RObject {
     unwrap_shared_recursive(obj)
 }
 
@@ -1055,7 +1070,7 @@ mod tests {
         callback.forget();
 
         let bytes: Vec<u8> = chunks.borrow().iter().flatten().copied().collect();
-        let parsed = crate::read_rds(&bytes).expect("read_rds");
+        let parsed = crate::read_rds(&bytes).expect("read_rds").object;
         match parsed.into_concrete() {
             crate::RObject::Integer(vec) => assert_eq!(vec.as_vec(), &vec![5, 6, 7]),
             other => panic!("unexpected object: {:?}", other),
@@ -1098,7 +1113,7 @@ mod tests {
 
         assert!(progress.get() > 0.0);
         let bytes: Vec<u8> = chunks.borrow().iter().flatten().copied().collect();
-        let parsed = crate::read_rds(&bytes).expect("read_rds");
+        let parsed = crate::read_rds(&bytes).expect("read_rds").object;
         match parsed.into_concrete() {
             crate::RObject::Integer(vec) => assert_eq!(vec.as_vec(), &vec![8, 9, 10, 11]),
             other => panic!("unexpected object: {:?}", other),

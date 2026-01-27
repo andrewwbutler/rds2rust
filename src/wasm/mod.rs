@@ -1,6 +1,8 @@
 #[cfg(target_arch = "wasm32")]
 mod r#async;
 #[cfg(target_arch = "wasm32")]
+mod async_chunk_iter;
+#[cfg(target_arch = "wasm32")]
 mod async_parse;
 #[cfg(target_arch = "wasm32")]
 mod blob_source;
@@ -15,6 +17,10 @@ mod streaming_decompress;
 #[cfg(target_arch = "wasm32")]
 mod write;
 
+#[cfg(target_arch = "wasm32")]
+pub use async_chunk_iter::{
+    AsyncChunkConfig, AsyncFixedLazyChunkIter, AsyncLazyCharacterChunkIter,
+};
 #[cfg(target_arch = "wasm32")]
 pub use async_parse::{read_rds_async, AsyncParseConfig};
 #[cfg(target_arch = "wasm32")]

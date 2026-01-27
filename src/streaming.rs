@@ -172,6 +172,13 @@ pub enum MetadataWarning {
         cache_size_bytes: usize,
         evicted_count: usize,
     },
+    VectorLazy {
+        path: ObjectPath,
+        vector_type: String,
+        length: usize,
+        threshold: usize,
+        byte_len: u64,
+    },
 }
 
 #[allow(dead_code)]

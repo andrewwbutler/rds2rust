@@ -57,7 +57,9 @@ fn test_dataframe_column_order_preservation() {
 
     // Write and read back
     let serialized = rds2rust::write_rds(&df).expect("Failed to write dataframe");
-    let deserialized = rds2rust::read_rds(&serialized).expect("Failed to read dataframe");
+    let deserialized = rds2rust::read_rds(&serialized)
+        .expect("Failed to read dataframe")
+        .object;
 
     // Verify column order is preserved
     match deserialized {
@@ -97,7 +99,9 @@ fn test_dataframe_column_order_with_many_columns() {
 
     // Write and read back
     let serialized = rds2rust::write_rds(&df).expect("Failed to write dataframe");
-    let deserialized = rds2rust::read_rds(&serialized).expect("Failed to read dataframe");
+    let deserialized = rds2rust::read_rds(&serialized)
+        .expect("Failed to read dataframe")
+        .object;
 
     // Verify exact column order is preserved
     match deserialized {
@@ -142,7 +146,9 @@ fn test_s4_slot_order_preservation() {
 
     // Write and read back
     let serialized = rds2rust::write_rds(&s4).expect("Failed to write S4 object");
-    let deserialized = rds2rust::read_rds(&serialized).expect("Failed to read S4 object");
+    let deserialized = rds2rust::read_rds(&serialized)
+        .expect("Failed to read S4 object")
+        .object;
 
     // Verify slot order is preserved
     match deserialized {
@@ -171,7 +177,9 @@ fn test_symbol_null_marker() {
 
     // Write and read back
     let serialized = rds2rust::write_rds(&null_marker).expect("Failed to write Symbol");
-    let deserialized = rds2rust::read_rds(&serialized).expect("Failed to read Symbol");
+    let deserialized = rds2rust::read_rds(&serialized)
+        .expect("Failed to read Symbol")
+        .object;
 
     // Verify it's still a Symbol
     match deserialized {
@@ -203,8 +211,9 @@ fn test_symbol_in_s4_slot() {
 
     // Write and read back
     let serialized = rds2rust::write_rds(&s4).expect("Failed to write S4 object with Symbol");
-    let deserialized =
-        rds2rust::read_rds(&serialized).expect("Failed to read S4 object with Symbol");
+    let deserialized = rds2rust::read_rds(&serialized)
+        .expect("Failed to read S4 object with Symbol")
+        .object;
 
     // Verify Symbol is preserved in slot
     match deserialized {
@@ -229,9 +238,12 @@ fn test_symbol_vs_character_distinction() {
     let serialized_char = rds2rust::write_rds(&char_vec).expect("Failed to write Character");
     let serialized_symbol = rds2rust::write_rds(&symbol).expect("Failed to write Symbol");
 
-    let deserialized_char = rds2rust::read_rds(&serialized_char).expect("Failed to read Character");
-    let deserialized_symbol =
-        rds2rust::read_rds(&serialized_symbol).expect("Failed to read Symbol");
+    let deserialized_char = rds2rust::read_rds(&serialized_char)
+        .expect("Failed to read Character")
+        .object;
+    let deserialized_symbol = rds2rust::read_rds(&serialized_symbol)
+        .expect("Failed to read Symbol")
+        .object;
 
     // Verify types are correct
     match deserialized_char {
@@ -286,7 +298,9 @@ fn test_dataframe_with_ordered_columns_as_s4_slot() {
 
     // Write and read back
     let serialized = rds2rust::write_rds(&s4).expect("Failed to write S4 with DataFrame");
-    let deserialized = rds2rust::read_rds(&serialized).expect("Failed to read S4 with DataFrame");
+    let deserialized = rds2rust::read_rds(&serialized)
+        .expect("Failed to read S4 with DataFrame")
+        .object;
 
     // Verify both slot order and DataFrame column order are preserved
     match deserialized {

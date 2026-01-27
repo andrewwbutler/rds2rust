@@ -112,7 +112,7 @@ fn test_closure_with_namespace_env_loads_package() {
 
     // Read, roundtrip through Rust, write back
     let data = fs::read("/tmp/rds2rust_closure_test_input.rds").expect("Failed to read input");
-    let obj = read_rds(&data).expect("Failed to parse");
+    let obj = read_rds(&data).expect("Failed to parse").object;
     let output = write_rds(&obj).expect("Failed to serialize");
     fs::write("/tmp/rds2rust_closure_test_output.rds", &output).expect("Failed to write output");
 
@@ -187,7 +187,7 @@ fn test_s4_object_method_dispatch() {
 
     // Roundtrip through Rust
     let data = fs::read("/tmp/rds2rust_s4_test_input.rds").expect("Failed to read");
-    let obj = read_rds(&data).expect("Failed to parse");
+    let obj = read_rds(&data).expect("Failed to parse").object;
     let output = write_rds(&obj).expect("Failed to serialize");
     fs::write("/tmp/rds2rust_s4_test_output.rds", &output).expect("Failed to write");
 

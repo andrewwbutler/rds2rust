@@ -21,8 +21,9 @@ fn main() {
     let object_path = args.pop().unwrap_or_default();
 
     let source = ChunkedRdsSource::from_path(&input).expect("open chunked source");
-    let obj = rds2rust::read_rds_with_input(&source, ParseConfig::for_trusted_large_file())
+    let result = rds2rust::read_rds_with_input(&source, ParseConfig::for_trusted_large_file())
         .expect("parse rds");
+    let obj = result.object;
     let paths = rds2rust::expand_object_paths(&obj, &object_path).expect("expand paths");
     let path_refs: Vec<&str> = paths.iter().map(|p| p.as_str()).collect();
 

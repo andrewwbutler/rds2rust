@@ -5,6 +5,8 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use crate::ObjectPath;
+
 /// Lazy vector metadata for deferred loading.
 ///
 /// Stores the position and size information needed to materialize
@@ -713,6 +715,15 @@ impl RObject {
         spans
     }
 
+    pub(crate) fn lazy_vector_infos(&self) -> Vec<(ObjectPath, &'static str, LazyVector)> {
+        use std::collections::HashSet;
+        let mut infos = Vec::new();
+        let mut visited = HashSet::new();
+        let mut path = ObjectPath::new(Vec::new());
+        self.collect_lazy_vector_infos_impl(&mut path, &mut infos, &mut visited);
+        infos
+    }
+
     /// Internal helper for recursively collecting lazy spans with cycle detection.
     fn collect_lazy_spans_impl(
         &self,
@@ -1009,6 +1020,210 @@ impl RObject {
             | EmptyEnv
             | MissingArg
             | UnboundValue => {}
+        }
+    }
+
+    fn collect_lazy_vector_infos_impl(
+        &self,
+        path: &mut ObjectPath,
+        infos: &mut Vec<(ObjectPath, &'static str, LazyVector)>,
+        visited: &mut std::collections::HashSet<usize>,
+    ) {
+        use RObject::*;
+
+        if let Shared(inner) = self {
+            let addr = Arc::as_ptr(inner) as usize;
+            if !visited.insert(addr) {
+                return;
+            }
+            inner
+                .read()
+                .unwrap()
+                .collect_lazy_vector_infos_impl(path, infos, visited);
+            return;
+        }
+
+        match self {
+            Integer(v) => {
+                if let VectorData::Lazy(lazy) = v {
+                    infos.push((path.clone(), "integer", *lazy));
+                }
+            }
+            Real(v) => {
+                if let VectorData::Lazy(lazy) = v {
+                    infos.push((path.clone(), "real", *lazy));
+                }
+            }
+            Logical(v) => {
+                if let VectorData::Lazy(lazy) = v {
+                    infos.push((path.clone(), "logical", *lazy));
+                }
+            }
+            Character(v) => {
+                if let VectorData::Lazy(lazy) = v {
+                    infos.push((path.clone(), "character", *lazy));
+                }
+            }
+            Raw(v) => {
+                if let VectorData::Lazy(lazy) = v {
+                    infos.push((path.clone(), "raw", *lazy));
+                }
+            }
+            Complex(v) => {
+                if let VectorData::Lazy(lazy) = v {
+                    infos.push((path.clone(), "complex", *lazy));
+                }
+            }
+
+            List(items) | Expression(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    path.push(Arc::from(format!("[{}]", index)));
+                    item.collect_lazy_vector_infos_impl(path, infos, visited);
+                    path.pop();
+                }
+            }
+            Pairlist(elements) => {
+                for (index, element) in elements.iter().enumerate() {
+                    let segment = element
+                        .tag
+                        .as_ref()
+                        .map(Arc::clone)
+                        .unwrap_or_else(|| Arc::from(format!("[{}]", index)));
+                    path.push(segment);
+                    element
+                        .value
+                        .collect_lazy_vector_infos_impl(path, infos, visited);
+                    path.pop();
+                }
+            }
+            Language { function, args } => {
+                path.push(Arc::from("function"));
+                function.collect_lazy_vector_infos_impl(path, infos, visited);
+                path.pop();
+                for (index, arg) in args.iter().enumerate() {
+                    let segment = arg
+                        .tag
+                        .as_ref()
+                        .map(Arc::clone)
+                        .unwrap_or_else(|| Arc::from(format!("[{}]", index)));
+                    path.push(segment);
+                    arg.value
+                        .collect_lazy_vector_infos_impl(path, infos, visited);
+                    path.pop();
+                }
+            }
+            DataFrame(df) => {
+                for (name, column) in df.columns.iter() {
+                    path.push(Arc::clone(name));
+                    column.collect_lazy_vector_infos_impl(path, infos, visited);
+                    path.pop();
+                }
+            }
+            S3Object(s3) => {
+                self.collect_attributes_lazy_infos(&s3.attributes, path, infos, visited);
+                path.push(Arc::from("base"));
+                s3.base.collect_lazy_vector_infos_impl(path, infos, visited);
+                path.pop();
+            }
+            S4Object(s4) => {
+                for (name, slot) in s4.slots.iter() {
+                    path.push(Arc::clone(name));
+                    slot.collect_lazy_vector_infos_impl(path, infos, visited);
+                    path.pop();
+                }
+            }
+            Closure {
+                formals,
+                body,
+                environment,
+            } => {
+                path.push(Arc::from("formals"));
+                formals.collect_lazy_vector_infos_impl(path, infos, visited);
+                path.pop();
+                path.push(Arc::from("body"));
+                body.collect_lazy_vector_infos_impl(path, infos, visited);
+                path.pop();
+                path.push(Arc::from("environment"));
+                environment.collect_lazy_vector_infos_impl(path, infos, visited);
+                path.pop();
+            }
+            Environment {
+                enclosing,
+                frame,
+                hashtab,
+            } => {
+                path.push(Arc::from("enclosing"));
+                enclosing.collect_lazy_vector_infos_impl(path, infos, visited);
+                path.pop();
+                path.push(Arc::from("frame"));
+                frame.collect_lazy_vector_infos_impl(path, infos, visited);
+                path.pop();
+                path.push(Arc::from("hashtab"));
+                hashtab.collect_lazy_vector_infos_impl(path, infos, visited);
+                path.pop();
+            }
+            Promise {
+                value,
+                expression,
+                environment,
+            } => {
+                path.push(Arc::from("value"));
+                value.collect_lazy_vector_infos_impl(path, infos, visited);
+                path.pop();
+                path.push(Arc::from("expression"));
+                expression.collect_lazy_vector_infos_impl(path, infos, visited);
+                path.pop();
+                path.push(Arc::from("environment"));
+                environment.collect_lazy_vector_infos_impl(path, infos, visited);
+                path.pop();
+            }
+            Bytecode {
+                code,
+                constants,
+                expr,
+            } => {
+                path.push(Arc::from("code"));
+                code.collect_lazy_vector_infos_impl(path, infos, visited);
+                path.pop();
+                path.push(Arc::from("constants"));
+                constants.collect_lazy_vector_infos_impl(path, infos, visited);
+                path.pop();
+                path.push(Arc::from("expr"));
+                expr.collect_lazy_vector_infos_impl(path, infos, visited);
+                path.pop();
+            }
+            WithAttributes { object, attributes } => {
+                self.collect_attributes_lazy_infos(attributes, path, infos, visited);
+                object.collect_lazy_vector_infos_impl(path, infos, visited);
+            }
+
+            Factor(_)
+            | Namespace(_)
+            | Null
+            | Symbol(_)
+            | Special { .. }
+            | Builtin { .. }
+            | GlobalEnv
+            | BaseEnv
+            | EmptyEnv
+            | MissingArg
+            | UnboundValue => {}
+            Shared(_) => {}
+        }
+    }
+
+    fn collect_attributes_lazy_infos(
+        &self,
+        attributes: &Attributes,
+        path: &mut ObjectPath,
+        infos: &mut Vec<(ObjectPath, &'static str, LazyVector)>,
+        visited: &mut std::collections::HashSet<usize>,
+    ) {
+        for (key, value) in attributes.iter() {
+            let segment = Arc::from(format!("@{}", key.as_ref()));
+            path.push(segment);
+            value.collect_lazy_vector_infos_impl(path, infos, visited);
+            path.pop();
         }
     }
 }

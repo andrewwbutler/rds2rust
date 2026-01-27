@@ -15,7 +15,7 @@ use crate::extraction::find_vector_at_path;
 #[cfg(target_arch = "wasm32")]
 use crate::extraction::VectorTarget;
 #[cfg(target_arch = "wasm32")]
-use crate::wasm::AsyncRdsInput;
+use crate::wasm::{AsyncChunkConfig, AsyncLazyCharacterChunkIter, AsyncRdsInput};
 #[cfg(target_arch = "wasm32")]
 use crate::{Complex, Error, LazyVector, Logical, RObject, Result};
 
@@ -161,10 +161,8 @@ pub async fn extract_vector_chunked(
         VectorTarget::LazyComplex(span) => {
             stream_complex_chunks(input, span, chunk_size, callback).await?;
         }
-        VectorTarget::LazyCharacter(_) => {
-            return Err(Error::Unsupported(
-                "chunked character extraction is not supported yet".to_string(),
-            ));
+        VectorTarget::LazyCharacter(span) => {
+            stream_character_chunks(input, span, chunk_size, callback).await?;
         }
     }
 
@@ -562,6 +560,37 @@ async fn stream_complex_chunks(
     callback: &Function,
 ) -> Result<()> {
     stream_numeric_chunks(input, span, 16, chunk_size, callback, parse_complex_chunk).await
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn stream_character_chunks(
+    input: &dyn AsyncRdsInput,
+    span: LazyVector,
+    chunk_size: usize,
+    callback: &Function,
+) -> Result<()> {
+    let mut iter = AsyncLazyCharacterChunkIter::new(
+        input,
+        span,
+        AsyncChunkConfig {
+            max_elements: usize::MAX,
+            max_bytes: chunk_size.max(1),
+        },
+    )?;
+    let total = span.length;
+    let mut processed = 0usize;
+    while let Some(chunk) = iter.next_chunk().await? {
+        processed += chunk.len();
+        let arr = Array::new();
+        for value in &chunk {
+            arr.push(&JsValue::from_str(value.as_ref()));
+        }
+        let progress = JsValue::from_f64(processed as f64 / total as f64);
+        callback
+            .call2(&JsValue::NULL, &arr.into(), &progress)
+            .map_err(map_js_error)?;
+    }
+    Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]

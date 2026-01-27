@@ -28,7 +28,7 @@ fn main() {
     }
 
     let data = std::fs::read(&input).expect("read input");
-    let _obj = if trusted {
+    let _result = if trusted {
         rds2rust::read_rds_with_config(&data, rds2rust::ParseConfig::for_trusted_large_file())
             .expect("parse rds")
     } else {

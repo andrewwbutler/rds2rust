@@ -35,7 +35,7 @@ fn streaming_with_compression_level_roundtrip() {
     let mut streamed = Vec::new();
     write_rds_streaming_with_compression(&obj, &mut streamed, flate2::Compression::new(0))
         .expect("write_rds_streaming_with_compression");
-    let parsed = rds2rust::read_rds(&streamed).expect("read_rds");
+    let parsed = rds2rust::read_rds(&streamed).expect("read_rds").object;
     match parsed.into_concrete() {
         RObject::Integer(vec) => assert_eq!(vec.as_vec(), &vec![1, 2, 3, 4]),
         other => panic!("unexpected object: {:?}", other),
@@ -51,7 +51,9 @@ fn streaming_to_file_roundtrip() {
         let writer = std::io::BufWriter::new(file);
         write_rds_streaming(&obj, writer).expect("write_rds_streaming");
     }
-    let parsed = read_rds_from_path(&path).expect("read_rds_from_path");
+    let parsed = read_rds_from_path(&path)
+        .expect("read_rds_from_path")
+        .object;
     match parsed.into_concrete() {
         RObject::Integer(vec) => assert_eq!(vec.as_vec(), &vec![1, 2, 3, 4]),
         other => panic!("unexpected object: {:?}", other),
@@ -64,7 +66,9 @@ fn write_rds_atomic_roundtrip() {
     let obj = sample_object();
     let path = temp_path("atomic_write.rds");
     write_rds_atomic(&obj, &path).expect("write_rds_atomic");
-    let parsed = read_rds_from_path(&path).expect("read_rds_from_path");
+    let parsed = read_rds_from_path(&path)
+        .expect("read_rds_from_path")
+        .object;
     match parsed.into_concrete() {
         RObject::Integer(vec) => assert_eq!(vec.as_vec(), &vec![1, 2, 3, 4]),
         other => panic!("unexpected object: {:?}", other),

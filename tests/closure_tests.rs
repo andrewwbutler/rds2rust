@@ -53,7 +53,7 @@ fn test_simple_function() {
         result.err()
     );
 
-    let obj = result.unwrap();
+    let obj = result.unwrap().object;
 
     // Verify it's a Closure
     match &obj {
@@ -129,7 +129,7 @@ fn test_closure_with_environment() {
         result.err()
     );
 
-    let obj = result.unwrap();
+    let obj = result.unwrap().object;
 
     // Verify it's a Closure
     match &obj {
@@ -203,7 +203,7 @@ fn test_simple_environment() {
         result.err()
     );
 
-    let obj = result.unwrap();
+    let obj = result.unwrap().object;
 
     // Verify it's an Environment
     match &obj {
@@ -244,13 +244,13 @@ fn test_simple_function_roundtrip() {
     }
 
     let data = read_test_file("closure_simple.rds");
-    let original = read_rds(&data).unwrap();
+    let original = read_rds(&data).unwrap().object;
 
     // Write it back
     let rds_bytes = write_rds(&original).unwrap();
 
     // Read it back
-    let roundtrip = read_rds(&rds_bytes).unwrap();
+    let roundtrip = read_rds(&rds_bytes).unwrap().object;
 
     // Basic type check - avoid deep comparison due to circular Shared references
     // which cause infinite recursion in derived PartialEq
@@ -271,13 +271,13 @@ fn test_environment_roundtrip() {
     }
 
     let data = read_test_file("environment_simple.rds");
-    let original = read_rds(&data).unwrap();
+    let original = read_rds(&data).unwrap().object;
 
     // Write it back
     let rds_bytes = write_rds(&original).unwrap();
 
     // Read it back
-    let roundtrip = read_rds(&rds_bytes).unwrap();
+    let roundtrip = read_rds(&rds_bytes).unwrap().object;
 
     // Compare (basic structure comparison)
     match (&original, &roundtrip) {
@@ -324,7 +324,7 @@ fn test_closure_simple_expression_roundtrip() {
 
     // Roundtrip through Rust
     let data = fs::read("/tmp/rds2rust_closure_expr_regression.rds").expect("Failed to read");
-    let obj = read_rds(&data).expect("Failed to parse");
+    let obj = read_rds(&data).expect("Failed to parse").object;
 
     if std::env::var("DEBUG_DUMP_CLOSURE").is_ok() {
         println!("Parsed object: {:#?}", obj);
@@ -393,7 +393,7 @@ fn test_closure_named_arguments_preserved() {
 
     // Roundtrip through Rust
     let data = fs::read("/tmp/rds2rust_named_args_regression.rds").expect("Failed to read");
-    let obj = read_rds(&data).expect("Failed to parse");
+    let obj = read_rds(&data).expect("Failed to parse").object;
     let output = write_rds(&obj).expect("Failed to serialize");
     fs::write("/tmp/rds2rust_named_args_regression_out.rds", &output).expect("Failed to write");
 
@@ -459,13 +459,15 @@ fn test_command_closures_roundtrip_r_read() {
     {
         let data = read_test_file(filename);
         let obj = read_rds(&data)
-            .unwrap_or_else(|e| panic!("Failed to parse {} with rds2rust: {:?}", filename, e));
+            .unwrap_or_else(|e| panic!("Failed to parse {} with rds2rust: {:?}", filename, e))
+            .object;
         let output = write_rds(&obj)
             .unwrap_or_else(|e| panic!("Failed to serialize {} with rds2rust: {:?}", filename, e));
 
         if std::env::var("RDS_DEBUG_REF_FALLBACK").is_ok() {
             let _ = read_rds(&output)
-                .unwrap_or_else(|e| panic!("Failed to parse roundtripped {}: {:?}", filename, e));
+                .unwrap_or_else(|e| panic!("Failed to parse roundtripped {}: {:?}", filename, e))
+                .object;
         }
 
         let output_path = format!("/tmp/rds2rust_command_roundtrip_{}", filename);

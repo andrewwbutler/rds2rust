@@ -427,10 +427,19 @@ fn guard_allocation_common(
     elem_size: usize,
     context: &str,
 ) -> Result<()> {
-    if length > ctx.max_vector_length {
+    let allow_lazy = matches!(ctx.mode, crate::ParseMode::LazyMetadata)
+        && length > ctx.effective_lazy_threshold()
+        && !ctx.force_materialize_vector;
+    let max_vector_length = if allow_lazy {
+        usize::MAX
+    } else {
+        ctx.max_vector_length
+    };
+
+    if length > max_vector_length {
         return Err(Error::InvalidFormat(format!(
             "Length {} exceeds safe limit {} while parsing {}",
-            length, ctx.max_vector_length, context
+            length, max_vector_length, context
         )));
     }
 
@@ -438,7 +447,7 @@ fn guard_allocation_common(
         Error::InvalidFormat(format!("Length overflow while parsing {}", context))
     })?;
 
-    if needed > ctx.max_allocation_bytes {
+    if !allow_lazy && needed > ctx.max_allocation_bytes {
         return Err(Error::InvalidFormat(format!(
             "Allocation of {} bytes exceeds cap while parsing {}",
             needed, context
@@ -755,14 +764,19 @@ fn should_track_reference(sexp_type: u32, has_attr: bool) -> bool {
 
 /// Parse an RDS file from a byte slice.
 /// Parse an RDS file with custom configuration
-pub fn parse_rds_with_config(data: &[u8], config: crate::ParseConfig) -> Result<RObject> {
+pub fn parse_rds_with_config(
+    data: &[u8],
+    config: crate::ParseConfig,
+) -> Result<crate::ParseResult> {
     let mut ctx = ParserContext::from_config(config);
-    parse_rds_internal(data, &mut ctx)
+    let object = parse_rds_internal(data, &mut ctx)?;
+    let warnings = build_lazy_vector_warnings(&object, &ctx);
+    Ok(crate::ParseResult { object, warnings })
 }
 
 /// Parse an RDS file with default configuration
 #[allow(dead_code)]
-pub(crate) fn parse_rds(data: &[u8]) -> Result<RObject> {
+pub(crate) fn parse_rds(data: &[u8]) -> Result<crate::ParseResult> {
     parse_rds_with_config(data, crate::ParseConfig::default())
 }
 
@@ -789,10 +803,12 @@ fn parse_rds_internal(data: &[u8], ctx: &mut ParserContext) -> Result<RObject> {
 pub fn parse_rds_with_input(
     input: &dyn crate::RdsInput,
     config: crate::ParseConfig,
-) -> Result<RObject> {
+) -> Result<crate::ParseResult> {
     let mut ctx = ParserContext::from_config(config);
     let mut cursor = RdsCursor::new_input(input)?;
-    parse_rds_internal_cursor(&mut cursor, &mut ctx)
+    let object = parse_rds_internal_cursor(&mut cursor, &mut ctx)?;
+    let warnings = build_lazy_vector_warnings(&object, &ctx);
+    Ok(crate::ParseResult { object, warnings })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -931,10 +947,36 @@ pub async fn parse_rds_with_async_input(
     input: &dyn AsyncRdsInput,
     config: crate::ParseConfig,
     cursor_config: AsyncCursorConfig,
-) -> Result<RObject> {
+) -> Result<crate::ParseResult> {
     let mut ctx = ParserContext::from_config(config);
     let mut cursor = AsyncBufferedCursor::new(input, cursor_config).await?;
-    parse_rds_internal_async(&mut cursor, &mut ctx).await
+    let object = parse_rds_internal_async(&mut cursor, &mut ctx).await?;
+    let warnings = build_lazy_vector_warnings(&object, &ctx);
+    Ok(crate::ParseResult { object, warnings })
+}
+
+fn build_lazy_vector_warnings(
+    object: &RObject,
+    ctx: &ParserContext,
+) -> Vec<crate::MetadataWarning> {
+    if !matches!(ctx.mode, crate::ParseMode::LazyMetadata) {
+        return Vec::new();
+    }
+
+    let threshold = ctx.effective_lazy_threshold();
+    object
+        .lazy_vector_infos()
+        .into_iter()
+        .map(
+            |(path, vector_type, span)| crate::MetadataWarning::VectorLazy {
+                path,
+                vector_type: vector_type.to_string(),
+                length: span.length,
+                threshold,
+                byte_len: span.byte_len,
+            },
+        )
+        .collect()
 }
 
 #[cfg(target_arch = "wasm32")]

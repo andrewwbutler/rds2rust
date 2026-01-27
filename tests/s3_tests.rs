@@ -25,7 +25,9 @@ fn test_s3_simple() {
     }
 
     let data = read_test_file("s3_simple.rds");
-    let obj = read_rds(&data).expect("Failed to parse simple S3 object");
+    let obj = read_rds(&data)
+        .expect("Failed to parse simple S3 object")
+        .object;
 
     match obj {
         RObject::S3Object(s3_data) => {
@@ -60,7 +62,9 @@ fn test_s3_multi_class() {
     }
 
     let data = read_test_file("s3_multi_class.rds");
-    let obj = read_rds(&data).expect("Failed to parse S3 object with multiple classes");
+    let obj = read_rds(&data)
+        .expect("Failed to parse S3 object with multiple classes")
+        .object;
 
     match obj {
         RObject::S3Object(s3_data) => {
@@ -92,7 +96,9 @@ fn test_s3_vector() {
     }
 
     let data = read_test_file("s3_vector.rds");
-    let obj = read_rds(&data).expect("Failed to parse S3 object on vector");
+    let obj = read_rds(&data)
+        .expect("Failed to parse S3 object on vector")
+        .object;
 
     match obj {
         RObject::S3Object(s3_data) => {
@@ -140,10 +146,14 @@ fn test_s3_simple_roundtrip() {
     }
 
     let data = read_test_file("s3_simple.rds");
-    let obj = read_rds(&data).expect("Failed to read existing S3 object");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing S3 object")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write S3 object");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized S3 object");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized S3 object")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -156,11 +166,14 @@ fn test_s3_multi_class_roundtrip() {
     }
 
     let data = read_test_file("s3_multi_class.rds");
-    let obj = read_rds(&data).expect("Failed to read existing S3 multi-class object");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing S3 multi-class object")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write S3 multi-class object");
-    let deserialized =
-        read_rds(&serialized).expect("Failed to read serialized S3 multi-class object");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized S3 multi-class object")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -173,10 +186,14 @@ fn test_s3_vector_roundtrip() {
     }
 
     let data = read_test_file("s3_vector.rds");
-    let obj = read_rds(&data).expect("Failed to read existing S3 vector object");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing S3 vector object")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write S3 vector object");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized S3 vector object");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized S3 vector object")
+        .object;
 
     assert_eq!(obj, deserialized);
 }

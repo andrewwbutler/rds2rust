@@ -12,11 +12,11 @@ fn test_multiple_s4_same_class_roundtrip() {
     // Run `Rscript tests/generate_test_data.R` to generate test files
     let data = std::fs::read("tests/data/s4_multiple_same_class.rds")
         .expect("test file (run: Rscript tests/generate_test_data.R)");
-    let obj = read_rds(&data).expect("parse original");
+    let obj = read_rds(&data).expect("parse original").object;
 
     // Write and read back
     let bytes = write_rds(&obj).expect("write");
-    let obj2 = read_rds(&bytes).expect("parse roundtrip");
+    let obj2 = read_rds(&bytes).expect("parse roundtrip").object;
 
     // Verify structure: should be a list with 3 S4 objects
     if let RObject::List(items) = obj2 {
@@ -76,11 +76,11 @@ fn test_multiple_s4_with_matrices_roundtrip() {
     // Run `Rscript tests/generate_test_data.R` to generate test files
     let data = std::fs::read("tests/data/s4_multiple_with_matrices.rds")
         .expect("test file (run: Rscript tests/generate_test_data.R)");
-    let obj = read_rds(&data).expect("parse original");
+    let obj = read_rds(&data).expect("parse original").object;
 
     // Write and read back
     let bytes = write_rds(&obj).expect("write");
-    let obj2 = read_rds(&bytes).expect("parse roundtrip");
+    let obj2 = read_rds(&bytes).expect("parse roundtrip").object;
 
     // Verify structure
     if let RObject::List(items) = obj2 {

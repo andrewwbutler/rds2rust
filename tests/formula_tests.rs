@@ -49,7 +49,9 @@ fn test_formula_simple() {
     }
 
     let data = read_test_file("formula_simple.rds");
-    let obj = read_rds(&data).expect("Failed to parse simple formula");
+    let obj = read_rds(&data)
+        .expect("Failed to parse simple formula")
+        .object;
 
     // Formulas are language objects with class="formula"
     match obj {
@@ -81,7 +83,9 @@ fn test_formula_multiple() {
     }
 
     let data = read_test_file("formula_multiple.rds");
-    let obj = read_rds(&data).expect("Failed to parse formula with multiple predictors");
+    let obj = read_rds(&data)
+        .expect("Failed to parse formula with multiple predictors")
+        .object;
 
     match obj {
         RObject::S3Object(s3_data) => {
@@ -108,7 +112,9 @@ fn test_formula_interaction() {
     }
 
     let data = read_test_file("formula_interaction.rds");
-    let obj = read_rds(&data).expect("Failed to parse formula with interaction");
+    let obj = read_rds(&data)
+        .expect("Failed to parse formula with interaction")
+        .object;
 
     match obj {
         RObject::S3Object(s3_data) => {
@@ -135,7 +141,9 @@ fn test_formula_functions() {
     }
 
     let data = read_test_file("formula_functions.rds");
-    let obj = read_rds(&data).expect("Failed to parse formula with functions");
+    let obj = read_rds(&data)
+        .expect("Failed to parse formula with functions")
+        .object;
 
     match obj {
         RObject::S3Object(s3_data) => {
@@ -162,7 +170,9 @@ fn test_formula_no_intercept() {
     }
 
     let data = read_test_file("formula_no_intercept.rds");
-    let obj = read_rds(&data).expect("Failed to parse formula without intercept");
+    let obj = read_rds(&data)
+        .expect("Failed to parse formula without intercept")
+        .object;
 
     match obj {
         RObject::S3Object(s3_data) => {
@@ -189,7 +199,9 @@ fn test_formula_one_sided() {
     }
 
     let data = read_test_file("formula_one_sided.rds");
-    let obj = read_rds(&data).expect("Failed to parse one-sided formula");
+    let obj = read_rds(&data)
+        .expect("Failed to parse one-sided formula")
+        .object;
 
     match obj {
         RObject::S3Object(s3_data) => {
@@ -220,10 +232,14 @@ fn test_formula_simple_roundtrip() {
     }
 
     let data = read_test_file("formula_simple.rds");
-    let obj = read_rds(&data).expect("Failed to read existing simple formula");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing simple formula")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write simple formula");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized simple formula");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized simple formula")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -236,11 +252,14 @@ fn test_formula_multiple_roundtrip() {
     }
 
     let data = read_test_file("formula_multiple.rds");
-    let obj = read_rds(&data).expect("Failed to read existing formula with multiple predictors");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing formula with multiple predictors")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write formula with multiple predictors");
-    let deserialized =
-        read_rds(&serialized).expect("Failed to read serialized formula with multiple predictors");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized formula with multiple predictors")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -253,11 +272,14 @@ fn test_formula_interaction_roundtrip() {
     }
 
     let data = read_test_file("formula_interaction.rds");
-    let obj = read_rds(&data).expect("Failed to read existing formula with interaction");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing formula with interaction")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write formula with interaction");
-    let deserialized =
-        read_rds(&serialized).expect("Failed to read serialized formula with interaction");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized formula with interaction")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -270,11 +292,14 @@ fn test_formula_functions_roundtrip() {
     }
 
     let data = read_test_file("formula_functions.rds");
-    let obj = read_rds(&data).expect("Failed to read existing formula with functions");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing formula with functions")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write formula with functions");
-    let deserialized =
-        read_rds(&serialized).expect("Failed to read serialized formula with functions");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized formula with functions")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -287,11 +312,14 @@ fn test_formula_no_intercept_roundtrip() {
     }
 
     let data = read_test_file("formula_no_intercept.rds");
-    let obj = read_rds(&data).expect("Failed to read existing formula without intercept");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing formula without intercept")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write formula without intercept");
-    let deserialized =
-        read_rds(&serialized).expect("Failed to read serialized formula without intercept");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized formula without intercept")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -304,10 +332,14 @@ fn test_formula_one_sided_roundtrip() {
     }
 
     let data = read_test_file("formula_one_sided.rds");
-    let obj = read_rds(&data).expect("Failed to read existing one-sided formula");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing one-sided formula")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write one-sided formula");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized one-sided formula");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized one-sided formula")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -337,7 +369,7 @@ fn test_formula_roundtrip_regression() {
 
     // Roundtrip through Rust
     let data = fs::read("/tmp/rds2rust_formula_regression.rds").expect("Failed to read");
-    let obj = read_rds(&data).expect("Failed to parse");
+    let obj = read_rds(&data).expect("Failed to parse").object;
     let output = write_rds(&obj).expect("Failed to serialize");
     fs::write("/tmp/rds2rust_formula_regression_out.rds", &output).expect("Failed to write");
 

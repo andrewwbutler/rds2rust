@@ -48,7 +48,7 @@ fn test_list_simple() {
     }
 
     let data = read_test_file("list_simple.rds");
-    let obj = read_rds(&data).expect("Failed to parse simple list");
+    let obj = read_rds(&data).expect("Failed to parse simple list").object;
 
     match obj {
         RObject::List(elements) => {
@@ -79,7 +79,7 @@ fn test_list_empty() {
     }
 
     let data = read_test_file("list_empty.rds");
-    let obj = read_rds(&data).expect("Failed to parse empty list");
+    let obj = read_rds(&data).expect("Failed to parse empty list").object;
 
     match obj {
         RObject::List(elements) => {
@@ -97,7 +97,7 @@ fn test_list_roundtrip() {
         RObject::Real(vec![4.5].into()),
     ]);
     let serialized = write_rds(&obj).expect("Failed to write list");
-    let deserialized = read_rds(&serialized).expect("Failed to read list");
+    let deserialized = read_rds(&serialized).expect("Failed to read list").object;
     assert_eq!(obj, deserialized);
 }
 
@@ -109,10 +109,14 @@ fn test_list_roundtrip_existing() {
     }
 
     let data = read_test_file("list_simple.rds");
-    let obj = read_rds(&data).expect("Failed to read existing list");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing list")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write list");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized list");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized list")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -138,7 +142,7 @@ fn test_named_list_names_preserved() {
 
     // Roundtrip through Rust
     let data = fs::read("/tmp/rds2rust_named_list_regression.rds").expect("Failed to read");
-    let obj = read_rds(&data).expect("Failed to parse");
+    let obj = read_rds(&data).expect("Failed to parse").object;
     let output = write_rds(&obj).expect("Failed to serialize");
     fs::write("/tmp/rds2rust_named_list_regression_out.rds", &output).expect("Failed to write");
 

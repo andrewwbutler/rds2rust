@@ -50,7 +50,7 @@ fn test_null() {
     }
 
     let data = read_test_file("null.rds");
-    let obj = read_rds(&data).expect("Failed to parse NULL");
+    let obj = read_rds(&data).expect("Failed to parse NULL").object;
 
     match obj {
         RObject::Null => {} // Success
@@ -62,7 +62,7 @@ fn test_null() {
 fn test_null_roundtrip() {
     let obj = RObject::Null;
     let serialized = write_rds(&obj).expect("Failed to write NULL");
-    let deserialized = read_rds(&serialized).expect("Failed to read NULL");
+    let deserialized = read_rds(&serialized).expect("Failed to read NULL").object;
     assert_eq!(obj, deserialized);
 }
 
@@ -78,7 +78,7 @@ fn test_integer_single() {
     }
 
     let data = read_test_file("int_single.rds");
-    let obj = read_rds(&data).expect("Failed to parse integer");
+    let obj = read_rds(&data).expect("Failed to parse integer").object;
 
     match obj {
         RObject::Integer(vec) => {
@@ -97,7 +97,9 @@ fn test_integer_vector() {
     }
 
     let data = read_test_file("int_vector.rds");
-    let obj = read_rds(&data).expect("Failed to parse integer vector");
+    let obj = read_rds(&data)
+        .expect("Failed to parse integer vector")
+        .object;
 
     match obj {
         RObject::Integer(vec) => {
@@ -116,7 +118,9 @@ fn test_integer_with_na() {
     }
 
     let data = read_test_file("int_with_na.rds");
-    let obj = read_rds(&data).expect("Failed to parse integer with NA");
+    let obj = read_rds(&data)
+        .expect("Failed to parse integer with NA")
+        .object;
 
     match obj {
         RObject::Integer(vec) => {
@@ -133,7 +137,9 @@ fn test_integer_with_na() {
 fn test_integer_roundtrip() {
     let obj = RObject::Integer(vec![1, 2, 3, 4, 5].into());
     let serialized = write_rds(&obj).expect("Failed to write integer vector");
-    let deserialized = read_rds(&serialized).expect("Failed to read integer vector");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read integer vector")
+        .object;
     assert_eq!(obj, deserialized);
 }
 
@@ -145,10 +151,12 @@ fn test_integer_roundtrip_existing() {
     }
 
     let data = read_test_file("int_single.rds");
-    let obj = read_rds(&data).expect("Failed to read existing int");
+    let obj = read_rds(&data).expect("Failed to read existing int").object;
 
     let serialized = write_rds(&obj).expect("Failed to write int");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized int");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized int")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -165,7 +173,7 @@ fn test_real_single() {
     }
 
     let data = read_test_file("real_single.rds");
-    let obj = read_rds(&data).expect("Failed to parse real");
+    let obj = read_rds(&data).expect("Failed to parse real").object;
 
     match obj {
         RObject::Real(vec) => {
@@ -184,7 +192,7 @@ fn test_real_vector() {
     }
 
     let data = read_test_file("real_vector.rds");
-    let obj = read_rds(&data).expect("Failed to parse real vector");
+    let obj = read_rds(&data).expect("Failed to parse real vector").object;
 
     match obj {
         RObject::Real(vec) => {
@@ -206,7 +214,9 @@ fn test_real_special() {
     }
 
     let data = read_test_file("real_special.rds");
-    let obj = read_rds(&data).expect("Failed to parse real with special values");
+    let obj = read_rds(&data)
+        .expect("Failed to parse real with special values")
+        .object;
 
     match obj {
         RObject::Real(vec) => {
@@ -227,7 +237,9 @@ fn test_real_special() {
 fn test_real_roundtrip() {
     let obj = RObject::Real(vec![1.5, 2.5, 3.5].into());
     let serialized = write_rds(&obj).expect("Failed to write real vector");
-    let deserialized = read_rds(&serialized).expect("Failed to read real vector");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read real vector")
+        .object;
     assert_eq!(obj, deserialized);
 }
 
@@ -239,10 +251,14 @@ fn test_real_roundtrip_existing() {
     }
 
     let data = read_test_file("real_single.rds");
-    let obj = read_rds(&data).expect("Failed to read existing real");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing real")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write real");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized real");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized real")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -259,7 +275,7 @@ fn test_logical_true() {
     }
 
     let data = read_test_file("logical_true.rds");
-    let obj = read_rds(&data).expect("Failed to parse logical");
+    let obj = read_rds(&data).expect("Failed to parse logical").object;
 
     match obj {
         RObject::Logical(vec) => {
@@ -278,7 +294,9 @@ fn test_logical_false() {
     }
 
     let data = read_test_file("logical_false.rds");
-    let obj = read_rds(&data).expect("Failed to parse logical FALSE");
+    let obj = read_rds(&data)
+        .expect("Failed to parse logical FALSE")
+        .object;
 
     match obj {
         RObject::Logical(vec) => {
@@ -297,7 +315,9 @@ fn test_logical_vector() {
     }
 
     let data = read_test_file("logical_vector.rds");
-    let obj = read_rds(&data).expect("Failed to parse logical vector");
+    let obj = read_rds(&data)
+        .expect("Failed to parse logical vector")
+        .object;
 
     match obj {
         RObject::Logical(vec) => {
@@ -316,7 +336,9 @@ fn test_logical_roundtrip() {
     let obj =
         RObject::Logical(vec![Logical::True, Logical::False, Logical::Na, Logical::True].into());
     let serialized = write_rds(&obj).expect("Failed to write logical vector");
-    let deserialized = read_rds(&serialized).expect("Failed to read logical vector");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read logical vector")
+        .object;
     assert_eq!(obj, deserialized);
 }
 
@@ -328,10 +350,14 @@ fn test_logical_roundtrip_existing() {
     }
 
     let data = read_test_file("logical_vector.rds");
-    let obj = read_rds(&data).expect("Failed to read existing logical");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing logical")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write logical");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized logical");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized logical")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -348,7 +374,7 @@ fn test_character_single() {
     }
 
     let data = read_test_file("char_single.rds");
-    let obj = read_rds(&data).expect("Failed to parse character");
+    let obj = read_rds(&data).expect("Failed to parse character").object;
 
     match obj {
         RObject::Character(vec) => {
@@ -367,7 +393,9 @@ fn test_character_vector() {
     }
 
     let data = read_test_file("char_vector.rds");
-    let obj = read_rds(&data).expect("Failed to parse character vector");
+    let obj = read_rds(&data)
+        .expect("Failed to parse character vector")
+        .object;
 
     match obj {
         RObject::Character(vec) => {
@@ -388,7 +416,9 @@ fn test_character_with_na() {
     }
 
     let data = read_test_file("char_with_na.rds");
-    let obj = read_rds(&data).expect("Failed to parse character with NA");
+    let obj = read_rds(&data)
+        .expect("Failed to parse character with NA")
+        .object;
 
     match obj {
         RObject::Character(vec) => {
@@ -409,7 +439,9 @@ fn test_character_empty() {
     }
 
     let data = read_test_file("char_empty.rds");
-    let obj = read_rds(&data).expect("Failed to parse empty character vector");
+    let obj = read_rds(&data)
+        .expect("Failed to parse empty character vector")
+        .object;
 
     match obj {
         RObject::Character(vec) => {
@@ -423,7 +455,9 @@ fn test_character_empty() {
 fn test_character_roundtrip() {
     let obj = RObject::Character(vec![Arc::from("hello"), Arc::from("world")].into());
     let serialized = write_rds(&obj).expect("Failed to write character vector");
-    let deserialized = read_rds(&serialized).expect("Failed to read character vector");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read character vector")
+        .object;
     assert_eq!(obj, deserialized);
 }
 
@@ -435,10 +469,14 @@ fn test_character_roundtrip_existing() {
     }
 
     let data = read_test_file("char_single.rds");
-    let obj = read_rds(&data).expect("Failed to read existing character");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing character")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write character");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized character");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized character")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -455,7 +493,7 @@ fn test_raw_vector() {
     }
 
     let data = read_test_file("raw_vector.rds");
-    let obj = read_rds(&data).expect("Failed to parse raw vector");
+    let obj = read_rds(&data).expect("Failed to parse raw vector").object;
 
     match obj {
         RObject::Raw(vec) => {
@@ -472,7 +510,9 @@ fn test_raw_vector() {
 fn test_raw_roundtrip() {
     let obj = RObject::Raw(vec![0x01, 0x02, 0x03, 0xFF, 0x00].into());
     let serialized = write_rds(&obj).expect("Failed to write raw vector");
-    let deserialized = read_rds(&serialized).expect("Failed to read raw vector");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read raw vector")
+        .object;
     assert_eq!(obj, deserialized);
 }
 
@@ -484,10 +524,12 @@ fn test_raw_roundtrip_existing() {
     }
 
     let data = read_test_file("raw_vector.rds");
-    let obj = read_rds(&data).expect("Failed to read existing raw");
+    let obj = read_rds(&data).expect("Failed to read existing raw").object;
 
     let serialized = write_rds(&obj).expect("Failed to write raw");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized raw");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized raw")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -504,7 +546,9 @@ fn test_complex_single() {
     }
 
     let data = read_test_file("complex_single.rds");
-    let obj = read_rds(&data).expect("Failed to parse single complex number");
+    let obj = read_rds(&data)
+        .expect("Failed to parse single complex number")
+        .object;
 
     match obj {
         RObject::Complex(vec) => {
@@ -524,7 +568,9 @@ fn test_complex_vector() {
     }
 
     let data = read_test_file("complex_vector.rds");
-    let obj = read_rds(&data).expect("Failed to parse complex vector");
+    let obj = read_rds(&data)
+        .expect("Failed to parse complex vector")
+        .object;
 
     match obj {
         RObject::Complex(vec) => {
@@ -554,10 +600,14 @@ fn test_complex_roundtrip_existing() {
     }
 
     let data = read_test_file("complex_vector.rds");
-    let obj = read_rds(&data).expect("Failed to read existing complex");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing complex")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write complex");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized complex");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized complex")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -587,7 +637,7 @@ fn test_single_element_character_not_symbol() {
 
     // Roundtrip through Rust
     let data = fs::read("/tmp/rds2rust_single_char_regression.rds").expect("Failed to read");
-    let obj = read_rds(&data).expect("Failed to parse");
+    let obj = read_rds(&data).expect("Failed to parse").object;
     let output = write_rds(&obj).expect("Failed to serialize");
     fs::write("/tmp/rds2rust_single_char_regression_out.rds", &output).expect("Failed to write");
 
@@ -668,7 +718,7 @@ fn test_character_vs_symbol_contexts() {
 
     // Roundtrip through Rust
     let data = fs::read("/tmp/rds2rust_char_contexts_regression.rds").expect("Failed to read");
-    let obj = read_rds(&data).expect("Failed to parse");
+    let obj = read_rds(&data).expect("Failed to parse").object;
     let output = write_rds(&obj).expect("Failed to serialize");
     fs::write("/tmp/rds2rust_char_contexts_regression_out.rds", &output).expect("Failed to write");
 
@@ -745,7 +795,7 @@ fn test_logical_vector_with_attributes() {
 
     // Write and read back
     let bytes = write_rds(&obj).unwrap();
-    let result = read_rds(&bytes[..]).unwrap();
+    let result = read_rds(&bytes[..]).unwrap().object;
 
     // Verify structure matches
     assert_eq!(obj, result);
@@ -766,7 +816,7 @@ fn test_logical_vector_empty_with_attributes() {
     };
 
     let bytes = write_rds(&obj).unwrap();
-    let result = read_rds(&bytes[..]).unwrap();
+    let result = read_rds(&bytes[..]).unwrap().object;
     assert_eq!(obj, result);
 }
 
@@ -798,7 +848,7 @@ fn test_logical_vector_na_heavy_with_attributes() {
     };
 
     let bytes = write_rds(&obj).unwrap();
-    let result = read_rds(&bytes[..]).unwrap();
+    let result = read_rds(&bytes[..]).unwrap().object;
     assert_eq!(obj, result);
 }
 
@@ -838,7 +888,7 @@ fn test_logical_matrix_with_dimnames() {
 
     // Write and read back
     let bytes = write_rds(&matrix).unwrap();
-    let result = read_rds(&bytes[..]).unwrap();
+    let result = read_rds(&bytes[..]).unwrap().object;
 
     assert_eq!(matrix, result);
 }
@@ -883,10 +933,10 @@ fn test_logical_matrix_attribute_order_variation() {
 
     // Both should write successfully and produce valid RDS
     let bytes1 = write_rds(&matrix1).unwrap();
-    let result1 = read_rds(&bytes1[..]).unwrap();
+    let result1 = read_rds(&bytes1[..]).unwrap().object;
 
     let bytes2 = write_rds(&matrix2).unwrap();
-    let result2 = read_rds(&bytes2[..]).unwrap();
+    let result2 = read_rds(&bytes2[..]).unwrap().object;
 
     // Verify both results are WithAttributes containing Logical vectors
     match (&result1, &result2) {

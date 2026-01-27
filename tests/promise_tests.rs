@@ -26,7 +26,9 @@ fn test_promise_in_env() {
     }
 
     let data = read_test_file("promise_in_env.rds");
-    let obj = read_rds(&data).expect("Failed to parse promise in environment");
+    let obj = read_rds(&data)
+        .expect("Failed to parse promise in environment")
+        .object;
 
     // The environment should contain a promise
     // Promises are structured as: value, expression, environment
@@ -66,10 +68,14 @@ fn test_promise_in_env_roundtrip() {
     }
 
     let original_data = read_test_file("promise_in_env.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     let rewritten_data = write_rds(&obj).expect("Failed to write");
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     // Both should be Environment types
     // Note: Can't use Debug comparison due to circular reference causing infinite recursion
@@ -101,7 +107,9 @@ fn test_special_if() {
     }
 
     let data = read_test_file("special_if.rds");
-    let obj = read_rds(&data).expect("Failed to parse special function 'if'");
+    let obj = read_rds(&data)
+        .expect("Failed to parse special function 'if'")
+        .object;
 
     match obj {
         rds2rust::RObject::Special { name } => {
@@ -119,10 +127,14 @@ fn test_special_if_roundtrip() {
     }
 
     let original_data = read_test_file("special_if.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     let rewritten_data = write_rds(&obj).expect("Failed to write");
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     assert_eq!(format!("{:?}", obj), format!("{:?}", obj2));
 }
@@ -135,7 +147,9 @@ fn test_special_for() {
     }
 
     let data = read_test_file("special_for.rds");
-    let obj = read_rds(&data).expect("Failed to parse special function 'for'");
+    let obj = read_rds(&data)
+        .expect("Failed to parse special function 'for'")
+        .object;
 
     match obj {
         rds2rust::RObject::Special { name } => {
@@ -153,10 +167,14 @@ fn test_special_for_roundtrip() {
     }
 
     let original_data = read_test_file("special_for.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     let rewritten_data = write_rds(&obj).expect("Failed to write");
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     assert_eq!(format!("{:?}", obj), format!("{:?}", obj2));
 }
@@ -169,7 +187,9 @@ fn test_special_while() {
     }
 
     let data = read_test_file("special_while.rds");
-    let obj = read_rds(&data).expect("Failed to parse special function 'while'");
+    let obj = read_rds(&data)
+        .expect("Failed to parse special function 'while'")
+        .object;
 
     match obj {
         rds2rust::RObject::Special { name } => {
@@ -187,10 +207,14 @@ fn test_special_while_roundtrip() {
     }
 
     let original_data = read_test_file("special_while.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     let rewritten_data = write_rds(&obj).expect("Failed to write");
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     assert_eq!(format!("{:?}", obj), format!("{:?}", obj2));
 }
@@ -203,7 +227,9 @@ fn test_special_function() {
     }
 
     let data = read_test_file("special_function.rds");
-    let obj = read_rds(&data).expect("Failed to parse special function 'function'");
+    let obj = read_rds(&data)
+        .expect("Failed to parse special function 'function'")
+        .object;
 
     match obj {
         rds2rust::RObject::Special { name } => {
@@ -221,10 +247,14 @@ fn test_special_function_roundtrip() {
     }
 
     let original_data = read_test_file("special_function.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     let rewritten_data = write_rds(&obj).expect("Failed to write");
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     assert_eq!(format!("{:?}", obj), format!("{:?}", obj2));
 }
@@ -237,7 +267,9 @@ fn test_special_bracket() {
     }
 
     let data = read_test_file("special_bracket.rds");
-    let obj = read_rds(&data).expect("Failed to parse special function '['");
+    let obj = read_rds(&data)
+        .expect("Failed to parse special function '['")
+        .object;
 
     match obj {
         rds2rust::RObject::Special { name } => {
@@ -255,10 +287,14 @@ fn test_special_bracket_roundtrip() {
     }
 
     let original_data = read_test_file("special_bracket.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     let rewritten_data = write_rds(&obj).expect("Failed to write");
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     assert_eq!(format!("{:?}", obj), format!("{:?}", obj2));
 }
@@ -271,7 +307,9 @@ fn test_builtin_plus() {
     }
 
     let data = read_test_file("builtin_plus.rds");
-    let obj = read_rds(&data).expect("Failed to parse builtin function '+'");
+    let obj = read_rds(&data)
+        .expect("Failed to parse builtin function '+'")
+        .object;
 
     match obj {
         rds2rust::RObject::Builtin { name } => {
@@ -289,10 +327,14 @@ fn test_builtin_plus_roundtrip() {
     }
 
     let original_data = read_test_file("builtin_plus.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     let rewritten_data = write_rds(&obj).expect("Failed to write");
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     assert_eq!(format!("{:?}", obj), format!("{:?}", obj2));
 }
@@ -309,7 +351,9 @@ fn test_builtin_sum() {
     }
 
     let data = read_test_file("builtin_sum.rds");
-    let obj = read_rds(&data).expect("Failed to parse builtin function 'sum'");
+    let obj = read_rds(&data)
+        .expect("Failed to parse builtin function 'sum'")
+        .object;
 
     match obj {
         rds2rust::RObject::Builtin { name } => {
@@ -327,10 +371,14 @@ fn test_builtin_sum_roundtrip() {
     }
 
     let original_data = read_test_file("builtin_sum.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     let rewritten_data = write_rds(&obj).expect("Failed to write");
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     assert_eq!(format!("{:?}", obj), format!("{:?}", obj2));
 }
@@ -343,7 +391,9 @@ fn test_builtin_c() {
     }
 
     let data = read_test_file("builtin_c.rds");
-    let obj = read_rds(&data).expect("Failed to parse builtin function 'c'");
+    let obj = read_rds(&data)
+        .expect("Failed to parse builtin function 'c'")
+        .object;
 
     match obj {
         rds2rust::RObject::Builtin { name } => {
@@ -361,10 +411,14 @@ fn test_builtin_c_roundtrip() {
     }
 
     let original_data = read_test_file("builtin_c.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     let rewritten_data = write_rds(&obj).expect("Failed to write");
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     assert_eq!(format!("{:?}", obj), format!("{:?}", obj2));
 }
@@ -377,7 +431,9 @@ fn test_builtin_sqrt() {
     }
 
     let data = read_test_file("builtin_sqrt.rds");
-    let obj = read_rds(&data).expect("Failed to parse builtin function 'sqrt'");
+    let obj = read_rds(&data)
+        .expect("Failed to parse builtin function 'sqrt'")
+        .object;
 
     match obj {
         rds2rust::RObject::Builtin { name } => {
@@ -395,10 +451,14 @@ fn test_builtin_sqrt_roundtrip() {
     }
 
     let original_data = read_test_file("builtin_sqrt.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     let rewritten_data = write_rds(&obj).expect("Failed to write");
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     assert_eq!(format!("{:?}", obj), format!("{:?}", obj2));
 }
@@ -411,7 +471,9 @@ fn test_builtin_length() {
     }
 
     let data = read_test_file("builtin_length.rds");
-    let obj = read_rds(&data).expect("Failed to parse builtin function 'length'");
+    let obj = read_rds(&data)
+        .expect("Failed to parse builtin function 'length'")
+        .object;
 
     match obj {
         rds2rust::RObject::Builtin { name } => {
@@ -429,10 +491,14 @@ fn test_builtin_length_roundtrip() {
     }
 
     let original_data = read_test_file("builtin_length.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     let rewritten_data = write_rds(&obj).expect("Failed to write");
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     assert_eq!(format!("{:?}", obj), format!("{:?}", obj2));
 }
@@ -445,7 +511,9 @@ fn test_builtin_min() {
     }
 
     let data = read_test_file("builtin_min.rds");
-    let obj = read_rds(&data).expect("Failed to parse builtin function 'min'");
+    let obj = read_rds(&data)
+        .expect("Failed to parse builtin function 'min'")
+        .object;
 
     match obj {
         rds2rust::RObject::Builtin { name } => {
@@ -463,10 +531,14 @@ fn test_builtin_min_roundtrip() {
     }
 
     let original_data = read_test_file("builtin_min.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     let rewritten_data = write_rds(&obj).expect("Failed to write");
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     assert_eq!(format!("{:?}", obj), format!("{:?}", obj2));
 }

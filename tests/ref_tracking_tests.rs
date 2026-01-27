@@ -33,8 +33,9 @@ fn emit_ref_ordering_trace() {
         .filter(|name| debug_only.as_deref().is_none_or(|only| only == *name))
     {
         let data = read_test_file(filename);
-        let obj =
-            read_rds(&data).unwrap_or_else(|e| panic!("Failed to parse {}: {:?}", filename, e));
+        let obj = read_rds(&data)
+            .unwrap_or_else(|e| panic!("Failed to parse {}: {:?}", filename, e))
+            .object;
         let output =
             write_rds(&obj).unwrap_or_else(|e| panic!("Failed to write {}: {:?}", filename, e));
         let output_path = format!("/tmp/rds2rust_ref_order_{}", filename);
@@ -51,7 +52,9 @@ fn test_ref_shared_vector() {
     }
 
     let data = read_test_file("ref_shared_vector.rds");
-    let obj = read_rds(&data).expect("Failed to parse shared vector reference");
+    let obj = read_rds(&data)
+        .expect("Failed to parse shared vector reference")
+        .object;
 
     // Should parse as a list with named elements
     match obj {
@@ -95,7 +98,9 @@ fn test_ref_shared_list() {
     }
 
     let data = read_test_file("ref_shared_list.rds");
-    let obj = read_rds(&data).expect("Failed to parse shared list reference");
+    let obj = read_rds(&data)
+        .expect("Failed to parse shared list reference")
+        .object;
 
     // Should parse as a list with named elements (may or may not have WithAttributes wrapper)
     let elements = match obj {
@@ -123,7 +128,9 @@ fn test_ref_complex_shared() {
     }
 
     let data = read_test_file("ref_complex_shared.rds");
-    let obj = read_rds(&data).expect("Failed to parse complex shared structure");
+    let obj = read_rds(&data)
+        .expect("Failed to parse complex shared structure")
+        .object;
 
     // Should parse as a list with nested structure
     let elements = match obj {
@@ -156,7 +163,9 @@ fn test_ref_shared_expression() {
             }
 
             let data = read_test_file("ref_shared_expression.rds");
-            let obj = read_rds(&data).expect("Failed to parse shared expression reference");
+            let obj = read_rds(&data)
+                .expect("Failed to parse shared expression reference")
+                .object;
 
             // Minimal shape check: expect a list (possibly wrapped in Shared/WithAttributes) with 3 elements.
             let list_len = match &obj {
@@ -197,7 +206,9 @@ fn test_ref_large_shared() {
     }
 
     let data = read_test_file("ref_large_shared.rds");
-    let obj = read_rds(&data).expect("Failed to parse large shared vector reference");
+    let obj = read_rds(&data)
+        .expect("Failed to parse large shared vector reference")
+        .object;
 
     // Should parse as a list with 5 copies of a 1000-element vector
     let elements = match obj {
@@ -243,7 +254,7 @@ fn test_simple_ref() {
     let result = read_rds(&data);
     assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
 
-    let obj = result.unwrap();
+    let obj = result.unwrap().object;
     if let RObject::List(elements) = obj {
         assert_eq!(elements.len(), 3);
         for element in elements {
@@ -268,7 +279,7 @@ fn test_three_copies() {
     let result = read_rds(&data);
     assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
 
-    let obj = result.unwrap();
+    let obj = result.unwrap().object;
     if let RObject::List(elements) = obj {
         assert_eq!(elements.len(), 3);
         for element in elements {
@@ -293,7 +304,7 @@ fn test_non_altrep() {
     let result = read_rds(&data);
     assert!(result.is_ok(), "Failed to parse: {:?}", result.err());
 
-    let obj = result.unwrap();
+    let obj = result.unwrap().object;
     if let RObject::List(elements) = obj {
         assert_eq!(elements.len(), 3);
         for element in elements {
@@ -315,7 +326,7 @@ fn test_four_copies() {
     }
 
     let data = read_test_file("ref_altrep_four_copies.rds");
-    let result = read_rds(&data).expect("Failed to parse RDS");
+    let result = read_rds(&data).expect("Failed to parse RDS").object;
 
     if let RObject::List(elements) = result {
         // All four should be Integer([1..10])
@@ -342,7 +353,7 @@ fn test_two_copies() {
     }
 
     let data = read_test_file("ref_altrep_two_copies.rds");
-    let result = read_rds(&data).expect("Failed to parse RDS");
+    let result = read_rds(&data).expect("Failed to parse RDS").object;
 
     if let RObject::List(elements) = result {
         // Both should be Integer([1..10])
@@ -369,7 +380,7 @@ fn test_third_only() {
     }
 
     let data = read_test_file("ref_altrep_single.rds");
-    let result = read_rds(&data).expect("Failed to parse RDS");
+    let result = read_rds(&data).expect("Failed to parse RDS").object;
 
     match result {
         RObject::Integer(v) => {
@@ -388,7 +399,7 @@ fn test_three_shared() {
     }
 
     let data = read_test_file("ref_altrep_three_shared.rds");
-    let result = read_rds(&data).expect("Failed to parse RDS");
+    let result = read_rds(&data).expect("Failed to parse RDS").object;
 
     if let RObject::List(elements) = result {
         // All three should be Integer([1, 2, 3, 4, 5])
@@ -419,13 +430,17 @@ fn test_ref_shared_vector_roundtrip() {
     }
 
     let original_data = read_test_file("ref_shared_vector.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     // Write it back
     let rewritten_data = write_rds(&obj).expect("Failed to write");
 
     // Read the rewritten data
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     // The structure should match (even if references aren't preserved)
     assert_eq!(format!("{:?}", obj), format!("{:?}", obj2));
@@ -439,13 +454,17 @@ fn test_ref_shared_list_roundtrip() {
     }
 
     let original_data = read_test_file("ref_shared_list.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     // Write it back
     let rewritten_data = write_rds(&obj).expect("Failed to write");
 
     // Read the rewritten data
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     // The structure should match
     assert_eq!(format!("{:?}", obj), format!("{:?}", obj2));
@@ -459,13 +478,17 @@ fn test_ref_complex_shared_roundtrip() {
     }
 
     let original_data = read_test_file("ref_complex_shared.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     // Write it back
     let rewritten_data = write_rds(&obj).expect("Failed to write");
 
     // Read the rewritten data
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     // The structure should match
     assert_eq!(format!("{:?}", obj), format!("{:?}", obj2));
@@ -482,13 +505,17 @@ fn test_ref_shared_expression_roundtrip() {
             }
 
             let original_data = read_test_file("ref_shared_expression.rds");
-            let obj = read_rds(&original_data).expect("Failed to parse original");
+            let obj = read_rds(&original_data)
+                .expect("Failed to parse original")
+                .object;
 
             // Write it back
             let rewritten_data = write_rds(&obj).expect("Failed to write");
 
             // Read the rewritten data
-            let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+            let obj2 = read_rds(&rewritten_data)
+                .expect("Failed to parse rewritten")
+                .object;
 
             // Basic shape check: expect list of 3 (possibly wrapped in Shared/WithAttributes)
             fn list_len(o: &RObject, seen: &mut std::collections::HashSet<usize>) -> Option<usize> {
@@ -536,13 +563,17 @@ fn test_ref_large_shared_roundtrip() {
     }
 
     let original_data = read_test_file("ref_large_shared.rds");
-    let obj = read_rds(&original_data).expect("Failed to parse original");
+    let obj = read_rds(&original_data)
+        .expect("Failed to parse original")
+        .object;
 
     // Write it back
     let rewritten_data = write_rds(&obj).expect("Failed to write");
 
     // Read the rewritten data
-    let obj2 = read_rds(&rewritten_data).expect("Failed to parse rewritten");
+    let obj2 = read_rds(&rewritten_data)
+        .expect("Failed to parse rewritten")
+        .object;
 
     // The structure should match
     assert_eq!(format!("{:?}", obj), format!("{:?}", obj2));

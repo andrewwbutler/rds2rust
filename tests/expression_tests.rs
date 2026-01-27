@@ -28,7 +28,9 @@ fn test_expr_single() {
     }
 
     let data = read_test_file("expr_single.rds");
-    let obj = read_rds(&data).expect("Failed to parse single expression");
+    let obj = read_rds(&data)
+        .expect("Failed to parse single expression")
+        .object;
 
     match obj {
         RObject::Expression(elements) => {
@@ -56,7 +58,9 @@ fn test_expr_multiple() {
     }
 
     let data = read_test_file("expr_multiple.rds");
-    let obj = read_rds(&data).expect("Failed to parse multiple expressions");
+    let obj = read_rds(&data)
+        .expect("Failed to parse multiple expressions")
+        .object;
 
     match obj {
         RObject::Expression(elements) => {
@@ -86,7 +90,9 @@ fn test_expr_empty() {
     }
 
     let data = read_test_file("expr_empty.rds");
-    let obj = read_rds(&data).expect("Failed to parse empty expression");
+    let obj = read_rds(&data)
+        .expect("Failed to parse empty expression")
+        .object;
 
     match obj {
         RObject::Expression(elements) => {
@@ -105,7 +111,9 @@ fn test_expr_calls() {
     }
 
     let data = read_test_file("expr_calls.rds");
-    let obj = read_rds(&data).expect("Failed to parse expression with calls");
+    let obj = read_rds(&data)
+        .expect("Failed to parse expression with calls")
+        .object;
 
     match obj {
         RObject::Expression(elements) => {
@@ -135,7 +143,9 @@ fn test_expr_complex() {
     }
 
     let data = read_test_file("expr_complex.rds");
-    let obj = read_rds(&data).expect("Failed to parse complex expression");
+    let obj = read_rds(&data)
+        .expect("Failed to parse complex expression")
+        .object;
 
     match obj {
         RObject::Expression(elements) => {
@@ -163,7 +173,9 @@ fn test_expr_manual() {
     }
 
     let data = read_test_file("expr_manual.rds");
-    let obj = read_rds(&data).expect("Failed to parse manually created expression");
+    let obj = read_rds(&data)
+        .expect("Failed to parse manually created expression")
+        .object;
 
     match obj {
         RObject::Expression(elements) => {
@@ -197,10 +209,14 @@ fn test_expr_single_roundtrip() {
     }
 
     let data = read_test_file("expr_single.rds");
-    let obj = read_rds(&data).expect("Failed to read existing single expression");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing single expression")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write single expression");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized single expression");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized single expression")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -213,11 +229,14 @@ fn test_expr_multiple_roundtrip() {
     }
 
     let data = read_test_file("expr_multiple.rds");
-    let obj = read_rds(&data).expect("Failed to read existing multiple expressions");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing multiple expressions")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write multiple expressions");
-    let deserialized =
-        read_rds(&serialized).expect("Failed to read serialized multiple expressions");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized multiple expressions")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -230,10 +249,14 @@ fn test_expr_empty_roundtrip() {
     }
 
     let data = read_test_file("expr_empty.rds");
-    let obj = read_rds(&data).expect("Failed to read existing empty expression");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing empty expression")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write empty expression");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized empty expression");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized empty expression")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -246,11 +269,14 @@ fn test_expr_calls_roundtrip() {
     }
 
     let data = read_test_file("expr_calls.rds");
-    let obj = read_rds(&data).expect("Failed to read existing expression with calls");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing expression with calls")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write expression with calls");
-    let deserialized =
-        read_rds(&serialized).expect("Failed to read serialized expression with calls");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized expression with calls")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -263,10 +289,14 @@ fn test_expr_complex_roundtrip() {
     }
 
     let data = read_test_file("expr_complex.rds");
-    let obj = read_rds(&data).expect("Failed to read existing complex expression");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing complex expression")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write complex expression");
-    let deserialized = read_rds(&serialized).expect("Failed to read serialized complex expression");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized complex expression")
+        .object;
 
     assert_eq!(obj, deserialized);
 }
@@ -279,11 +309,14 @@ fn test_expr_manual_roundtrip() {
     }
 
     let data = read_test_file("expr_manual.rds");
-    let obj = read_rds(&data).expect("Failed to read existing manually created expression");
+    let obj = read_rds(&data)
+        .expect("Failed to read existing manually created expression")
+        .object;
 
     let serialized = write_rds(&obj).expect("Failed to write manually created expression");
-    let deserialized =
-        read_rds(&serialized).expect("Failed to read serialized manually created expression");
+    let deserialized = read_rds(&serialized)
+        .expect("Failed to read serialized manually created expression")
+        .object;
 
     assert_eq!(obj, deserialized);
 }

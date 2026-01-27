@@ -1,4 +1,8 @@
-use rds2rust::{read_rds, read_rds_lazy, write_rds, RObject, VectorData};
+use rds2rust::{
+    read_lazy_character_range, read_rds, read_rds_lazy, read_rds_with_config, write_rds,
+    ParseConfig, RObject, VectorData,
+};
+use std::io::Read;
 use std::sync::Arc;
 
 #[test]
@@ -8,7 +12,10 @@ fn test_lazy_integer_vector() {
     let data = write_rds(&obj).expect("Failed to write");
 
     // Parse lazily
-    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy");
+    let config = ParseConfig::lazy_metadata().with_lazy_threshold(0);
+    let lazy_obj = read_rds_with_config(&data, config)
+        .expect("Failed to parse lazy")
+        .object;
 
     // Should not be fully loaded (vector has 100 elements > lazy_threshold)
     assert!(!lazy_obj.is_fully_loaded());
@@ -35,7 +42,7 @@ fn test_lazy_real_vector() {
     let obj = RObject::Real((1..=50).map(|i| i as f64).collect::<Vec<f64>>().into());
     let data = write_rds(&obj).expect("Failed to write");
 
-    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy");
+    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy").object;
 
     assert!(!lazy_obj.is_fully_loaded());
 
@@ -58,7 +65,7 @@ fn test_lazy_character_vector() {
     );
     let data = write_rds(&obj).expect("Failed to write");
 
-    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy");
+    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy").object;
 
     assert!(!lazy_obj.is_fully_loaded());
 
@@ -78,11 +85,11 @@ fn test_lazy_vs_full_parsing() {
     let data = write_rds(&obj).expect("Failed to write");
 
     // Parse fully
-    let full_obj = read_rds(&data).expect("Failed to parse full");
+    let full_obj = read_rds(&data).expect("Failed to parse full").object;
     assert!(full_obj.is_fully_loaded());
 
     // Parse lazily
-    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy");
+    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy").object;
     assert!(!lazy_obj.is_fully_loaded());
 
     // Both should have the same type
@@ -106,7 +113,7 @@ fn test_lazy_list_with_vectors() {
     ]);
     let data = write_rds(&obj).expect("Failed to write");
 
-    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy");
+    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy").object;
 
     assert!(!lazy_obj.is_fully_loaded());
 
@@ -130,7 +137,7 @@ fn test_write_lazy_object_fails() {
     let obj = RObject::Integer((1..=100).collect::<Vec<i32>>().into());
     let data = write_rds(&obj).expect("Failed to write");
 
-    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy");
+    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy").object;
 
     // Trying to write a lazy object should fail
     let result = write_rds(&lazy_obj);
@@ -142,7 +149,7 @@ fn test_empty_vector_lazy() {
     let obj = RObject::Integer(vec![].into());
     let data = write_rds(&obj).expect("Failed to write");
 
-    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy");
+    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy").object;
 
     // Empty vectors are always fully loaded (0 elements <= lazy_threshold)
     assert!(lazy_obj.is_fully_loaded());
@@ -164,7 +171,7 @@ fn test_large_vector_lazy() {
     let data = write_rds(&obj).expect("Failed to write");
 
     // Parse lazily - should be fast and use minimal memory
-    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy");
+    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy").object;
 
     assert!(!lazy_obj.is_fully_loaded());
 
@@ -175,6 +182,81 @@ fn test_large_vector_lazy() {
         }
         _ => panic!("Expected lazy integer vector"),
     }
+}
+
+#[test]
+fn test_lazy_vector_warnings_emitted() {
+    let obj = RObject::Integer((1..=100).collect::<Vec<i32>>().into());
+    let data = rds2rust::write_rds(&obj).expect("Failed to write");
+
+    let config = ParseConfig::lazy_metadata().with_lazy_threshold(10);
+    let result = read_rds_with_config(&data, config).expect("Failed to parse lazy");
+
+    assert_eq!(result.warnings.len(), 1);
+    match &result.warnings[0] {
+        rds2rust::MetadataWarning::VectorLazy {
+            path,
+            vector_type,
+            length,
+            threshold,
+            byte_len,
+        } => {
+            assert!(path.segments.is_empty());
+            assert_eq!(vector_type, "integer");
+            assert_eq!(*length, 100);
+            assert_eq!(*threshold, 10);
+            assert_eq!(*byte_len, 100 * 4);
+        }
+        other => panic!("Unexpected warning: {:?}", other),
+    }
+}
+
+#[test]
+fn test_lazy_character_range_reads_values() {
+    struct TestInput {
+        data: Vec<u8>,
+    }
+
+    impl rds2rust::RdsInput for TestInput {
+        fn read_at(&self, offset: u64, len: usize) -> rds2rust::Result<Vec<u8>> {
+            let start = offset as usize;
+            let end = start.saturating_add(len);
+            if end > self.data.len() {
+                return Err(rds2rust::Error::UnexpectedEofDetail {
+                    position: start,
+                    needed: len,
+                    available: self.data.len().saturating_sub(start),
+                });
+            }
+            Ok(self.data[start..end].to_vec())
+        }
+
+        fn len(&self) -> Option<u64> {
+            Some(self.data.len() as u64)
+        }
+    }
+
+    let mut values: Vec<Arc<str>> = Vec::with_capacity(50);
+    values.push(Arc::from("alpha"));
+    values.push(Arc::from("beta"));
+    for i in 2..50 {
+        values.push(Arc::from(format!("v{}", i).as_str()));
+    }
+    let obj = RObject::Character(values.into());
+    let data = rds2rust::write_rds(&obj).expect("Failed to write");
+    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy").object;
+    let span = match lazy_obj {
+        RObject::Character(VectorData::Lazy(lazy)) => lazy,
+        _ => panic!("Expected lazy character vector"),
+    };
+
+    let mut decoder = flate2::read::GzDecoder::new(data.as_slice());
+    let mut decompressed = Vec::new();
+    decoder.read_to_end(&mut decompressed).expect("decompress");
+
+    let input = TestInput { data: decompressed };
+    let range = read_lazy_character_range(&input, span, 1, 1).expect("read range");
+    assert_eq!(range, vec![Arc::from("beta")]);
 }
 
 // =============================================================================
@@ -207,10 +289,10 @@ fn test_lazy_dense_matrix_int() {
     let data = read_test_file("matrix_int.rds");
 
     // Parse fully to get expected structure
-    let full_obj = read_rds(&data).expect("Failed to parse full");
+    let full_obj = read_rds(&data).expect("Failed to parse full").object;
 
     // Parse lazily
-    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy");
+    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy").object;
 
     // Both should be WithAttributes wrapping Integer vectors
     match (&full_obj, &lazy_obj) {
@@ -253,8 +335,8 @@ fn test_lazy_dense_matrix_real() {
 
     let data = read_test_file("matrix_real.rds");
 
-    let full_obj = read_rds(&data).expect("Failed to parse full");
-    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy");
+    let full_obj = read_rds(&data).expect("Failed to parse full").object;
+    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy").object;
 
     match (&full_obj, &lazy_obj) {
         (
@@ -302,8 +384,8 @@ fn test_lazy_matrix_with_dimnames() {
 
     let data = read_test_file("matrix_dimnames.rds");
 
-    let full_obj = read_rds(&data).expect("Failed to parse full");
-    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy");
+    let full_obj = read_rds(&data).expect("Failed to parse full").object;
+    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy").object;
 
     // Verify dimnames are preserved in lazy mode
     match (&full_obj, &lazy_obj) {
@@ -343,8 +425,8 @@ fn test_lazy_sparse_matrix() {
 
     let data = read_test_file("sparse_dimnames.rds");
 
-    let full_obj = read_rds(&data).expect("Failed to parse full");
-    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy");
+    let full_obj = read_rds(&data).expect("Failed to parse full").object;
+    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy").object;
 
     // Note: This sparse matrix is very small (6 elements in i/x, 5 in p)
     // so it will be fully loaded due to lazy_threshold
@@ -419,7 +501,9 @@ fn test_lazy_large_matrix() {
     let serialized = write_rds(&matrix).expect("Failed to write matrix");
 
     // Parse lazily
-    let lazy_obj = read_rds_lazy(&serialized).expect("Failed to parse lazy");
+    let lazy_obj = read_rds_lazy(&serialized)
+        .expect("Failed to parse lazy")
+        .object;
 
     // Should NOT be fully loaded because the vector has 1000 elements > lazy_threshold
     assert!(!lazy_obj.is_fully_loaded());
@@ -460,7 +544,9 @@ fn test_lazy_small_manual_matrix() {
     let serialized = write_rds(&matrix).expect("Failed to write matrix");
 
     // Parse lazily
-    let lazy_obj = read_rds_lazy(&serialized).expect("Failed to parse lazy");
+    let lazy_obj = read_rds_lazy(&serialized)
+        .expect("Failed to parse lazy")
+        .object;
 
     // Since the matrix has only 6 elements (< lazy_threshold), it will be fully loaded
     assert!(lazy_obj.is_fully_loaded());
@@ -501,7 +587,9 @@ fn test_write_lazy_matrix_fails() {
     };
 
     let serialized = write_rds(&matrix).expect("Failed to write");
-    let lazy_obj = read_rds_lazy(&serialized).expect("Failed to parse lazy");
+    let lazy_obj = read_rds_lazy(&serialized)
+        .expect("Failed to parse lazy")
+        .object;
 
     // Verify it's actually lazy
     assert!(!lazy_obj.is_fully_loaded());
@@ -524,8 +612,8 @@ fn test_lazy_complex_s4_minimal() {
 
     let data = read_test_file("s4_multiple_same_class.rds");
 
-    let full_obj = read_rds(&data).expect("Failed to parse full");
-    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy");
+    let full_obj = read_rds(&data).expect("Failed to parse full").object;
+    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy").object;
 
     // Full object should be fully loaded
     assert!(full_obj.is_fully_loaded());
@@ -572,8 +660,8 @@ fn test_lazy_complex_s4_has_lazy_matrices() {
     let data = read_test_file("s4_multiple_with_matrices.rds");
 
     // Parse both full and lazy to verify lazy parsing works for S4 objects with matrices
-    let full_obj = read_rds(&data).expect("Failed to parse full");
-    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy");
+    let full_obj = read_rds(&data).expect("Failed to parse full").object;
+    let lazy_obj = read_rds_lazy(&data).expect("Failed to parse lazy").object;
 
     // Full object should be fully loaded
     assert!(full_obj.is_fully_loaded());

@@ -24,7 +24,9 @@ fn test_bytecode_func() {
     }
 
     let data = read_test_file("bytecode_func.rds");
-    let obj = read_rds(&data).expect("Failed to parse bytecode function");
+    let obj = read_rds(&data)
+        .expect("Failed to parse bytecode function")
+        .object;
 
     // Compiled functions should be Closure objects that may contain Bytecode in the body
     match obj {
@@ -84,7 +86,9 @@ fn test_bytecode_in_list() {
     }
 
     let data = read_test_file("bytecode_in_list.rds");
-    let obj = read_rds(&data).expect("Failed to parse list containing bytecode");
+    let obj = read_rds(&data)
+        .expect("Failed to parse list containing bytecode")
+        .object;
 
     // The object might be a plain list or a list with attributes
     let (list, attrs_opt) = match obj {
@@ -153,7 +157,9 @@ fn test_uncompiled_func() {
     }
 
     let data = read_test_file("uncompiled_func.rds");
-    let obj = read_rds(&data).expect("Failed to parse uncompiled function");
+    let obj = read_rds(&data)
+        .expect("Failed to parse uncompiled function")
+        .object;
 
     // Uncompiled functions should be Closure objects with Language body (not bytecode)
     match obj {
@@ -204,7 +210,9 @@ fn test_bytecode_roundtrip() {
 
     // First verify we can parse and write
     let written = {
-        let obj = read_rds(&data).expect("Failed to parse bytecode function");
+        let obj = read_rds(&data)
+            .expect("Failed to parse bytecode function")
+            .object;
 
         // Verify it's a closure
         match &obj {
@@ -217,7 +225,9 @@ fn test_bytecode_roundtrip() {
 
     // Then verify we can parse the written data
     {
-        let obj2 = read_rds(&written).expect("Failed to re-parse written bytecode");
+        let obj2 = read_rds(&written)
+            .expect("Failed to re-parse written bytecode")
+            .object;
 
         // Verify it's still a closure
         match &obj2 {

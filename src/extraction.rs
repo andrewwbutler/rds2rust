@@ -89,7 +89,8 @@ pub fn extract_vectors_from_path<P: AsRef<Path>>(
         Some(budget) => crate::ParseConfig::for_constrained_conversion(budget),
         None => crate::ParseConfig::for_trusted_large_file(),
     };
-    let obj = crate::read_rds_with_config(source.as_slice(), config)?;
+    let result = crate::read_rds_with_config(source.as_slice(), config)?;
+    let obj = result.object;
     let budget_bytes = budget_mb.map(|mb| mb * 1024 * 1024);
     let result =
         extract_vectors_to_raw_files(&obj, source.as_slice(), paths, budget_bytes, &out_dir)?;
@@ -120,7 +121,8 @@ pub fn extract_vectors_from_path_chunked<P: AsRef<Path>>(
         Some(budget) => crate::ParseConfig::for_constrained_conversion(budget),
         None => crate::ParseConfig::for_trusted_large_file(),
     };
-    let obj = crate::read_rds_with_input(&source, config)?;
+    let result = crate::read_rds_with_input(&source, config)?;
+    let obj = result.object;
     let budget_bytes = budget_mb.map(|mb| mb * 1024 * 1024);
     let result =
         extract_vectors_to_raw_files_with_input(&obj, &source, paths, budget_bytes, &out_dir)?;
@@ -151,7 +153,8 @@ pub fn extract_object_from_path<P: AsRef<Path>>(
         Some(budget) => crate::ParseConfig::for_constrained_conversion(budget),
         None => crate::ParseConfig::for_trusted_large_file(),
     };
-    let obj = crate::read_rds_with_config(source.as_slice(), config)?;
+    let result = crate::read_rds_with_config(source.as_slice(), config)?;
+    let obj = result.object;
     let budget_bytes = budget_mb.map(|mb| mb * 1024 * 1024);
 
     extract_object_to_raw_files(
@@ -178,7 +181,8 @@ pub fn extract_object_from_path_chunked<P: AsRef<Path>>(
         Some(budget) => crate::ParseConfig::for_constrained_conversion(budget),
         None => crate::ParseConfig::for_trusted_large_file(),
     };
-    let obj = crate::read_rds_with_input(&source, config)?;
+    let result = crate::read_rds_with_input(&source, config)?;
+    let obj = result.object;
     let budget_bytes = budget_mb.map(|mb| mb * 1024 * 1024);
 
     extract_object_to_raw_files_with_input(
@@ -206,7 +210,8 @@ pub fn extract_object_from_path_with_kind<P: AsRef<Path>>(
         Some(budget) => crate::ParseConfig::for_constrained_conversion(budget),
         None => crate::ParseConfig::for_trusted_large_file(),
     };
-    let obj = crate::read_rds_with_config(source.as_slice(), config)?;
+    let result = crate::read_rds_with_config(source.as_slice(), config)?;
+    let obj = result.object;
     let budget_bytes = budget_mb.map(|mb| mb * 1024 * 1024);
 
     extract_object_to_raw_files_with_kind(
@@ -235,7 +240,8 @@ pub fn extract_object_from_path_with_kind_chunked<P: AsRef<Path>>(
         Some(budget) => crate::ParseConfig::for_constrained_conversion(budget),
         None => crate::ParseConfig::for_trusted_large_file(),
     };
-    let obj = crate::read_rds_with_input(&source, config)?;
+    let result = crate::read_rds_with_input(&source, config)?;
+    let obj = result.object;
     let budget_bytes = budget_mb.map(|mb| mb * 1024 * 1024);
 
     extract_object_to_raw_files_with_kind_and_input(

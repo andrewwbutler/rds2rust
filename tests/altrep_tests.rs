@@ -24,7 +24,9 @@ fn test_altrep_intseq() {
     }
 
     let data = read_test_file("altrep_intseq.rds");
-    let obj = read_rds(&data).expect("Failed to parse ALTREP integer sequence");
+    let obj = read_rds(&data)
+        .expect("Failed to parse ALTREP integer sequence")
+        .object;
 
     // ALTREP compact_intseq should be materialized to a regular integer vector
     match obj {
@@ -53,7 +55,9 @@ fn test_altrep_realseq() {
     }
 
     let data = read_test_file("altrep_realseq.rds");
-    let obj = read_rds(&data).expect("Failed to parse ALTREP real sequence");
+    let obj = read_rds(&data)
+        .expect("Failed to parse ALTREP real sequence")
+        .object;
 
     // ALTREP realseq might be materialized to integer or real vector
     match obj {
@@ -83,7 +87,9 @@ fn test_altrep_in_list() {
     }
 
     let data = read_test_file("altrep_in_list.rds");
-    let obj = read_rds(&data).expect("Failed to parse list containing ALTREP");
+    let obj = read_rds(&data)
+        .expect("Failed to parse list containing ALTREP")
+        .object;
 
     // The object should be a list with attributes
     let (list, attrs) = match obj {
@@ -151,7 +157,9 @@ fn test_regular_int_no_altrep() {
     }
 
     let data = read_test_file("regular_int.rds");
-    let obj = read_rds(&data).expect("Failed to parse regular integer vector");
+    let obj = read_rds(&data)
+        .expect("Failed to parse regular integer vector")
+        .object;
 
     // Regular integer vector (not ALTREP) should parse normally
     match obj {
@@ -178,7 +186,9 @@ fn test_altrep_matrix_real() {
     }
 
     let data = read_test_file("altrep_matrix_real.rds");
-    let obj = read_rds(&data).expect("Failed to parse ALTREP matrix");
+    let obj = read_rds(&data)
+        .expect("Failed to parse ALTREP matrix")
+        .object;
 
     // Should be a Real vector with dim attribute (matrix)
     match obj {
@@ -222,7 +232,9 @@ fn test_altrep_matrix_dimnames() {
     }
 
     let data = read_test_file("altrep_matrix_dimnames.rds");
-    let obj = read_rds(&data).expect("Failed to parse ALTREP matrix with dimnames");
+    let obj = read_rds(&data)
+        .expect("Failed to parse ALTREP matrix with dimnames")
+        .object;
 
     // Should be a Real vector with dim and dimnames attributes
     match obj {
@@ -276,7 +288,9 @@ fn test_altrep_wrap_real() {
     }
 
     let data = read_test_file("altrep_wrap_real.rds");
-    let obj = read_rds(&data).expect("Failed to parse wrap_real ALTREP");
+    let obj = read_rds(&data)
+        .expect("Failed to parse wrap_real ALTREP")
+        .object;
 
     // wrap_real should be materialized to a regular Real vector
     match obj {
@@ -321,7 +335,9 @@ fn test_altrep_wrap_int() {
     }
 
     let data = read_test_file("altrep_wrap_int.rds");
-    let obj = read_rds(&data).expect("Failed to parse wrap_int ALTREP");
+    let obj = read_rds(&data)
+        .expect("Failed to parse wrap_int ALTREP")
+        .object;
 
     // wrap_int should be materialized to a regular Integer vector
     match obj {
@@ -366,7 +382,9 @@ fn test_altrep_wrap_matrix() {
     }
 
     let data = read_test_file("altrep_wrap_matrix.rds");
-    let obj = read_rds(&data).expect("Failed to parse wrapped matrix ALTREP");
+    let obj = read_rds(&data)
+        .expect("Failed to parse wrapped matrix ALTREP")
+        .object;
 
     // Wrapped matrix should have Real data with attributes
     match obj {
