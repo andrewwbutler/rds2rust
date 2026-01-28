@@ -18,6 +18,7 @@ mod streaming_decompress;
 mod write;
 
 #[cfg(target_arch = "wasm32")]
+#[allow(unused_imports)]
 pub use async_chunk_iter::{
     AsyncChunkConfig, AsyncFixedLazyChunkIter, AsyncLazyCharacterChunkIter,
 };

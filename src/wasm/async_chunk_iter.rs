@@ -90,7 +90,7 @@ pub struct AsyncFixedLazyChunkIter<'a, T> {
 }
 
 #[cfg(target_arch = "wasm32")]
-impl<'a, T> AsyncFixedLazyChunkIter<'a, T> {
+impl<'a, T: AsyncChunkElement> AsyncFixedLazyChunkIter<'a, T> {
     pub fn new(source: &'a dyn AsyncRdsInput, span: LazyVector, config: AsyncChunkConfig) -> Self {
         let max_by_bytes = config.max_bytes.checked_div(T::BYTES).unwrap_or(0).max(1);
         let chunk_elements = config.max_elements.min(max_by_bytes).max(1);
