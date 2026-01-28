@@ -396,16 +396,7 @@ fn should_materialize_vector_tag(ctx: &ParserContext, tag: &Option<Arc<str>>) ->
 }
 
 #[cfg(target_arch = "wasm32")]
-fn log_large_alloc(ctx: &ParserContext, kind: &str, length: usize) {
-    if length < 10_000 {
-        return;
-    }
-    let msg = format!(
-        "seq alloc kind={} length={} mode={:?} force_materialize={} lenient_skip={}",
-        kind, length, ctx.mode, ctx.force_materialize_vector, ctx.lenient_skip_vectors
-    );
-    web_sys::console::warn_1(&JsValue::from_str(&msg));
-}
+fn log_large_alloc(_ctx: &ParserContext, _kind: &str, _length: usize) {}
 
 fn guard_allocation(
     ctx: &mut ParserContext,
@@ -2215,17 +2206,6 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
 ) -> Result<RObject> {
-    #[cfg(target_arch = "wasm32")]
-    if sequential_debug_enabled() {
-        let msg = format!(
-            "seq parse enter pos={} mode={:?} force_materialize={} lenient_skip={}",
-            cursor.position(),
-            ctx.mode,
-            ctx.force_materialize_vector,
-            ctx.lenient_skip_vectors
-        );
-        web_sys::console::log_1(&JsValue::from_str(&msg));
-    }
     cursor.ensure_available(1).await?;
     let first_byte = cursor.as_sync_slice(1)?[0];
     if first_byte >= 240 {
@@ -2391,18 +2371,6 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
 
             let should_skip = matches!(ctx.mode, crate::ParseMode::LazyMetadata)
                 && length > ctx.effective_lazy_threshold();
-            #[cfg(target_arch = "wasm32")]
-            if length >= 10_000 {
-                let msg = format!(
-                    "seq strsxp(main) len={} lazy_thresh={} should_skip={} force_materialize={} lenient_skip={}",
-                    length,
-                    ctx.effective_lazy_threshold(),
-                    should_skip,
-                    ctx.force_materialize_vector,
-                    ctx.lenient_skip_vectors
-                );
-                web_sys::console::warn_1(&JsValue::from_str(&msg));
-            }
             if should_skip {
                 let offset = cursor.position();
                 let start_pos = cursor.position();
