@@ -208,6 +208,8 @@ const MAX_VECTOR_LENGTH: usize = 50_000_000;
 const MAX_ALLOCATION_BYTES: usize = 128 * 1024 * 1024;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 const MAX_FORCE_MATERIALIZE_VECTOR_LEN: usize = 100_000;
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+const MAX_FORCE_MATERIALIZE_STRING_LEN: usize = 10_000;
 
 /// Parser context holding configuration and state
 struct ParserContext {
@@ -3674,10 +3676,12 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             let length = read_u32_async(cursor).await? as usize;
             guard_allocation_common(ctx, length, 1, "character vector")?;
 
+            let allow_force_materialize_strings =
+                ctx.force_materialize_vector && length <= MAX_FORCE_MATERIALIZE_STRING_LEN;
             if ctx.lenient_skip_vectors
                 || (matches!(ctx.mode, crate::ParseMode::LazyMetadata)
                     && length > ctx.effective_lazy_threshold()
-                    && !ctx.force_materialize_vector)
+                    && !allow_force_materialize_strings)
             {
                 let offset = cursor.position();
                 let start_pos = cursor.position();
