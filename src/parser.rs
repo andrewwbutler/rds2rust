@@ -3681,8 +3681,7 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             #[cfg(target_arch = "wasm32")]
             if length >= 10_000 {
                 let should_skip = matches!(ctx.mode, crate::ParseMode::LazyMetadata)
-                    && length > ctx.effective_lazy_threshold()
-                    && !allow_force_materialize_strings;
+                    && length > ctx.effective_lazy_threshold();
                 let msg = format!(
                     "seq strsxp len={} lazy_thresh={} allow_force={} should_skip={}",
                     length,
@@ -3694,8 +3693,7 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             }
             if ctx.lenient_skip_vectors
                 || (matches!(ctx.mode, crate::ParseMode::LazyMetadata)
-                    && length > ctx.effective_lazy_threshold()
-                    && !allow_force_materialize_strings)
+                    && length > ctx.effective_lazy_threshold())
             {
                 let offset = cursor.position();
                 let start_pos = cursor.position();
