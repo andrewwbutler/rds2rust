@@ -395,14 +395,14 @@ fn should_materialize_vector_tag(ctx: &ParserContext, tag: &Option<Arc<str>>) ->
 
 #[cfg(target_arch = "wasm32")]
 fn log_large_alloc(ctx: &ParserContext, kind: &str, length: usize) {
-    if length < 1_000_000 {
+    if length < 100_000 {
         return;
     }
     let msg = format!(
         "seq alloc kind={} length={} mode={:?} force_materialize={} lenient_skip={}",
         kind, length, ctx.mode, ctx.force_materialize_vector, ctx.lenient_skip_vectors
     );
-    web_sys::console::debug_1(&JsValue::from_str(&msg));
+    web_sys::console::log_1(&JsValue::from_str(&msg));
 }
 
 fn guard_allocation(
