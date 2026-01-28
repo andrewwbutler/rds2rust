@@ -2363,6 +2363,57 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
         STRSXP => {
             let length = read_u32_async(cursor).await? as usize;
             guard_allocation_common(ctx, length, 1, "character vector")?;
+
+            if matches!(ctx.mode, crate::ParseMode::LazyMetadata)
+                && length > ctx.effective_lazy_threshold()
+                && !ctx.force_materialize_vector
+            {
+                let offset = cursor.position();
+                let start_pos = cursor.position();
+                for _ in 0..length {
+                    let elem_flags = read_u32_async(cursor).await?;
+                    let elem_type = elem_flags & 0xFF;
+                    let elem_type_alt = (elem_flags >> 8) & 0xFF;
+                    if elem_type == REFSXP {
+                        continue;
+                    }
+                    if elem_type == SYMSXP {
+                        let name_flags = read_u32_async(cursor).await?;
+                        let name_type = name_flags & 0xFF;
+                        let name_type_alt = (name_flags >> 8) & 0xFF;
+                        if name_type == REFSXP {
+                            continue;
+                        }
+                        if name_type == CHARSXP || name_type_alt == CHARSXP {
+                            let str_len = read_i32_async(cursor).await?;
+                            if str_len >= 0 {
+                                cursor.skip_bytes(str_len as usize).await?;
+                            }
+                            continue;
+                        }
+                        return Err(Error::InvalidFormat(
+                            "non-CHARSXP element in character vector".to_string(),
+                        ));
+                    }
+                    if elem_type == CHARSXP || elem_type_alt == CHARSXP {
+                        let str_len = read_i32_async(cursor).await?;
+                        if str_len >= 0 {
+                            cursor.skip_bytes(str_len as usize).await?;
+                        }
+                        continue;
+                    }
+                    return Err(Error::InvalidFormat(
+                        "non-CHARSXP element in character vector".to_string(),
+                    ));
+                }
+
+                return Ok(RObject::Character(VectorData::Lazy(LazyVector {
+                    length,
+                    offset,
+                    byte_len: cursor.position().saturating_sub(start_pos),
+                })));
+            }
+
             let mut vec = Vec::with_capacity(length);
             let mut string_cache: Vec<Arc<str>> = Vec::new();
             for _ in 0..length {
@@ -3569,6 +3620,58 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
         STRSXP => {
             let length = read_u32_async(cursor).await? as usize;
             guard_allocation_common(ctx, length, 1, "character vector")?;
+
+            if (ctx.lenient_skip_vectors
+                || (matches!(ctx.mode, crate::ParseMode::LazyMetadata)
+                    && length > ctx.effective_lazy_threshold()
+                    && !ctx.force_materialize_vector))
+            {
+                let offset = cursor.position();
+                let start_pos = cursor.position();
+                for _ in 0..length {
+                    let elem_flags = read_u32_async(cursor).await?;
+                    let elem_type = elem_flags & 0xFF;
+                    let elem_type_alt = (elem_flags >> 8) & 0xFF;
+                    if elem_type == REFSXP {
+                        continue;
+                    }
+                    if elem_type == SYMSXP {
+                        let name_flags = read_u32_async(cursor).await?;
+                        let name_type = name_flags & 0xFF;
+                        let name_type_alt = (name_flags >> 8) & 0xFF;
+                        if name_type == REFSXP {
+                            continue;
+                        }
+                        if name_type == CHARSXP || name_type_alt == CHARSXP {
+                            let str_len = read_i32_async(cursor).await?;
+                            if str_len >= 0 {
+                                cursor.skip_bytes(str_len as usize).await?;
+                            }
+                            continue;
+                        }
+                        return Err(Error::InvalidFormat(
+                            "non-CHARSXP element in character vector".to_string(),
+                        ));
+                    }
+                    if elem_type == CHARSXP || elem_type_alt == CHARSXP {
+                        let str_len = read_i32_async(cursor).await?;
+                        if str_len >= 0 {
+                            cursor.skip_bytes(str_len as usize).await?;
+                        }
+                        continue;
+                    }
+                    return Err(Error::InvalidFormat(
+                        "non-CHARSXP element in character vector".to_string(),
+                    ));
+                }
+
+                return Ok(RObject::Character(VectorData::Lazy(LazyVector {
+                    length,
+                    offset,
+                    byte_len: cursor.position().saturating_sub(start_pos),
+                })));
+            }
+
             let mut vec = Vec::with_capacity(length);
             let mut string_cache: Vec<Arc<str>> = Vec::new();
             for _ in 0..length {
