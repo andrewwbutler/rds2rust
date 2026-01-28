@@ -2389,10 +2389,21 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             let length = read_u32_async(cursor).await? as usize;
             guard_allocation_common(ctx, length, 1, "character vector")?;
 
-            if matches!(ctx.mode, crate::ParseMode::LazyMetadata)
-                && length > ctx.effective_lazy_threshold()
-                && !ctx.force_materialize_vector
-            {
+            let should_skip = matches!(ctx.mode, crate::ParseMode::LazyMetadata)
+                && length > ctx.effective_lazy_threshold();
+            #[cfg(target_arch = "wasm32")]
+            if length >= 10_000 {
+                let msg = format!(
+                    "seq strsxp(main) len={} lazy_thresh={} should_skip={} force_materialize={} lenient_skip={}",
+                    length,
+                    ctx.effective_lazy_threshold(),
+                    should_skip,
+                    ctx.force_materialize_vector,
+                    ctx.lenient_skip_vectors
+                );
+                web_sys::console::warn_1(&JsValue::from_str(&msg));
+            }
+            if should_skip {
                 let offset = cursor.position();
                 let start_pos = cursor.position();
                 for _ in 0..length {
