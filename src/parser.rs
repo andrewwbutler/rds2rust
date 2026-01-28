@@ -3678,6 +3678,20 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
 
             let allow_force_materialize_strings =
                 ctx.force_materialize_vector && length <= MAX_FORCE_MATERIALIZE_STRING_LEN;
+            #[cfg(target_arch = "wasm32")]
+            if length >= 10_000 {
+                let should_skip = matches!(ctx.mode, crate::ParseMode::LazyMetadata)
+                    && length > ctx.effective_lazy_threshold()
+                    && !allow_force_materialize_strings;
+                let msg = format!(
+                    "seq strsxp len={} lazy_thresh={} allow_force={} should_skip={}",
+                    length,
+                    ctx.effective_lazy_threshold(),
+                    allow_force_materialize_strings,
+                    should_skip
+                );
+                web_sys::console::warn_1(&JsValue::from_str(&msg));
+            }
             if ctx.lenient_skip_vectors
                 || (matches!(ctx.mode, crate::ParseMode::LazyMetadata)
                     && length > ctx.effective_lazy_threshold()
