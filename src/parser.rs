@@ -395,9 +395,7 @@ fn should_materialize_vector_tag(ctx: &ParserContext, tag: &Option<Arc<str>>) ->
 
 #[cfg(target_arch = "wasm32")]
 fn log_large_alloc(ctx: &ParserContext, kind: &str, length: usize) {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
-    if LOG_COUNT.fetch_add(1, Ordering::Relaxed) >= 10 {
+    if length < 10_000 {
         return;
     }
     let msg = format!(
