@@ -28,6 +28,7 @@ impl Default for AsyncChunkConfig {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 pub trait AsyncChunkElement: Sized {
     const BYTES: usize;
     fn read_from(cursor: &mut Cursor<&[u8]>) -> Result<Self>;
@@ -81,6 +82,7 @@ impl AsyncChunkElement for Complex {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 pub struct AsyncFixedLazyChunkIter<'a, T> {
     source: &'a dyn AsyncRdsInput,
     span: LazyVector,
@@ -90,6 +92,7 @@ pub struct AsyncFixedLazyChunkIter<'a, T> {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 impl<'a, T: AsyncChunkElement> AsyncFixedLazyChunkIter<'a, T> {
     pub fn new(source: &'a dyn AsyncRdsInput, span: LazyVector, config: AsyncChunkConfig) -> Self {
         let max_by_bytes = config.max_bytes.checked_div(T::BYTES).unwrap_or(0).max(1);
@@ -105,6 +108,7 @@ impl<'a, T: AsyncChunkElement> AsyncFixedLazyChunkIter<'a, T> {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[allow(dead_code)]
 impl<'a, T> AsyncFixedLazyChunkIter<'a, T>
 where
     T: AsyncChunkElement,
