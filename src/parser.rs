@@ -393,6 +393,18 @@ fn should_materialize_vector_tag(ctx: &ParserContext, tag: &Option<Arc<str>>) ->
     tag_in_list(tag, &ctx.s4_slot_policy.materialize_vector_tags)
 }
 
+#[cfg(target_arch = "wasm32")]
+fn log_large_alloc(ctx: &ParserContext, kind: &str, length: usize) {
+    if length < 1_000_000 {
+        return;
+    }
+    let msg = format!(
+        "seq alloc kind={} length={} mode={:?} force_materialize={} lenient_skip={}",
+        kind, length, ctx.mode, ctx.force_materialize_vector, ctx.lenient_skip_vectors
+    );
+    web_sys::console::debug_1(&JsValue::from_str(&msg));
+}
+
 fn guard_allocation(
     ctx: &mut ParserContext,
     length: usize,
@@ -2414,6 +2426,8 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                 })));
             }
 
+            #[cfg(target_arch = "wasm32")]
+            log_large_alloc(ctx, "strsxp", length);
             let mut vec = Vec::with_capacity(length);
             let mut string_cache: Vec<Arc<str>> = Vec::new();
             for _ in 0..length {
@@ -2637,6 +2651,8 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                     RObject::Expression(Vec::new())
                 }
             } else {
+                #[cfg(target_arch = "wasm32")]
+                log_large_alloc(ctx, "vecsxp", length);
                 let mut values = Vec::with_capacity(length);
                 for idx in 0..length {
                     let value = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
@@ -3752,6 +3768,8 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             }
             let byte_len = length * std::mem::size_of::<i32>();
             if ctx.force_materialize_vector && length <= MAX_FORCE_MATERIALIZE_VECTOR_LEN {
+                #[cfg(target_arch = "wasm32")]
+                log_large_alloc(ctx, "intsxp", length);
                 let mut values = Vec::with_capacity(length);
                 for _ in 0..length {
                     values.push(read_i32_async(cursor).await?);
@@ -3775,6 +3793,8 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             }
             let byte_len = length * std::mem::size_of::<f64>();
             if ctx.force_materialize_vector && length <= MAX_FORCE_MATERIALIZE_VECTOR_LEN {
+                #[cfg(target_arch = "wasm32")]
+                log_large_alloc(ctx, "realsxp", length);
                 let mut values = Vec::with_capacity(length);
                 for _ in 0..length {
                     values.push(read_f64_async(cursor).await?);
@@ -3798,6 +3818,8 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             }
             let byte_len = length * 4;
             if ctx.force_materialize_vector && length <= MAX_FORCE_MATERIALIZE_VECTOR_LEN {
+                #[cfg(target_arch = "wasm32")]
+                log_large_alloc(ctx, "lglsxp", length);
                 let mut values = Vec::with_capacity(length);
                 for _ in 0..length {
                     values.push(read_i32_async(cursor).await?.into());
