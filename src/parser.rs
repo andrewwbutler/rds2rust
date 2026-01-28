@@ -2614,7 +2614,7 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             }
             guard_allocation_common(ctx, length, 1, "list")?;
 
-            if matches!(ctx.mode, crate::ParseMode::LazyMetadata)
+            let list_obj = if matches!(ctx.mode, crate::ParseMode::LazyMetadata)
                 && length > ctx.effective_lazy_threshold()
                 && !ctx.force_materialize_vector
             {
@@ -2662,7 +2662,7 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                 } else {
                     RObject::Expression(values)
                 }
-            }
+            };
             #[cfg(target_arch = "wasm32")]
             if sequential_debug_enabled() && ctx.parsing_s4_tag {
                 let end_pos = cursor.position();
@@ -2683,7 +2683,7 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                 );
                 web_sys::console::debug_1(&JsValue::from_str(&msg));
             }
-            // returned above
+            list_obj
         }
         LISTSXP | ATTRLISTSXP | LANGSXP | ATTRLANGSXP => {
             if ctx.lenient_skip_vectors {
