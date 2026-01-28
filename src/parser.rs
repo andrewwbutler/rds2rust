@@ -2613,27 +2613,55 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                 web_sys::console::debug_1(&JsValue::from_str(&msg));
             }
             guard_allocation_common(ctx, length, 1, "list")?;
-            let mut values = Vec::with_capacity(length);
-            for idx in 0..length {
-                let value = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
-                    ctx,
-                    cursor,
-                    ref_table,
-                    symbol_table,
-                    dedup_table,
-                )))
-                .await?;
-                #[cfg(target_arch = "wasm32")]
-                if sequential_list_debug_enabled() && idx < 3 {
-                    let msg = format!(
-                        "seq vecsxp elem idx={} type={:?} pos={}",
-                        idx,
-                        std::mem::discriminant(&value),
-                        cursor.position()
-                    );
-                    web_sys::console::debug_1(&JsValue::from_str(&msg));
+
+            if matches!(ctx.mode, crate::ParseMode::LazyMetadata)
+                && length > ctx.effective_lazy_threshold()
+                && !ctx.force_materialize_vector
+            {
+                for _ in 0..length {
+                    let _ = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
+                        ctx,
+                        cursor,
+                        ref_table,
+                        symbol_table,
+                        dedup_table,
+                    )))
+                    .await?;
                 }
-                values.push(value);
+
+                if sexp_type == VECSXP {
+                    RObject::List(Vec::new())
+                } else {
+                    RObject::Expression(Vec::new())
+                }
+            } else {
+                let mut values = Vec::with_capacity(length);
+                for idx in 0..length {
+                    let value = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                        ctx,
+                        cursor,
+                        ref_table,
+                        symbol_table,
+                        dedup_table,
+                    )))
+                    .await?;
+                    #[cfg(target_arch = "wasm32")]
+                    if sequential_list_debug_enabled() && idx < 3 {
+                        let msg = format!(
+                            "seq vecsxp elem idx={} type={:?} pos={}",
+                            idx,
+                            std::mem::discriminant(&value),
+                            cursor.position()
+                        );
+                        web_sys::console::debug_1(&JsValue::from_str(&msg));
+                    }
+                    values.push(value);
+                }
+                if sexp_type == VECSXP {
+                    RObject::List(values)
+                } else {
+                    RObject::Expression(values)
+                }
             }
             #[cfg(target_arch = "wasm32")]
             if sequential_debug_enabled() && ctx.parsing_s4_tag {
@@ -2655,11 +2683,7 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                 );
                 web_sys::console::debug_1(&JsValue::from_str(&msg));
             }
-            if sexp_type == VECSXP {
-                RObject::List(values)
-            } else {
-                RObject::Expression(values)
-            }
+            // returned above
         }
         LISTSXP | ATTRLISTSXP | LANGSXP | ATTRLANGSXP => {
             if ctx.lenient_skip_vectors {
@@ -3621,10 +3645,10 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             let length = read_u32_async(cursor).await? as usize;
             guard_allocation_common(ctx, length, 1, "character vector")?;
 
-            if (ctx.lenient_skip_vectors
+            if ctx.lenient_skip_vectors
                 || (matches!(ctx.mode, crate::ParseMode::LazyMetadata)
                     && length > ctx.effective_lazy_threshold()
-                    && !ctx.force_materialize_vector))
+                    && !ctx.force_materialize_vector)
             {
                 let offset = cursor.position();
                 let start_pos = cursor.position();
