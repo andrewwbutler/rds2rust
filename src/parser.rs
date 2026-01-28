@@ -2614,9 +2614,11 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             }
             guard_allocation_common(ctx, length, 1, "list")?;
 
+            let allow_force_materialize =
+                ctx.force_materialize_vector && length <= MAX_FORCE_MATERIALIZE_VECTOR_LEN;
             let list_obj = if matches!(ctx.mode, crate::ParseMode::LazyMetadata)
                 && length > ctx.effective_lazy_threshold()
-                && !ctx.force_materialize_vector
+                && !allow_force_materialize
             {
                 for _ in 0..length {
                     let _ = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
