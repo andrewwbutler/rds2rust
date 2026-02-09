@@ -99,8 +99,58 @@ pub async fn read_lazy_character_vector(
     input: &dyn AsyncRdsInput,
     span: LazyVector,
 ) -> Result<Vec<std::sync::Arc<str>>> {
-    let bytes = read_span_bytes(input, span).await?;
-    parse_character_vec(&bytes, span.length)
+    read_lazy_character_range_async(input, span, 0, span.length).await
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn read_lazy_character_range_async(
+    input: &dyn AsyncRdsInput,
+    span: LazyVector,
+    start: usize,
+    count: usize,
+) -> Result<Vec<std::sync::Arc<str>>> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    let end = start
+        .checked_add(count)
+        .ok_or_else(|| Error::InvalidFormat("lazy range overflow".to_string()))?;
+    if end > span.length {
+        return Err(Error::InvalidFormat(
+            "lazy range exceeds vector length".to_string(),
+        ));
+    }
+
+    let mut iter = AsyncLazyCharacterChunkIter::new(input, span, AsyncChunkConfig::default())?;
+    let mut skipped = 0usize;
+    let mut out = Vec::with_capacity(count);
+
+    while out.len() < count {
+        let chunk = match iter.next_chunk().await? {
+            Some(chunk) => chunk,
+            None => {
+                return Err(Error::InvalidFormat(
+                    "lazy character range exceeded available data".to_string(),
+                ))
+            }
+        };
+
+        if skipped < start {
+            if skipped + chunk.len() <= start {
+                skipped += chunk.len();
+                continue;
+            }
+            let offset = start - skipped;
+            let take = (chunk.len() - offset).min(count - out.len());
+            out.extend(chunk[offset..offset + take].iter().cloned());
+            skipped = start;
+        } else {
+            let take = chunk.len().min(count - out.len());
+            out.extend(chunk[..take].iter().cloned());
+        }
+    }
+
+    Ok(out)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -246,6 +296,61 @@ pub async fn read_lazy_vector_range(
     }
 
     Ok(out)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn read_lazy_integer_range_async(
+    input: &dyn AsyncRdsInput,
+    span: LazyVector,
+    start: usize,
+    count: usize,
+) -> Result<Vec<i32>> {
+    let bytes = read_lazy_vector_range(input, span, 4, start, count).await?;
+    parse_i32_vec(&bytes, count)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn read_lazy_real_range_async(
+    input: &dyn AsyncRdsInput,
+    span: LazyVector,
+    start: usize,
+    count: usize,
+) -> Result<Vec<f64>> {
+    let bytes = read_lazy_vector_range(input, span, 8, start, count).await?;
+    parse_f64_vec(&bytes, count)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn read_lazy_logical_range_async(
+    input: &dyn AsyncRdsInput,
+    span: LazyVector,
+    start: usize,
+    count: usize,
+) -> Result<Vec<Logical>> {
+    let bytes = read_lazy_vector_range(input, span, 4, start, count).await?;
+    let values = parse_i32_vec(&bytes, count)?;
+    Ok(values.into_iter().map(Logical::from).collect())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn read_lazy_raw_range_async(
+    input: &dyn AsyncRdsInput,
+    span: LazyVector,
+    start: usize,
+    count: usize,
+) -> Result<Vec<u8>> {
+    read_lazy_vector_range(input, span, 1, start, count).await
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn read_lazy_complex_range_async(
+    input: &dyn AsyncRdsInput,
+    span: LazyVector,
+    start: usize,
+    count: usize,
+) -> Result<Vec<Complex>> {
+    let bytes = read_lazy_vector_range(input, span, 16, start, count).await?;
+    parse_complex_vec(&bytes, count)
 }
 
 #[cfg(target_arch = "wasm32")]

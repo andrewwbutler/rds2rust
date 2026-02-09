@@ -35,7 +35,9 @@ pub use decompression::{
 #[cfg(target_arch = "wasm32")]
 #[allow(unused_imports)]
 pub use extract::{
-    extract_vector_chunked, extract_vector_to_js, read_lazy_character_vector,
+    extract_vector_chunked, extract_vector_to_js, read_lazy_character_range_async,
+    read_lazy_character_vector, read_lazy_complex_range_async, read_lazy_integer_range_async,
+    read_lazy_logical_range_async, read_lazy_raw_range_async, read_lazy_real_range_async,
     read_lazy_vector_range,
 };
 #[cfg(target_arch = "wasm32")]

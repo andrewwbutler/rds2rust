@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 use rds2rust::{
     read_lazy_character_range, read_rds, read_rds_lazy, read_rds_with_config, write_rds,
     ParseConfig, RObject, VectorData,

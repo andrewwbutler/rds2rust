@@ -15,7 +15,7 @@ A pure Rust library for reading and writing R's RDS (R Data Serialization) files
 - **Automatic compression** - Transparent gzip compression/decompression
 - **Type safe** - Strong Rust types for all R objects
 - **Zero-copy where possible** - Efficient parsing and serialization
-- **Thread safe** - Safe to use concurrently from multiple threads
+- **Thread-aware** - Use `into_concrete_deep()` before sharing parsed objects across threads
 
 ### Supported R Types
 
@@ -47,7 +47,8 @@ use std::fs;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Read RDS file (automatically decompresses if gzipped)
     let data = fs::read("data.rds")?;
-    let obj = read_rds(&data)?;
+    let result = read_rds(&data)?;
+    let obj = result.object;
 
     // Pattern match on R object type
     match obj {
@@ -65,6 +66,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => println!("Other R object type"),
     }
 
+    for warning in result.warnings {
+        eprintln!("Warning: {}", warning);
+    }
+
     Ok(())
 }
 ```
@@ -72,16 +77,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Writing an RDS file
 
 ```rust
-use rds2rust::{write_rds, RObject};
+use rds2rust::{write_rds, RObject, VectorData};
 use std::fs;
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create an R object (e.g., a character vector)
-    let obj = RObject::Character(vec![
+    let obj = RObject::Character(VectorData::Owned(vec![
         Arc::from("hello"),
         Arc::from("world"),
-    ].into());
+    ]));
 
     // Serialize to RDS format (automatically gzip compressed)
     let rds_data = write_rds(&obj)?;
@@ -98,16 +103,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 For large outputs, stream directly to a `Write` sink to avoid buffering the whole file in memory.
 
 ```rust
-use rds2rust::{write_rds_streaming, write_rds_atomic, RObject};
+use rds2rust::{write_rds_streaming, write_rds_atomic, RObject, VectorData};
 use std::fs::File;
 use std::io::BufWriter;
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let obj = RObject::Character(vec![
+    let obj = RObject::Character(VectorData::Owned(vec![
         Arc::from("hello"),
         Arc::from("streaming"),
-    ].into());
+    ]));
 
     // Stream to a file (gzip compressed)
     let file = File::create("output.rds")?;
@@ -124,11 +129,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use rds2rust::{read_rds, RObject};
-use std::sync::Arc;
 
 // Read a data frame
 let data = std::fs::read("iris.rds")?;
-let obj = read_rds(&data)?;
+let result = read_rds(&data)?;
+let obj = result.object;
 
 if let RObject::DataFrame(df) = obj {
     // Access columns by name
@@ -157,7 +162,7 @@ Decompression uses a size-based strategy:
 
 - **<500MB**: in-memory buffer
 - **500MB–10GB**: Blob-backed chunked reads
-- **>10GB**: streaming mode (future)
+- **>10GB**: streaming mode (sequential)
 
 See `docs/wasm_decompression.md` for the JS helper, worker wrapper, and validation targets.
 
@@ -165,36 +170,25 @@ Gzip-compressed `.rds.gz` files are auto-detected in the WASM helper (browser su
 Chrome/Edge 89+, Firefox 102+, Safari 16.4+). Unsupported formats (bzip2/xz) return helpful
 errors.
 
-### WASM Streaming Decompression
+### WASM Streaming Decompression (Rust API)
 
-For memory-efficient parsing of compressed RDS files, use the streaming decompression API that automatically detects compression format and chooses the optimal parsing strategy:
+For memory-efficient parsing of compressed RDS files in `wasm32`, use the Rust streaming API
+that automatically detects compression format and chooses the optimal parsing strategy:
 
-```javascript
-import {
-  traverseRdsBlobStreaming,
-  checkStreamingDecompressionSupport
-} from "./rds2rust_wasm.js";
-
-// Check browser support
-try {
-  checkStreamingDecompressionSupport();
-} catch (e) {
-  console.error("Streaming decompression not available:", e);
-}
-
-// Parse with automatic compression detection
-const blob = await fetch("large_data.rds.gz").then(r => r.blob());
-
-const visitor = {
-  onHeader: (version) => console.log("RDS version:", version),
-  onObjectStart: (path, type) => console.log("Object:", type),
-  onVectorMetadata: (path, kind, length) => {
-    console.log(`Vector: ${kind}, length: ${length}`);
-  },
-  // ... other visitor methods
+```rust
+use rds2rust::{
+    check_streaming_decompression_support, traverse_rds_blob_streaming, ParseConfig, RdsVisitor,
 };
+use wasm_bindgen::JsValue;
+use web_sys::Blob;
 
-await traverseRdsBlobStreaming(blob, parseConfig, visitor);
+async fn parse_blob<V: RdsVisitor>(blob: Blob, visitor: &mut V) -> Result<(), JsValue> {
+    check_streaming_decompression_support()
+        .map_err(|msg| JsValue::from_str(&msg))?;
+    traverse_rds_blob_streaming(blob, ParseConfig::default(), visitor)
+        .await
+        .map_err(|err| JsValue::from_str(&format!("{:?}", err)))
+}
 ```
 
 **Memory Efficiency**:
@@ -208,51 +202,69 @@ await traverseRdsBlobStreaming(blob, parseConfig, visitor);
 
 **Progress Reporting**:
 
-```javascript
-await traverseRdsBlobStreamingWithProgress(
-  blob,
-  parseConfig,
-  visitor,
-  (progress) => {
-    const pct = progress.totalBytes
-      ? (100 * progress.bytesRead / progress.totalBytes).toFixed(1)
-      : '?';
-    console.log(`Progress: ${progress.bytesRead} bytes (${pct}%)`);
-  }
-);
+```rust
+use rds2rust::{
+    traverse_rds_blob_streaming_with_progress, ParseConfig, RdsVisitor, StreamingProgress,
+};
+use wasm_bindgen::JsValue;
+use web_sys::Blob;
+
+async fn parse_with_progress<V: RdsVisitor>(
+    blob: Blob,
+    visitor: &mut V,
+) -> Result<(), JsValue> {
+    let mut on_progress = |progress: StreamingProgress| {
+        if let Some(total) = progress.total_bytes {
+            let pct = 100.0 * progress.bytes_read as f64 / total as f64;
+            web_sys::console::log_1(
+                &format!("Progress: {} bytes ({:.1}%)", progress.bytes_read, pct).into(),
+            );
+        } else {
+            web_sys::console::log_1(&format!("Progress: {} bytes", progress.bytes_read).into());
+        }
+    };
+
+    traverse_rds_blob_streaming_with_progress(
+        blob,
+        ParseConfig::default(),
+        visitor,
+        &mut on_progress,
+    )
+    .await
+    .map_err(|err| JsValue::from_str(&format!("{:?}", err)))
+}
 ```
 
-### WASM Streaming Writer
+### WASM Streaming Writer (Rust API)
 
 WASM exposes chunked writer helpers that avoid large allocations in Rust. These emit
 `Uint8Array` chunks to a JS callback.
 
-```javascript
-import {
-  writeRdsWithCallback,
-  writeRdsWithProgress,
-  recommendedChunkSizeMb,
-} from "./rds2rust_wasm.js";
+```rust
+use js_sys::{Function, Uint8Array};
+use rds2rust::{recommended_chunk_size_mb, write_rds_with_callback, RObject};
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
 
-const chunks = [];
-const chunkSizeMb = recommendedChunkSizeMb(); // 1, 4, 8, or 16
+fn write_with_callback(obj: &RObject) -> Result<(), JsValue> {
+    let chunk_size_mb = Some(recommended_chunk_size_mb());
+    let callback = Closure::wrap(Box::new(move |chunk: Uint8Array| {
+        // Handle each chunk (e.g. push into a JS array)
+        let _ = chunk;
+    }) as Box<dyn FnMut(Uint8Array)>);
 
-writeRdsWithCallback(obj, (chunk) => {
-  chunks.push(chunk);
-}, chunkSizeMb);
-
-const blob = new Blob(chunks, { type: "application/octet-stream" });
+    let callback_fn: Function = callback.as_ref().unchecked_ref::<Function>().clone();
+    write_rds_with_callback(obj, callback_fn, chunk_size_mb)
+        .map_err(|err| JsValue::from_str(&format!("{:?}", err)))?;
+    callback.forget();
+    Ok(())
+}
 ```
 
 Progress callback reports bytes written (not percent):
 
-```javascript
-writeRdsWithProgress(
-  obj,
-  (chunk) => chunks.push(chunk),
-  (bytesWritten) => console.log(`wrote ${bytesWritten} bytes`),
-  chunkSizeMb
-);
+```rust
+// Use write_rds_with_progress(...) for byte count updates.
 ```
 
 #### WASM Gzip Support
@@ -302,9 +314,9 @@ Notes:
   forms only report attributes.
 - Singleton environment markers (global/base/empty/unbound) are treated as leaf nodes in streaming.
 
-### WASM Extraction APIs
+### WASM Extraction APIs (Rust API)
 
-WASM exposes async extraction helpers that return JS typed arrays or call a callback per chunk:
+WASM builds expose Rust helpers that return `JsValue` (typed arrays) or call a callback per chunk:
 
 - `extract_vector_to_js(obj, source, path) -> JsValue`
 - `extract_vector_chunked(obj, source, path, chunk_size, callback)`
@@ -362,7 +374,7 @@ use rds2rust::{
 };
 
 let source = ChunkedRdsSource::from_path("data.rds")?;
-let obj = rds2rust::read_rds_with_input(&source, ParseConfig::for_trusted_large_file())?;
+let obj = rds2rust::read_rds_with_input(&source, ParseConfig::for_trusted_large_file())?.object;
 let output = extract_object_to_raw_files_with_input_streaming(
     &obj,
     &source,
@@ -389,11 +401,11 @@ If you want chunked reads in library code, use the chunked path helpers:
 ```rust
 use rds2rust::{read_rds_from_path_chunked, ParseConfig};
 
-let obj = read_rds_from_path_chunked("data.rds")?;
+let obj = read_rds_from_path_chunked("data.rds")?.object;
 let obj = rds2rust::read_rds_from_path_chunked_with_config(
     "data.rds",
     ParseConfig::for_trusted_large_file(),
-)?;
+)?.object;
 ```
 
 Lazy metadata parsing with chunked reads:
@@ -401,7 +413,7 @@ Lazy metadata parsing with chunked reads:
 ```rust
 use rds2rust::read_rds_lazy_from_path_chunked;
 
-let obj = read_rds_lazy_from_path_chunked("data.rds")?;
+let obj = read_rds_lazy_from_path_chunked("data.rds")?.object;
 assert!(!obj.is_fully_loaded());
 ```
 
@@ -411,7 +423,7 @@ assert!(!obj.is_fully_loaded());
 use rds2rust::{read_rds, RObject};
 
 let data = std::fs::read("factor.rds")?;
-let obj = read_rds(&data)?;
+let obj = read_rds(&data)?.object;
 
 if let RObject::Factor(factor) = obj {
     // Check if it's an ordered factor
@@ -438,10 +450,9 @@ if let RObject::Factor(factor) = obj {
 
 ```rust
 use rds2rust::{read_rds, RObject};
-use std::sync::Arc;
 
 let data = std::fs::read("model.rds")?;
-let obj = read_rds(&data)?;
+let obj = read_rds(&data)?.object;
 
 // S3 objects
 if let RObject::S3Object(s3) = obj {
@@ -480,7 +491,7 @@ use std::fs;
 
 // Read an RDS file
 let input_data = fs::read("input.rds")?;
-let obj = read_rds(&input_data)?;
+let obj = read_rds(&input_data)?.object;
 
 // Process the data...
 // (modify the object as needed)
@@ -490,7 +501,7 @@ let output_data = write_rds(&obj)?;
 fs::write("output.rds", output_data)?;
 
 // Verify roundtrip
-let obj2 = read_rds(&output_data)?;
+let obj2 = read_rds(&output_data)?.object;
 assert_eq!(obj, obj2);
 ```
 
@@ -568,7 +579,7 @@ let mut file = File::open("large.rds")?;
 let mut buffer = Vec::new();
 file.read_to_end(&mut buffer)?;
 
-let obj = read_rds(&buffer)?;
+let obj = read_rds(&buffer)?.object;
 ```
 
 ### Reusing Parsed Objects
@@ -578,7 +589,7 @@ use std::sync::Arc;
 use rds2rust::RObject;
 
 // Wrap in Arc for cheap cloning
-let obj = Arc::new(read_rds(&data)?);
+let obj = Arc::new(read_rds(&data)?.object);
 
 // Clone is cheap (just increments reference count)
 let obj2 = Arc::clone(&obj);
@@ -593,7 +604,7 @@ let obj2 = Arc::clone(&obj);
 
 ## Development Status
 
-**Current version**: 0.1.39
+**Current version**: 0.1.40
 
 **Test coverage**: extensive test suite covering core R object types and roundtrips
 

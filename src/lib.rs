@@ -84,7 +84,9 @@ pub use types::{
 pub use wasm::{
     check_streaming_decompression_support, decompress_blob_for_random_access,
     decompress_blob_if_needed, detect_blob_compression, estimate_parse_size,
-    extract_vector_chunked, extract_vector_to_js, memory_warning, read_lazy_character_vector,
+    extract_vector_chunked, extract_vector_to_js, memory_warning, read_lazy_character_range_async,
+    read_lazy_character_vector, read_lazy_complex_range_async, read_lazy_integer_range_async,
+    read_lazy_logical_range_async, read_lazy_raw_range_async, read_lazy_real_range_async,
     read_lazy_vector_range, read_rds_async, read_rds_from_blob, recommend_decompression_mode,
     recommended_chunk_size_mb, traverse_rds_blob_streaming,
     traverse_rds_blob_streaming_with_progress, write_rds_with_callback,
@@ -728,7 +730,7 @@ pub fn write_rds(obj: &RObject) -> Result<Vec<u8>> {
 /// # Examples
 ///
 /// ```rust
-/// use rds2rust::{write_rds_streaming, write_rds_atomic, RObject, VectorData};
+/// use rds2rust::{write_rds_streaming, RObject, VectorData};
 /// use std::fs::File;
 /// use std::io::BufWriter;
 ///
@@ -739,7 +741,11 @@ pub fn write_rds(obj: &RObject) -> Result<Vec<u8>> {
 /// write_rds_streaming(&obj, BufWriter::new(file))?;
 ///
 /// // Atomic write helper (native only)
-/// write_rds_atomic(&obj, "output.rds")?;
+/// #[cfg(not(target_arch = "wasm32"))]
+/// {
+///     use rds2rust::write_rds_atomic;
+///     write_rds_atomic(&obj, "output.rds")?;
+/// }
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
@@ -768,7 +774,10 @@ mod tests {
     #[cfg(target_arch = "wasm32")]
     use wasm_bindgen::JsCast;
     #[cfg(target_arch = "wasm32")]
-    use wasm_bindgen_test::wasm_bindgen_test;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+
+    #[cfg(target_arch = "wasm32")]
+    wasm_bindgen_test_configure!(run_in_browser);
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
@@ -833,6 +842,7 @@ mod tests {
         )
         .await
         .expect("parse gzip")
+        .object
         .into_concrete();
         match parsed {
             crate::RObject::Integer(vec) => {
@@ -861,6 +871,7 @@ mod tests {
         )
         .await
         .expect("parse uncompressed")
+        .object
         .into_concrete();
         match parsed {
             crate::RObject::Integer(vec) => {
@@ -904,6 +915,7 @@ mod tests {
         )
         .await
         .expect("parse s4")
+        .object
         .into_concrete();
         match parsed {
             crate::RObject::S4Object(s4) => {
