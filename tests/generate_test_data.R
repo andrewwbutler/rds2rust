@@ -908,3 +908,7 @@ if (!is.na(large_len) && large_len > 0) {
 
 cat("Test RDS files generated successfully in", output_dir, "\n")
 cat("Total files:", length(list.files(output_dir, pattern = "\\.rds$")), "\n")
+
+# xz compressed RDS
+saveRDS(mtcars, file.path(output_dir, "xz_compressed.rds"), compress = "xz")
+saveRDS(mtcars, file.path(output_dir, "gzip_compressed.rds"), compress = "gzip")
