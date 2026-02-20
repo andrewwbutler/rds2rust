@@ -15,6 +15,8 @@ use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, RwLock};
+#[cfg(not(target_arch = "wasm32"))]
+use xz2::read::XzDecoder;
 
 use crate::extraction::VectorKind;
 use crate::types::VectorData;
@@ -792,25 +794,35 @@ fn parse_rds_internal(data: &[u8], ctx: &mut ParserContext) -> Result<RObject> {
     // Check if the file is gzip or xz compressed
     // gzip starts with 0x1f 0x8b
     // xz starts with 0xfd 0x37 0x7a 0x58 0x5a 0x00
+    let is_xz = data.len() >= 6
+        && data[0] == 0xfd
+        && data[1] == 0x37
+        && data[2] == 0x7a
+        && data[3] == 0x58
+        && data[4] == 0x5a
+        && data[5] == 0x00;
+
     let decompressed_data = if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
         // Decompress gzip
         let mut decoder = GzDecoder::new(data);
         let mut decompressed = Vec::new();
         decoder.read_to_end(&mut decompressed)?;
         decompressed
-    } else if data.len() >= 6
-        && data[0] == 0xfd
-        && data[1] == 0x37
-        && data[2] == 0x7a
-        && data[3] == 0x58
-        && data[4] == 0x5a
-        && data[5] == 0x00
-    {
-        // Decompress xz using the xz2 crate
-        let mut decoder = xz2::read::XzDecoder::new(data);
-        let mut decompressed = Vec::new();
-        decoder.read_to_end(&mut decompressed)?;
-        decompressed
+    } else if is_xz {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // Decompress xz using the xz2 crate
+            let mut decoder = XzDecoder::new(data);
+            let mut decompressed = Vec::new();
+            decoder.read_to_end(&mut decompressed)?;
+            decompressed
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Err(Error::CompressionError(
+                "XZ compressed RDS is not supported on wasm32 targets".to_string(),
+            ));
+        }
     } else {
         data.to_vec()
     };
