@@ -36,6 +36,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - `thiserror` - for error handling
      - `flate2` - for gzip compression
      - `bzip2` - for bzip2 compression
+     - `xz2` - for xz compression
 
 2. **Module Structure Created**
    - [src/lib.rs](src/lib.rs) - Public API

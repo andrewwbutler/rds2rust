@@ -961,3 +961,25 @@ fn test_logical_matrix_attribute_order_variation() {
         _ => panic!("Expected WithAttributes objects"),
     }
 }
+
+#[test]
+fn test_xz_reader() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let path_xz = "tests/data/xz_compressed.rds";
+    let path_gzip = "tests/data/gzip_compressed.rds";
+    let data_xz =
+        fs::read(&path_xz).unwrap_or_else(|_| panic!("Failed to read test file: {}", path_xz));
+    let data_gzip =
+        fs::read(&path_gzip).unwrap_or_else(|_| panic!("Failed to read test file: {}", path_gzip));
+    let obj_xz = read_rds(&data_xz)
+        .expect("Failed to parse xz compressed file")
+        .object;
+    let obj_gzip = read_rds(&data_gzip)
+        .expect("Failed to parse gzip compressed file")
+        .object;
+    assert_eq!(obj_xz, obj_gzip);
+}
