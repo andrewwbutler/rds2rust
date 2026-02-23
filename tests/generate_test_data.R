@@ -310,6 +310,27 @@ make_pair <- function(mult, add) {
 pair_obj <- make_pair(4, 9)
 saveRDS(pair_obj, file.path(output_dir, "commands_real_2.rds"))
 
+# Real namespace functions inside an S4 command bundle.
+# This intentionally mirrors integration-style command payloads while avoiding
+# optional external package dependencies.
+setClass("TestCommand", slots = c(dummy = "logical"), prototype = list(dummy = FALSE))
+setClass("TestSeurat", slots = c(dummy = "logical"), prototype = list(dummy = FALSE))
+test_cmd <- new("TestCommand")
+attr(test_cmd, "name") <- "FindVariableFeatures.RNA"
+attr(test_cmd, "params") <- list(
+    selection.method = "vst",
+    mean.function = stats::median,
+    dispersion.function = stats::sd,
+    nfeatures = 2000
+)
+test_with_real_functions <- new("TestSeurat")
+attr(test_with_real_functions, "data") <- list(x = 1:10)
+attr(test_with_real_functions, "commands") <- list(test_cmd)
+saveRDS(
+    test_with_real_functions,
+    file.path(output_dir, "test_with_real_functions.rds")
+)
+
 # More realistic closure structure with attributes and metadata
 make_pipeline <- function(scale, shift) {
     inner_env <- new.env(parent = emptyenv())
