@@ -7,6 +7,15 @@ A pure Rust library for reading and writing R's RDS (R Data Serialization) files
 [![Documentation](https://docs.rs/rds2rust/badge.svg)](https://docs.rs/rds2rust)
 [![License](https://img.shields.io/crates/l/rds2rust.svg)](LICENSE)
 
+## Important note
+
+This codebase originated from a couple of goals: 
+
+* enabling a downstream CLI + webtool with the ability to read/write RDS files
+* explore the current capabilities of agentic programming 
+
+As such, this initial implementation was created almost entirely with a combination of Claude and Codex. The thought was that a fairly well defined task like reading and writing an existing spec should be something theoretically well suited for AI (and relatively straightforward to validate, at least for _most_ of the internal R structures). So far, this has worked surprisingly well in combination with a good bit of manual testing and has allowed me to make significant progress on downstream tools. However, for others are coming across this, I feel this aspect of the project needs to be clearly disclosed. Going forward, I do plan on continuing to update and maintain this library both through agentic contributions as well as "handcrafted" edits to address bugs and improve the overall structure/function of the codebase. Feature requests and contributions are welcome! 
+
 ## Features
 
 - **Pure Rust implementation** - No R runtime required
