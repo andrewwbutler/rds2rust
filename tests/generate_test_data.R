@@ -365,6 +365,43 @@ env$x <- 42
 env$y <- "hello"
 saveRDS(env, file.path(output_dir, "environment_simple.rds"))
 
+# Persistent objects (PERSISTSXP) written via serialize(refhook=).
+# This mimics R's lazy-load databases (e.g. help/<pkg>.rdb), where srcfile
+# environments are persisted as "env::N" strings by a ref hook. The ref hook
+# takes precedence over back-references, so the second occurrence of the same
+# environment is re-persisted as another PERSISTSXP entry; the trailing
+# string verifies stream alignment.
+persist_env <- new.env()
+persist_obj <- list(
+  first = persist_env,
+  second = persist_env,
+  after = "still-aligned"
+)
+con <- file(file.path(output_dir, "persistsxp.rds"), "wb")
+serialize(persist_obj, con, refhook = function(e) "env::1")
+close(con)
+
+# Persisted environment inside an attribute, like the srcref/srcfile
+# attributes on Rd objects stored in help databases.
+persist_attr_obj <- structure(
+  list("payload"),
+  srcenv = persist_env,
+  tail_attr = "tail"
+)
+con <- file(file.path(output_dir, "persistsxp_attr.rds"), "wb")
+serialize(persist_attr_obj, con, refhook = function(e) "env::1")
+close(con)
+
+# A ref hook may return more than one string per object.
+con <- file(file.path(output_dir, "persistsxp_multi.rds"), "wb")
+serialize(
+  list(env = persist_env, after = "multi-aligned"),
+  con,
+  refhook = function(e) c("env", "extra", "names")
+)
+close(con)
+
+
 # Reference tracking test cases
 # These test REFSXP (reference tracking) functionality
 
