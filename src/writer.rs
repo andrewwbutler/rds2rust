@@ -343,13 +343,13 @@ fn write_symbol_with_tracking<W: Write>(
 ) -> Result<SymbolIndices> {
     // Check if this symbol was already written
     if let Some(indices) = symbol_tracker.lookup(shared_ptr, name.as_ref()) {
-        // Already written - emit appropriate REFSXP based on context
-        // TAG positions use the symbol table index; non-TAG uses the object ref index.
-        let refsxp_idx = match context {
-            SymbolContext::Tag => indices.sym_idx,
-            SymbolContext::NonTag => indices.obj_idx,
-            SymbolContext::NonTagPreferSymbol => indices.sym_idx,
-        };
+        // Already written - emit a REFSXP. R's serialization format uses a
+        // single reference table for all tracked objects (symbols,
+        // environments, namespaces, ...), so the object index is used in every
+        // context, including TAG positions. Emitting a symbol-only index here
+        // would desynchronize readers whenever a non-symbol tracked object
+        // (e.g. an environment) was written before the symbol.
+        let refsxp_idx = indices.obj_idx;
 
         // Debug logging
         if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
@@ -363,19 +363,6 @@ fn write_symbol_with_tracking<W: Write>(
                 refsxp_idx
             );
         }
-
-        // Debug assertion: enforce context rules
-        debug_assert!(
-            (matches!(context, SymbolContext::Tag) && refsxp_idx == indices.sym_idx)
-                || (matches!(context, SymbolContext::NonTag) && refsxp_idx == indices.obj_idx)
-                || (matches!(context, SymbolContext::NonTagPreferSymbol)
-                    && refsxp_idx == indices.sym_idx),
-            "REFSXP index mismatch for context {:?}: emitting {}, expected obj_idx {} sym_idx {}",
-            context,
-            refsxp_idx,
-            indices.obj_idx,
-            indices.sym_idx
-        );
 
         write_refsxp(writer, refsxp_idx)?;
         return Ok(indices);
