@@ -1243,20 +1243,29 @@ impl PartialEq for RObject {
         // scan into an O(n) scan of O(size) clones each.
         //
         // Fast path: two `Shared` wrappers around the same Arc are the same
-        // object, so they are trivially equal. This also avoids re-entrant
-        // read-lock acquisition on the same RwLock (the branch below would
-        // hold a read guard while recursing into the second branch, which
-        // std::sync::RwLock documents as a potential deadlock).
+        // object, so they are trivially equal.
         if let (Shared(a), Shared(b)) = (self, other) {
             if Arc::ptr_eq(a, b) {
                 return true;
             }
         }
+        // For a `Shared` operand that isn't caught by the fast path above,
+        // clone its immediate payload and drop the read guard *before*
+        // recursing into `==`. Holding the guard across the recursive call
+        // (as an earlier version of this code did) would re-acquire the same
+        // RwLock if the other side -- or a nested element reached during
+        // recursion -- wraps the same Arc, which std::sync::RwLock documents
+        // as a potential deadlock. This only clones the immediate Shared
+        // payload, not the whole tree (the concrete-vs-concrete match below
+        // never goes through here), which stays cheap: Shared payloads on the
+        // hot dedup paths are small symbols.
         if let Shared(a) = self {
-            return *a.read().unwrap() == *other;
+            let cloned = a.read().unwrap().clone();
+            return cloned == *other;
         }
         if let Shared(b) = other {
-            return *self == *b.read().unwrap();
+            let cloned = b.read().unwrap().clone();
+            return *self == cloned;
         }
 
         match (self, other) {

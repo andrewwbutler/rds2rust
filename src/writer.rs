@@ -412,21 +412,23 @@ fn symbol_name_and_ptr(obj: &RObject) -> Option<(Arc<str>, Option<usize>)> {
     }
 }
 
-/// Determine if an object type should be tracked for references.
-/// This matches the same logic used in the parser.
-#[allow(dead_code)]
-fn should_track_reference_type(obj: &RObject) -> bool {
-    // Match R's "reference objects" in serialize.c: symbols and environments.
-    matches!(
-        obj,
-        RObject::Symbol(_)
-            | RObject::Environment { .. }
-            | RObject::Namespace(_)
-            | RObject::Shared(_)
-    )
-}
-
 /// Compute a stable key for reference-tracking an object.
+///
+/// NOTE ON PLAIN (non-Shared) SYMBOLS: these are intentionally NOT given a key
+/// here. `write_symbol_with_tracking` / `register_symbol_atomic` are the sole
+/// owners of index allocation for plain symbols, and they dedup by symbol name
+/// (matching R's name-based symbol identity). If we also reserved an index in
+/// this function using the object's transient address (a Vec-slot or
+/// stack-frame address that never recurs across occurrences of "the same"
+/// symbol), we would burn one extra reference index per first-written plain
+/// symbol -- the reservation is registered but never reused via REFSXP, so
+/// every later tracked object's index would end up shifted by one relative to
+/// what a conforming reader (including R itself) assigns.
+///
+/// Plain (non-Shared) `Environment`/`Namespace` values do not have this
+/// problem: their own write functions (`write_environment`, `write_namespace`)
+/// never allocate an index themselves, so the address-based key reserved here
+/// remains their only allocation and is safe to keep.
 fn ref_key(obj: &RObject) -> Option<usize> {
     match obj {
         RObject::Shared(inner) => {
@@ -440,7 +442,8 @@ fn ref_key(obj: &RObject) -> Option<usize> {
                 None
             }
         }
-        other if should_track_reference_type(other) => Some(other as *const RObject as usize),
+        RObject::Symbol(_) => None,
+        RObject::Environment { .. } | RObject::Namespace(_) => Some(obj as *const RObject as usize),
         _ => None,
     }
 }
