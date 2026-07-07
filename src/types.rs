@@ -1231,9 +1231,35 @@ impl RObject {
 impl PartialEq for RObject {
     fn eq(&self, other: &Self) -> bool {
         use RObject::*;
-        let a = self.as_concrete();
-        let b = other.as_concrete();
-        match (a, b) {
+
+        // Unwrap `Shared` by comparing through the read guard instead of
+        // cloning the (potentially large) underlying object. The previous
+        // implementation called `as_concrete()` on both sides unconditionally,
+        // which deep-clones every value being compared -- even when neither
+        // side is `Shared` at all. That made every `==` on a composite
+        // RObject (List, WithAttributes, ...) pay for a full recursive clone
+        // before the actual comparison, which is redundant and, on the dedup
+        // table's linear scan over many concrete objects, turns an O(n)
+        // scan into an O(n) scan of O(size) clones each.
+        //
+        // Fast path: two `Shared` wrappers around the same Arc are the same
+        // object, so they are trivially equal. This also avoids re-entrant
+        // read-lock acquisition on the same RwLock (the branch below would
+        // hold a read guard while recursing into the second branch, which
+        // std::sync::RwLock documents as a potential deadlock).
+        if let (Shared(a), Shared(b)) = (self, other) {
+            if Arc::ptr_eq(a, b) {
+                return true;
+            }
+        }
+        if let Shared(a) = self {
+            return *a.read().unwrap() == *other;
+        }
+        if let Shared(b) = other {
+            return *self == *b.read().unwrap();
+        }
+
+        match (self, other) {
             (Null, Null) => true,
             (Integer(x), Integer(y)) => x == y,
             (Real(x), Real(y)) => x == y,

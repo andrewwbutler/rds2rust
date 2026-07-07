@@ -659,10 +659,21 @@ impl DedupTable {
     /// Returns Some(existing) if an identical object exists in the cache,
     /// otherwise adds the object to the cache and returns None.
     fn deduplicate(&mut self, obj: &RObject) -> Option<RObject> {
-        let obj_concrete = obj.as_concrete();
-        // Check if we've seen this object before
+        // The sole caller filters out `Shared` objects before calling this,
+        // but handle it defensively anyway. This avoids the unconditional
+        // clone that `as_concrete()` would perform on the (common,
+        // already-concrete) fast path below.
+        if matches!(obj, RObject::Shared(_)) {
+            let obj_concrete = obj.as_concrete();
+            return self.deduplicate(&obj_concrete);
+        }
+
+        // Check if we've seen this object before.
+        // Cache entries are always already-concrete (they're stored via
+        // `obj.clone()` below, never a `Shared` wrapper), so comparing
+        // directly against `obj` avoids cloning either side of the comparison.
         for cached in &self.cache {
-            if cached.as_ref().as_concrete() == obj_concrete {
+            if cached.as_ref() == obj {
                 // Found a match! Return a clone (cheap Arc clone for strings, actual clone for others)
                 self.hits += 1;
                 return Some((**cached).clone());
@@ -673,8 +684,8 @@ impl DedupTable {
         self.misses += 1;
 
         // Only cache if it's likely to be repeated and not too large
-        if should_cache_for_dedup(&obj_concrete) {
-            self.cache.push(Arc::new(obj_concrete.clone()));
+        if should_cache_for_dedup(obj) {
+            self.cache.push(Arc::new(obj.clone()));
         }
 
         None
