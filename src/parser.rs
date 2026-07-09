@@ -4560,8 +4560,11 @@ fn parse_object(
             }
         }
         PERSISTSXP => {
-            // Persistent object marker
-            RObject::Null
+            // Persistent object written by a serialization ref hook, e.g.
+            // "env::N" strings in R lazy-load databases such as help/<pkg>.rdb.
+            // The payload must be consumed to keep the stream aligned; the
+            // strings are surfaced as a character vector.
+            RObject::Character(parse_persistsxp_strings(ctx, cursor)?.into())
         }
         ATTRLISTSXP | ATTRLANGSXP => {
             // Attribute list/language alternate encoding
@@ -5176,8 +5179,13 @@ fn parse_object_streaming<V: RdsVisitor>(
             path,
             progress,
         )?,
-        WEAKREFSXP | EXTPTRSXP | PACKAGESXP | MISSINGARG_SXP | PERSISTSXP | GLOBALENV_SXP
-        | BASEENV_SXP | EMPTYENV_SXP | UNBOUNDVALUE_SXP => StreamControl::Continue,
+        WEAKREFSXP | EXTPTRSXP | PACKAGESXP | MISSINGARG_SXP | GLOBALENV_SXP | BASEENV_SXP
+        | EMPTYENV_SXP | UNBOUNDVALUE_SXP => StreamControl::Continue,
+        PERSISTSXP => {
+            // Consume the ref-hook string payload to keep the stream aligned.
+            parse_persistsxp_strings(ctx, cursor)?;
+            StreamControl::Continue
+        }
         GENERICREFSXP | CLASSREFSXP | 244 => StreamControl::Continue,
         _ if sexp_type > 25 && sexp_type < 238 => StreamControl::Continue,
         _ => return Err(StreamingError::Parse(Error::UnknownSexpType(sexp_type))),
@@ -8911,6 +8919,50 @@ fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<
         "Expected CHARSXP ({}), got {} (flags: 0x{:08x})",
         CHARSXP, type_from_0_7, flags
     )))
+}
+
+/// Consume the payload of a PERSISTSXP entry and return its strings.
+///
+/// Persistent objects are written when `serialize()` is given a ref hook
+/// (`refhook=`); R's lazy-load databases (e.g. `help/<pkg>.rdb`, where srcfile
+/// environments are persisted as "env::N" strings) rely on this. The payload
+/// matches serialize.c's `OutStringVec`: an i32 names placeholder, an i32
+/// length, then `length` CHARSXP items (each with its own flags word). It must
+/// be consumed even when the strings are unused, otherwise the cursor
+/// desynchronizes and every object after the first persisted one is corrupted.
+fn parse_persistsxp_strings(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+) -> Result<Vec<Arc<str>>> {
+    let _names_placeholder = cursor.read_i32::<BigEndian>()?;
+    // The length is written by WriteLENGTH: long vectors are encoded as -1
+    // followed by the upper and lower 32-bit halves of the 64-bit length.
+    let n = cursor.read_i32::<BigEndian>()?;
+    let n: u64 = if n == -1 {
+        let upper = cursor.read_i32::<BigEndian>()? as u32 as u64;
+        let lower = cursor.read_i32::<BigEndian>()? as u32 as u64;
+        (upper << 32) | lower
+    } else if n < 0 {
+        return Err(Error::InvalidFormat(format!(
+            "Negative PERSISTSXP string count {}",
+            n
+        )));
+    } else {
+        n as u64
+    };
+    let n = usize::try_from(n).map_err(|_| {
+        Error::InvalidFormat(format!("PERSISTSXP string count {} exceeds usize", n))
+    })?;
+    // Each CHARSXP item occupies at least a 4-byte flags word; validate the
+    // count against the remaining stream before allocating.
+    guard_allocation(ctx, n, 4, cursor, "persistsxp strings")?;
+    let mut strings: Vec<Arc<str>> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let item_flags = cursor.read_i32::<BigEndian>()? as u32;
+        let s = parse_charsxp_content(ctx, cursor, item_flags)?;
+        strings.push(Arc::from(s.as_str()));
+    }
+    Ok(strings)
 }
 
 /// Parse the content of a CHARSXP (without the header).
