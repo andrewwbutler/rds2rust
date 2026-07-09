@@ -4519,9 +4519,23 @@ fn parse_object(
             return Ok(namespace_result);
         }
         PACKAGESXP => {
-            // Package environment marker
-            // Similar to namespace handling
-            RObject::Null
+            // Package environment, written as an OutStringVec of its name
+            // (e.g. "package:stats"); R resolves it at load time via
+            // R_FindPackageEnv. The payload must be consumed to keep the
+            // stream aligned, and the entry occupies one reference slot
+            // (AddReadRef in R's reader), so fill the placeholder.
+            let package_result = RObject::Namespace(parse_string_vec(ctx, cursor)?);
+
+            if has_attr {
+                let _attrs = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+            }
+
+            if let Some(idx) = ref_index {
+                ref_table.update(idx, package_result);
+                return Ok(RObject::Shared(ref_table.get(idx).expect("Just updated")));
+            }
+
+            return Ok(package_result);
         }
         MISSINGARG_SXP => {
             // Missing argument marker (default value placeholder in formals)
@@ -4542,7 +4556,7 @@ fn parse_object(
             // "env::N" strings in R lazy-load databases such as help/<pkg>.rdb.
             // The payload must be consumed to keep the stream aligned; the
             // strings are surfaced as a character vector.
-            RObject::Character(parse_persistsxp_strings(ctx, cursor)?.into())
+            RObject::Character(parse_string_vec(ctx, cursor)?.into())
         }
         ATTRLISTSXP | ATTRLANGSXP => {
             // Attribute list/language alternate encoding
@@ -5156,11 +5170,16 @@ fn parse_object_streaming<V: RdsVisitor>(
             path,
             progress,
         )?,
-        WEAKREFSXP | EXTPTRSXP | PACKAGESXP | MISSINGARG_SXP | GLOBALENV_SXP | BASEENV_SXP
-        | EMPTYENV_SXP | UNBOUNDVALUE_SXP => StreamControl::Continue,
+        WEAKREFSXP | EXTPTRSXP | MISSINGARG_SXP | GLOBALENV_SXP | BASEENV_SXP | EMPTYENV_SXP
+        | UNBOUNDVALUE_SXP => StreamControl::Continue,
+        PACKAGESXP => {
+            // Consume the package-name payload to keep the stream aligned.
+            parse_string_vec(ctx, cursor)?;
+            StreamControl::Continue
+        }
         PERSISTSXP => {
             // Consume the ref-hook string payload to keep the stream aligned.
-            parse_persistsxp_strings(ctx, cursor)?;
+            parse_string_vec(ctx, cursor)?;
             StreamControl::Continue
         }
         GENERICREFSXP | CLASSREFSXP | 244 => StreamControl::Continue,
@@ -8873,19 +8892,16 @@ fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<
     )))
 }
 
-/// Consume the payload of a PERSISTSXP entry and return its strings.
+/// Consume an `OutStringVec` payload and return its strings.
 ///
-/// Persistent objects are written when `serialize()` is given a ref hook
-/// (`refhook=`); R's lazy-load databases (e.g. `help/<pkg>.rdb`, where srcfile
-/// environments are persisted as "env::N" strings) rely on this. The payload
-/// matches serialize.c's `OutStringVec`: an i32 names placeholder, an i32
+/// R's serialize.c writes this shape for PERSISTSXP (ref-hook strings, e.g.
+/// "env::N" entries in lazy-load databases such as `help/<pkg>.rdb`),
+/// PACKAGESXP (the package environment's name, e.g. "package:stats"), and
+/// NAMESPACESXP (the namespace name): an i32 names placeholder, an i32
 /// length, then `length` CHARSXP items (each with its own flags word). It must
 /// be consumed even when the strings are unused, otherwise the cursor
-/// desynchronizes and every object after the first persisted one is corrupted.
-fn parse_persistsxp_strings(
-    ctx: &mut ParserContext,
-    cursor: &mut RdsCursor<'_>,
-) -> Result<Vec<Arc<str>>> {
+/// desynchronizes and every object after the entry is corrupted.
+fn parse_string_vec(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<Vec<Arc<str>>> {
     let _names_placeholder = cursor.read_i32::<BigEndian>()?;
     // The length is written by WriteLENGTH: long vectors are encoded as -1
     // followed by the upper and lower 32-bit halves of the 64-bit length.
@@ -8896,18 +8912,17 @@ fn parse_persistsxp_strings(
         (upper << 32) | lower
     } else if n < 0 {
         return Err(Error::InvalidFormat(format!(
-            "Negative PERSISTSXP string count {}",
+            "Negative string vector count {}",
             n
         )));
     } else {
         n as u64
     };
-    let n = usize::try_from(n).map_err(|_| {
-        Error::InvalidFormat(format!("PERSISTSXP string count {} exceeds usize", n))
-    })?;
+    let n = usize::try_from(n)
+        .map_err(|_| Error::InvalidFormat(format!("String vector count {} exceeds usize", n)))?;
     // Each CHARSXP item occupies at least a 4-byte flags word; validate the
     // count against the remaining stream before allocating.
-    guard_allocation(ctx, n, 4, cursor, "persistsxp strings")?;
+    guard_allocation(ctx, n, 4, cursor, "string vector")?;
     let mut strings: Vec<Arc<str>> = Vec::with_capacity(n);
     for _ in 0..n {
         let item_flags = cursor.read_i32::<BigEndian>()? as u32;

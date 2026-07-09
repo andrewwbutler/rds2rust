@@ -401,6 +401,58 @@ serialize(
 )
 close(con)
 
+# Package environments (PACKAGESXP): written as an OutStringVec of the
+# environment's name; R resolves it at load time via R_FindPackageEnv.
+# serialize() warns that the package may not be available when loading,
+# hence suppressWarnings. Unlike PERSISTSXP, a repeated package environment
+# is a REFSXP back reference (HashGet wins before the package path).
+pkg_env <- as.environment("package:stats")
+
+con <- file(file.path(output_dir, "packagesxp_bare.rds"), "wb")
+suppressWarnings(serialize(pkg_env, con))
+close(con)
+
+con <- file(file.path(output_dir, "packagesxp.rds"), "wb")
+suppressWarnings(serialize(list(p = pkg_env, after = "still-aligned"), con))
+close(con)
+
+# The same package env twice plus shared symbols around it: the second
+# occurrence is REFSXP, and the symbol back reference after it only
+# resolves correctly if PACKAGESXP occupies exactly one reference slot.
+con <- file(file.path(output_dir, "packagesxp_refs.rds"), "wb")
+suppressWarnings(serialize(
+  list(
+    p = pkg_env,
+    p2 = pkg_env,
+    s = as.name("pkgsym"),
+    s2 = as.name("pkgsym"),
+    tail = "ref-ok"
+  ),
+  con
+))
+close(con)
+
+# Package env inside an attribute with a trailing attribute, mirroring the
+# persistsxp_attr fixture shape.
+pkg_attr_obj <- structure(
+  list("payload"),
+  pkgenv = pkg_env,
+  tail_attr = "tail"
+)
+con <- file(file.path(output_dir, "packagesxp_attr.rds"), "wb")
+suppressWarnings(serialize(pkg_attr_obj, con))
+close(con)
+
+# Bare namespace (NAMESPACESXP, 249) and base namespace (BASENAMESPACE_SXP,
+# 250, which has NO payload on the wire) alignment fixtures.
+con <- file(file.path(output_dir, "namespacesxp.rds"), "wb")
+serialize(list(ns = getNamespace("stats"), after = "ns-aligned"), con)
+close(con)
+
+con <- file(file.path(output_dir, "basenamespace.rds"), "wb")
+serialize(list(b = getNamespace("base"), after = "base-ok"), con)
+close(con)
+
 
 # Reference tracking test cases
 # These test REFSXP (reference tracking) functionality
