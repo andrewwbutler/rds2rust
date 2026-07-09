@@ -4468,8 +4468,7 @@ fn parse_object(
         NAMESPACESXP => {
             // Namespace - parse and discard, then return early to handle attributes specially
 
-            let namespace_result =
-                parse_namespace(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+            let namespace_result = parse_namespace(ctx, cursor)?;
 
             // For namespaces with attributes, we need to parse and discard them
             if has_attr {
@@ -4498,12 +4497,11 @@ fn parse_object(
                 }
             }
         }
-        NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => {
-            // Namespace/base namespace markers in serialization format
-            // Similar to NAMESPACESXP (123) but use format type 249/250
+        NAMESPACESXP_SERIAL => {
+            // Namespace marker in serialization format (type 249); the
+            // namespace name follows as an OutStringVec payload.
 
-            let namespace_result =
-                parse_namespace(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+            let namespace_result = parse_namespace(ctx, cursor)?;
 
             if has_attr {
                 let _attrs = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
@@ -4517,6 +4515,13 @@ fn parse_object(
             }
 
             return Ok(namespace_result);
+        }
+        BASENAMESPACE_SXP => {
+            // Base namespace marker (type 250). Unlike NAMESPACESXP it has NO
+            // payload on the wire (R's reader just returns R_BaseNamespace and
+            // does not AddReadRef), so nothing must be consumed here - reading
+            // a phantom OutStringVec would swallow the next object.
+            RObject::Namespace(vec![Arc::from("base")])
         }
         PACKAGESXP => {
             // Package environment, written as an OutStringVec of its name
@@ -5148,7 +5153,13 @@ fn parse_object_streaming<V: RdsVisitor>(
         )?,
         S4SXP => StreamControl::Continue,
         NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => {
-            let namespace_obj = parse_namespace(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+            // BASENAMESPACE_SXP has no payload on the wire; the other two are
+            // followed by an OutStringVec holding the namespace name.
+            let namespace_obj = if sexp_type == BASENAMESPACE_SXP {
+                RObject::Namespace(vec![Arc::from("base")])
+            } else {
+                parse_namespace(ctx, cursor)?
+            };
             if emit_children {
                 if let RObject::Namespace(values) = namespace_obj {
                     visitor
@@ -8112,35 +8123,12 @@ fn parse_environment(
     })
 }
 
-/// Parse a namespace environment (NAMESPACESXP, type 123).
-/// Namespaces are special environments used by R packages.
+/// Parse a namespace environment (NAMESPACESXP / NAMESPACESXP_SERIAL).
+/// Namespaces are special environments used by R packages; the payload is an
+/// OutStringVec holding the namespace name (and spec version).
 /// They trigger automatic package loading when the RDS file is read in R.
-fn parse_namespace(
-    ctx: &mut ParserContext,
-    cursor: &mut RdsCursor<'_>,
-    ref_table: &mut RefTable,
-    symbol_table: &mut SymbolTable,
-    dedup_table: &mut DedupTable,
-) -> Result<RObject> {
-    // Namespaces are serialized using OutStringVec: an unused marker,
-    // a length, then that many CHARSXP entries.
-    let _names_flag = cursor.read_u32::<BigEndian>()?;
-    let length = cursor.read_u32::<BigEndian>()? as usize;
-    guard_allocation(ctx, length, 1, cursor, "namespace names")?;
-
-    let mut names = Vec::with_capacity(length);
-    for _ in 0..length {
-        // Each entry is written via WriteItem on a CHARSXP
-        let obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
-        // Extract the string from the parsed object
-        if let RObject::Character(chars) = obj {
-            if let Some(s) = chars.first() {
-                names.push(s.clone());
-            }
-        }
-    }
-
-    Ok(RObject::Namespace(names))
+fn parse_namespace(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<RObject> {
+    Ok(RObject::Namespace(parse_string_vec(ctx, cursor)?))
 }
 
 /// Parse a language object (LANGSXP).

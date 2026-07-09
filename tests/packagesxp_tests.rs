@@ -247,6 +247,58 @@ fn test_packagesxp_streaming_alignment() {
     assert_eq!(visitor.attr_keys, ["names"]);
 }
 
+#[test]
+fn test_namespacesxp_alignment() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    // list(ns = getNamespace("stats"), after = "ns-aligned")
+    let data = read_test_file("namespacesxp.rds");
+    let obj = read_rds(&data)
+        .expect("failed to parse namespacesxp.rds")
+        .object;
+
+    let items = match unwrap_value(&obj) {
+        RObject::List(items) => items,
+        other => panic!("expected list, got {:?}", other),
+    };
+    assert_eq!(items.len(), 2);
+
+    // R writes the namespace spec as c(name, version).
+    assert_eq!(namespace_values(&items[0])[0], "stats");
+    assert_eq!(character_values(&items[1]), ["ns-aligned"]);
+}
+
+#[test]
+fn test_basenamespace_alignment() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    // list(b = getNamespace("base"), after = "base-ok")
+    // BASENAMESPACE_SXP (250) has NO payload on the wire; reading a phantom
+    // OutStringVec here used to swallow the next element.
+    let data = read_test_file("basenamespace.rds");
+    let obj = read_rds(&data)
+        .expect("failed to parse basenamespace.rds")
+        .object;
+
+    let names = attr_of(&obj, "names").expect("list names should survive");
+    assert_eq!(character_values(names), ["b", "after"]);
+
+    let items = match unwrap_value(&obj) {
+        RObject::List(items) => items,
+        other => panic!("expected list, got {:?}", other),
+    };
+    assert_eq!(items.len(), 2);
+
+    assert_eq!(namespace_values(&items[0]), ["base"]);
+    assert_eq!(character_values(&items[1]), ["base-ok"]);
+}
+
 /// A hand-built version-2 XDR stream whose PACKAGESXP payload declares a
 /// negative (non-long-vector-marker) string count must be rejected with an
 /// error, not a panic or a silent desync.
