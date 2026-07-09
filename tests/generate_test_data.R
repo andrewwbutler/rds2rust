@@ -454,6 +454,50 @@ list_with_large <- list(
 )
 saveRDS(list_with_large, file.path(output_dir, "ref_large_shared.rds"))
 
+# REFSXP index alignment fixtures.
+# R's serializer assigns reference indices only to symbols, environments,
+# external pointers, weak references and persisted objects. A reader that
+# tracks additional types (e.g. vectors or lists) shifts every REFSXP index
+# and resolves back references to the wrong object.
+
+# Shared symbol: writer's table is [foo]; the second occurrence is REFSXP@1.
+refsxp_symbol <- list(a = as.name("foo"), b = as.name("foo"), tail = "ok")
+con <- file(file.path(output_dir, "refsxp_shared_symbol.rds"), "wb")
+serialize(refsxp_symbol, con)
+close(con)
+
+# Shared environment interleaved with shared symbols: writer's table is
+# [env, sym_before, sym_after]; the back references only resolve correctly
+# if the reader tracks exactly the same set of types in the same order.
+refsxp_env <- new.env(parent = emptyenv())
+refsxp_env$payload <- "env-payload"
+refsxp_env_obj <- list(
+  s1 = as.name("sym_before"),
+  e1 = refsxp_env,
+  s2 = as.name("sym_after"),
+  s1b = as.name("sym_before"),
+  e2 = refsxp_env,
+  s2b = as.name("sym_after"),
+  tail = "ref-aligned"
+)
+con <- file(file.path(output_dir, "refsxp_shared_env.rds"), "wb")
+serialize(refsxp_env_obj, con)
+close(con)
+
+# Symbol back reference after atomic vectors and nested lists: the vectors
+# and lists must not consume reference slots.
+refsxp_after_vectors <- list(
+  x = c(10L, 20L, 30L),
+  nm = as.name("bar"),
+  y = c("a", "b"),
+  nested = list(z = c(1.5, 2.5)),
+  nm2 = as.name("bar"),
+  tail = "after-vectors"
+)
+con <- file(file.path(output_dir, "refsxp_symbol_after_vectors.rds"), "wb")
+serialize(refsxp_after_vectors, con)
+close(con)
+
 # ALTREP reference tracking tests
 # These test compact_intseq (ALTREP integer sequences) with reference tracking
 

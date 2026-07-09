@@ -586,10 +586,12 @@ impl RefTable {
     }
 }
 
-/// Symbol table for tracking symbols during deserialization.
-/// When REFSXP appears in TAG positions (e.g., pairlist tags for attributes),
-/// the reference index refers to the N-th symbol parsed, NOT the N-th object in RefTable.
-/// This matches R's serialization format which uses a separate symbol table.
+/// Symbol table tracking symbols in parse order.
+///
+/// R's serialization format has a single reference table shared by all
+/// tracked objects (symbols, environments, ...); REFSXP indices in TAG
+/// positions point into that same table. This side table only serves as a
+/// defensive fallback for streams whose reference indices are misaligned.
 struct SymbolTable {
     /// List of symbols in the order they were parsed
     symbols: Vec<RObject>,
@@ -657,10 +659,21 @@ impl DedupTable {
     /// Returns Some(existing) if an identical object exists in the cache,
     /// otherwise adds the object to the cache and returns None.
     fn deduplicate(&mut self, obj: &RObject) -> Option<RObject> {
-        let obj_concrete = obj.as_concrete();
-        // Check if we've seen this object before
+        // The sole caller filters out `Shared` objects before calling this,
+        // but handle it defensively anyway. This avoids the unconditional
+        // clone that `as_concrete()` would perform on the (common,
+        // already-concrete) fast path below.
+        if matches!(obj, RObject::Shared(_)) {
+            let obj_concrete = obj.as_concrete();
+            return self.deduplicate(&obj_concrete);
+        }
+
+        // Check if we've seen this object before.
+        // Cache entries are always already-concrete (they're stored via
+        // `obj.clone()` below, never a `Shared` wrapper), so comparing
+        // directly against `obj` avoids cloning either side of the comparison.
         for cached in &self.cache {
-            if cached.as_ref().as_concrete() == obj_concrete {
+            if cached.as_ref() == obj {
                 // Found a match! Return a clone (cheap Arc clone for strings, actual clone for others)
                 self.hits += 1;
                 return Some((**cached).clone());
@@ -671,8 +684,8 @@ impl DedupTable {
         self.misses += 1;
 
         // Only cache if it's likely to be repeated and not too large
-        if should_cache_for_dedup(&obj_concrete) {
-            self.cache.push(Arc::new(obj_concrete.clone()));
+        if should_cache_for_dedup(obj) {
+            self.cache.push(Arc::new(obj.clone()));
         }
 
         None
@@ -733,40 +746,33 @@ fn should_cache_for_dedup(obj: &RObject) -> bool {
 
 /// Determine if an object should be tracked in the reference table.
 ///
-/// R's serializer assigns reference indices to most heap objects. Track the
-/// same set R does: structured objects always, atomic vectors only when they
-/// carry attributes, and skip singleton markers that never receive reference
-/// indices.
-fn should_track_reference(sexp_type: u32, has_attr: bool) -> bool {
-    match sexp_type {
-        // Singletons that never receive reference indices
-        NILSXP | GLOBALENV_SXP | BASEENV_SXP | EMPTYENV_SXP => false,
-
-        // Symbols, environments, promises, language objects, lists, S4, etc.
-        // are always reference-tracked.
-        SYMSXP | ENVSXP | NAMESPACESXP | NAMESPACESXP_SERIAL => true,
-        PROMSXP | LANGSXP | LISTSXP | VECSXP | EXPRSXP => true,
-        CLOSXP | BCODESXP | EXTPTRSXP | WEAKREFSXP | S4SXP => true,
-        GENERICREFSXP | CLASSREFSXP => true,
-
-        // Atomic vectors should be reference-tracked as well so REFSXP indices
-        // stay aligned with R's serializer (which can share even plain vectors
-        // like dimnames). Attributes are not required for tracking.
-        LGLSXP | INTSXP | REALSXP | CPLXSXP | STRSXP | RAWSXP => true,
-
-        // CHARSXP uses per-vector string caches, not the global reference table.
-        CHARSXP => false,
-
-        // Builtins/specials and other values default to non-tracked unless
-        // they carry attributes.
-        SPECIALSXP | BUILTINSXP => has_attr,
-
-        // REFSXP is a reference to an existing object, not a new object, so it shouldn't be tracked
-        REFSXP => false,
-
-        // Fallback: track other/unknown types to avoid dropping reference slots.
-        _ => true,
-    }
+/// This must mirror exactly the set of types R's serializer assigns reference
+/// indices to, otherwise every subsequent REFSXP index is shifted and resolves
+/// to the wrong object. R's serialize.c registers only:
+///
+/// - Writer (`WriteItem` calls `HashAdd`): SYMSXP, ENVSXP (including package
+///   and namespace environments, which are written as PACKAGESXP /
+///   NAMESPACESXP), EXTPTRSXP, WEAKREFSXP, and PERSISTSXP entries.
+/// - Reader (`ReadItem` calls `AddReadRef`): PERSISTSXP, PACKAGESXP,
+///   NAMESPACESXP, SYMSXP, ENVSXP, EXTPTRSXP, WEAKREFSXP.
+///
+/// Everything else (atomic vectors, lists, pairlists, language objects,
+/// closures, bytecode, ALTREP, singletons, ...) is never assigned a reference
+/// index by R and must not consume a slot here.
+fn should_track_reference(sexp_type: u32) -> bool {
+    matches!(
+        sexp_type,
+        SYMSXP
+            | ENVSXP
+            | EXTPTRSXP
+            | WEAKREFSXP
+            | PERSISTSXP
+            | PACKAGESXP
+            // R's on-wire namespace type (249) plus this crate's legacy
+            // namespace variant (123); both are handled as namespaces.
+            | NAMESPACESXP
+            | NAMESPACESXP_SERIAL
+    )
 }
 
 /// Parse an RDS file from a byte slice.
@@ -2288,8 +2294,7 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
         )));
     }
 
-    let track_reference = should_track_reference(sexp_type, has_attr);
-    let ref_index = if track_reference && sexp_type != CLOSXP && !ctx.suppress_ref_tracking {
+    let ref_index = if should_track_reference(sexp_type) && !ctx.suppress_ref_tracking {
         let idx = ref_table.add(RObject::Null);
         Some(idx)
     } else {
@@ -2901,12 +2906,14 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
 
     if sexp_type == REFSXP {
         let ref_index = flags >> 8;
-        let tag_obj = if let Some(sym) = symbol_table.get(ref_index) {
-            sym.clone()
-        } else if let Some(obj) = ref_table.get(ref_index) {
+        // TAG REFSXP indices point into the single reference table; the symbol
+        // table is only a defensive fallback for misaligned streams.
+        let tag_obj = if let Some(obj) = ref_table.get(ref_index) {
             obj.read()
                 .map_err(|_| Error::Unsupported("shared object lock poisoned".to_string()))?
                 .clone()
+        } else if let Some(sym) = symbol_table.get(ref_index) {
+            sym.clone()
         } else {
             #[cfg(target_arch = "wasm32")]
             if sequential_debug_enabled() {
@@ -2947,10 +2954,10 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
         }
         let name = if name_type_from_0_7 == REFSXP {
             let ref_index = name_flags >> 8;
-            if let Some(sym) = symbol_table.get(ref_index) {
-                extract_tag_name(sym.clone()).unwrap_or_else(|| Arc::from("NA"))
-            } else if let Some(obj) = ref_table.get(ref_index) {
+            if let Some(obj) = ref_table.get(ref_index) {
                 extract_tag_name(obj.read().unwrap().clone()).unwrap_or_else(|| Arc::from("NA"))
+            } else if let Some(sym) = symbol_table.get(ref_index) {
+                extract_tag_name(sym.clone()).unwrap_or_else(|| Arc::from("NA"))
             } else {
                 Arc::from("NA")
             }
@@ -3015,11 +3022,9 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
     dedup_table: &mut DedupTable,
     has_tag: bool,
 ) -> Result<Vec<PairlistElement>> {
-    let pairlist_ref_index = if ctx.parsing_pairlist_root && !ctx.suppress_ref_tracking {
-        Some(ref_table.add(RObject::Null))
-    } else {
-        None
-    };
+    // Note: pairlists are never reference-tracked by R's serializer, so no
+    // reference slot is reserved here (doing so would shift every later
+    // REFSXP index).
     let mut elements = Vec::new();
     let mut has_tag_current = has_tag;
     let force_s4_tag = ctx.parsing_s4_tag;
@@ -3396,9 +3401,6 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
         let msg = format!("seq pairlist S4 tag parse end tags={:?}", tags);
         web_sys::console::debug_1(&JsValue::from_str(&msg));
     }
-    if let Some(ref_index) = pairlist_ref_index {
-        ref_table.update(ref_index, RObject::Pairlist(elements.clone()));
-    }
     Ok(elements)
 }
 
@@ -3572,8 +3574,7 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
 
     let has_attr = (flags & HAS_ATTR_BIT) != 0;
     let has_tag = (flags & HAS_TAG_BIT) != 0;
-    let track_reference = should_track_reference(sexp_type, has_attr);
-    let ref_index = if track_reference && sexp_type != CLOSXP && !ctx.suppress_ref_tracking {
+    let ref_index = if should_track_reference(sexp_type) && !ctx.suppress_ref_tracking {
         let idx = ref_table.add(RObject::Null);
         Some(idx)
     } else {
@@ -3654,10 +3655,10 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             let name_type_from_8_15 = (name_flags >> 8) & 0xFF;
             let name = if name_type_from_0_7 == REFSXP {
                 let ref_index = name_flags >> 8;
-                if let Some(sym) = symbol_table.get(ref_index) {
-                    extract_tag_name(sym.clone()).unwrap_or_else(|| Arc::from("NA"))
-                } else if let Some(obj) = ref_table.get(ref_index) {
+                if let Some(obj) = ref_table.get(ref_index) {
                     extract_tag_name(obj.read().unwrap().clone()).unwrap_or_else(|| Arc::from("NA"))
+                } else if let Some(sym) = symbol_table.get(ref_index) {
+                    extract_tag_name(sym.clone()).unwrap_or_else(|| Arc::from("NA"))
                 } else {
                     Arc::from("NA")
                 }
@@ -4339,8 +4340,7 @@ fn parse_object(
     // Add a placeholder to the reference table early for objects that should be tracked
     // This is crucial for circular references - the object must be in the table
     // before we parse its contents/attributes
-    let track_reference = should_track_reference(sexp_type, has_attr);
-    let ref_index = if track_reference && sexp_type != CLOSXP {
+    let ref_index = if should_track_reference(sexp_type) {
         // Add a NULL placeholder for now
         let idx = ref_table.add(RObject::Null);
         Some(idx)
@@ -4391,15 +4391,7 @@ fn parse_object(
             // Return as a single-element character vector for now
             RObject::Character(vec![Arc::from(string.as_str())].into())
         }
-        CLOSXP => parse_closure(
-            ctx,
-            cursor,
-            has_tag,
-            track_reference,
-            ref_table,
-            symbol_table,
-            dedup_table,
-        )?,
+        CLOSXP => parse_closure(ctx, cursor, has_tag, ref_table, symbol_table, dedup_table)?,
         ENVSXP => parse_environment(ctx, cursor, ref_table, symbol_table, dedup_table)?,
         PROMSXP => parse_promise(ctx, cursor, has_tag, ref_table, symbol_table, dedup_table)?,
         SPECIALSXP => parse_special(ctx, cursor, ref_table, symbol_table, dedup_table)?,
@@ -4412,38 +4404,17 @@ fn parse_object(
 
             let in_closure_body = ctx.parsing_closure_body;
 
-            // Prefer the symbol table for closure bodies so parameter references resolve
-            // to symbols even when ref_table indices clash with earlier placeholders.
-            let mut resolved = if in_closure_body {
-                if let Some(sym) = symbol_table.get(ref_index_val) {
-                    sym.clone()
-                } else if let Some(obj) = ref_table.get(ref_index_val) {
-                    if std::env::var("RDS_DEBUG_REF_FALLBACK").is_ok() {
-                        let obj_type = obj.read().unwrap().variant_name();
-                        debug_log!(
-                            "[CLOSURE_REF_FALLBACK] idx={} sym_table={} ref_table={} type={}",
-                            ref_index_val,
-                            symbol_table.len(),
-                            ref_table.next_index - 1,
-                            obj_type
-                        );
-                    }
-                    RObject::Shared(obj)
-                } else {
+            // Reference indices always point into the single reference table,
+            // exactly as in R's serializer. Since the tracked set now matches
+            // R's (see should_track_reference), no symbol-table preference is
+            // needed to compensate for index misalignment.
+            let mut resolved = match ref_table.get(ref_index_val) {
+                Some(obj) => RObject::Shared(obj),
+                None => {
                     return Err(Error::InvalidFormat(format!(
                         "Invalid reference index: {}",
                         ref_index_val
                     )));
-                }
-            } else {
-                match ref_table.get(ref_index_val) {
-                    Some(obj) => RObject::Shared(obj),
-                    None => {
-                        return Err(Error::InvalidFormat(format!(
-                            "Invalid reference index: {}",
-                            ref_index_val
-                        )));
-                    }
                 }
             };
 
@@ -4536,6 +4507,13 @@ fn parse_object(
 
             if has_attr {
                 let _attrs = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+            }
+
+            // Namespaces occupy a reference slot in R's serializer; fill in the
+            // placeholder so later REFSXP entries resolve to this namespace.
+            if let Some(idx) = ref_index {
+                ref_table.update(idx, namespace_result);
+                return Ok(RObject::Shared(ref_table.get(idx).expect("Just updated")));
             }
 
             return Ok(namespace_result);
@@ -4951,8 +4929,7 @@ fn parse_object_streaming<V: RdsVisitor>(
         None
     };
 
-    let track_reference = should_track_reference(sexp_type, has_attr);
-    let ref_index = if track_reference && sexp_type != CLOSXP {
+    let ref_index = if should_track_reference(sexp_type) {
         let index = ref_table.add(RObject::Null);
         ref_paths.insert(index, path.clone());
         Some(index)
@@ -5544,9 +5521,9 @@ where
 
     if sexp_type == REFSXP {
         let ref_index = flags >> 8;
-        let tag_obj = if let Some(sym) = symbol_table.get(ref_index) {
-            sym.clone()
-        } else if let Some(obj) = ref_table.get(ref_index) {
+        // TAG REFSXP indices point into the single reference table; the symbol
+        // table is only a defensive fallback for misaligned streams.
+        let tag_obj = if let Some(obj) = ref_table.get(ref_index) {
             obj.read()
                 .map_err(|_| {
                     StreamingError::Parse(Error::Unsupported(
@@ -5554,6 +5531,8 @@ where
                     ))
                 })?
                 .clone()
+        } else if let Some(sym) = symbol_table.get(ref_index) {
+            sym.clone()
         } else {
             return Err(StreamingError::Parse(Error::InvalidFormat(format!(
                 "Invalid TAG REFSXP index {} (symbol table size={}, ref table size={})",
@@ -6335,10 +6314,11 @@ fn parse_pairlist_element_streaming<V: RdsVisitor>(
             .map_err(|e| StreamingError::Parse(Error::Io(e)))?;
         let tag_type = flags & 0xFF;
         let tag_obj = if tag_type == REFSXP {
-            let sym_index = flags >> 8;
-            if let Some(sym) = symbol_table.get(sym_index) {
-                sym.clone()
-            } else if let Some(obj) = ref_table.get(sym_index) {
+            let ref_index = flags >> 8;
+            // TAG REFSXP indices point into the single reference table, the
+            // same as any other REFSXP. The symbol table is only a defensive
+            // fallback for misaligned streams.
+            if let Some(obj) = ref_table.get(ref_index) {
                 obj.read()
                     .map_err(|_| {
                         StreamingError::Parse(Error::Unsupported(
@@ -6346,10 +6326,12 @@ fn parse_pairlist_element_streaming<V: RdsVisitor>(
                         ))
                     })?
                     .clone()
+            } else if let Some(sym) = symbol_table.get(ref_index) {
+                sym.clone()
             } else {
                 return Err(StreamingError::Parse(Error::InvalidFormat(format!(
                     "Invalid TAG REFSXP index {} (symbol table size={}, ref table size={})",
-                    sym_index,
+                    ref_index,
                     symbol_table.len(),
                     ref_table.next_index - 1
                 ))));
@@ -6660,6 +6642,16 @@ fn parse_environment_streaming<V: RdsVisitor>(
     path: &mut crate::ObjectPath,
     progress: &mut StreamingProgressState<'_>,
 ) -> StreamingResult<StreamControl, V::Error> {
+    // R's serialize.c writes ENVSXP with a plain type tag (no HAS_ATTR/HAS_TAG
+    // flag bits) followed unconditionally by: locked (raw int32), enclos,
+    // frame, hashtab, attrib. This mirrors the non-streaming `parse_environment`,
+    // which reads the same fixed five-field layout; both must stay in sync or
+    // the cursor desyncs and every subsequent REFSXP index resolves wrong.
+    ensure_bytes_available(cursor, 4, "streaming:environment:locked")?;
+    let _locked = cursor
+        .read_i32::<BigEndian>()
+        .map_err(|e| StreamingError::Parse(Error::Io(e)))?;
+
     if emit {
         path.push(Arc::from("enclosing"));
         if matches!(
@@ -6702,7 +6694,33 @@ fn parse_environment_streaming<V: RdsVisitor>(
         }
         path.pop();
         path.push(Arc::from("hashtab"));
-        let control = parse_object_streaming(
+        if matches!(
+            parse_object_streaming(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                ref_paths,
+                progress,
+                visitor,
+                path,
+                true,
+            )?,
+            StreamControl::Stop
+        ) {
+            path.pop();
+            return Ok(StreamControl::Stop);
+        }
+        path.pop();
+
+        // The attrib item is always present on the wire (WriteItem(ATTRIB(s))
+        // in serialize.c), even when there are no attributes. It is not
+        // surfaced on RObject::Environment (which, like the non-streaming
+        // parser, does not retain environment attributes), so it is parsed
+        // without emitting a visitor path segment - but it must still be
+        // consumed to keep the cursor aligned for subsequent siblings.
+        return parse_object_streaming(
             ctx,
             cursor,
             ref_table,
@@ -6712,12 +6730,22 @@ fn parse_environment_streaming<V: RdsVisitor>(
             progress,
             visitor,
             path,
-            true,
-        )?;
-        path.pop();
-        return Ok(control);
+            false,
+        );
     }
 
+    let _ = parse_object_streaming(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        false,
+    )?;
     let _ = parse_object_streaming(
         ctx,
         cursor,
@@ -7999,7 +8027,6 @@ fn parse_closure(
     ctx: &mut ParserContext,
     cursor: &mut RdsCursor<'_>,
     _has_tag: bool,
-    track_reference: bool,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -8011,6 +8038,9 @@ fn parse_closure(
     // However, we still need to parse the closure components in the correct order.
     // When has_tag is set, it changes the serialization order subtly in some R versions,
     // but the core components are always: CLOENV, FORMALS, BODY
+    //
+    // Note: closures are never reference-tracked (R's serializer does not assign
+    // reference indices to CLOSXP), so no ref-table placeholder is needed here.
 
     // Standard order (from R's serialize.c): environment, formals, body
     let _env_start = cursor.position();
@@ -8019,42 +8049,17 @@ fn parse_closure(
     let _form_start = cursor.position();
     let form = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
 
-    // Delay registering the closure placeholder until after formals are parsed so that
-    // symbols introduced by formals occupy the earliest reference slots before the
-    // body is parsed.
-    let ref_index = if track_reference {
-        let idx = ref_table.add(RObject::Null);
-        Some(idx)
-    } else {
-        None
-    };
-
     let _body_start = cursor.position();
     let prev = ctx.parsing_closure_body;
     ctx.parsing_closure_body = true;
     let bod = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
     ctx.parsing_closure_body = prev;
 
-    let closure_obj = RObject::Closure {
+    Ok(RObject::Closure {
         formals: Box::new(form),
         body: Box::new(bod),
         environment: Box::new(env),
-    };
-
-    if let Some(idx) = ref_index {
-        // Update the placeholder in place to preserve shared arcs for any earlier lookups.
-        ref_table.update(idx, closure_obj);
-        if let Some(arc) = ref_table.get(idx) {
-            return Ok(RObject::Shared(arc));
-        } else {
-            return Err(Error::InvalidFormat(format!(
-                "Failed to retrieve closure ref idx {} after update",
-                idx
-            )));
-        }
-    }
-
-    Ok(closure_obj)
+    })
 }
 
 /// Parse an environment (ENVSXP).
@@ -8182,101 +8187,48 @@ fn parse_pairlist_element(
 ) -> Result<(Option<Arc<str>>, Option<Box<RObject>>, RObject)> {
     // Parse the TAG if present (comes before CAR)
     let (tag, tag_object) = if has_tag {
-        // In attribute/tag positions, REFSXP indices point into the symbol table,
-        // not the main reference table. Peek the next flags to handle this path.
+        // TAG REFSXP indices point into the single reference table, exactly like
+        // any other REFSXP (R's serializer keeps one table for all tracked
+        // objects). Peek the next flags to handle this path.
         let pos = cursor.position();
         ensure_bytes_available(cursor, 4, "parse_pairlist_element:tag_flags")?;
         let flags = cursor.read_u32::<BigEndian>()?;
         let tag_type = flags & 0xFF;
 
         let tag_obj = if tag_type == REFSXP {
-            let sym_index = flags >> 8;
-            let prefer_symbol_table = true;
+            let ref_index = flags >> 8;
 
-            // TAG REFSXP indices refer to the symbol table in R serialization.
-            // Always prefer symbol table here, with ref_table as a fallback.
-            if prefer_symbol_table {
-                if let Some(sym) = symbol_table.get(sym_index) {
-                    if std::env::var("RDS_DEBUG_TAG").is_ok() {
-                        let name = extract_tag_name(sym.clone())
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| "<unknown>".to_string());
-                        debug_log!(
-                            "[TAG_REF] flags=0x{:08x} idx={} name={}",
-                            flags,
-                            sym_index,
-                            name
-                        );
-                    }
-                    sym.clone()
-                } else if let Some(obj) = ref_table.get(sym_index) {
-                    if std::env::var("RDS_DEBUG_REF_FALLBACK").is_ok() {
-                        debug_log!(
-                            "[TAG_REF_FALLBACK] idx={} sym_table={} ref_table={}",
-                            sym_index,
-                            symbol_table.len(),
-                            ref_table.next_index - 1
-                        );
-                    }
-                    obj.read().unwrap().clone()
-                } else {
-                    return Err(Error::InvalidFormat(format!(
-                        "Invalid TAG REFSXP index {} (symbol table size={}, ref_table size={})",
-                        sym_index,
-                        symbol_table.len(),
-                        ref_table.next_index - 1
-                    )));
-                }
-            } else if let Some(obj) = ref_table.get(sym_index) {
+            if let Some(obj) = ref_table.get(ref_index) {
                 let obj_val = obj.read().unwrap().clone();
-                if let Some(name) = extract_tag_name(obj_val.clone()) {
-                    if std::env::var("RDS_DEBUG_TAG").is_ok() {
-                        debug_log!(
-                            "[TAG_REF] flags=0x{:08x} idx={} name={}",
-                            flags,
-                            sym_index,
-                            name
-                        );
-                    }
-                    obj_val
-                } else if let Some(sym) = symbol_table.get(sym_index) {
-                    if std::env::var("RDS_DEBUG_TAG").is_ok() {
-                        let name = extract_tag_name(sym.clone())
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| "<unknown>".to_string());
-                        debug_log!(
-                            "[TAG_REF] flags=0x{:08x} idx={} name={}",
-                            flags,
-                            sym_index,
-                            name
-                        );
-                    }
-                    sym.clone()
-                } else {
-                    return Err(Error::InvalidFormat(format!(
-                        "Invalid TAG REFSXP index {} (symbol table size={}, ref_table size={})",
-                        sym_index,
-                        symbol_table.len(),
-                        ref_table.next_index - 1
-                    )));
-                }
-            } else if let Some(sym) = symbol_table.get(sym_index) {
                 if std::env::var("RDS_DEBUG_TAG").is_ok() {
-                    let name = extract_tag_name(sym.clone())
+                    let name = extract_tag_name(obj_val.clone())
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| "<unknown>".to_string());
                     debug_log!(
                         "[TAG_REF] flags=0x{:08x} idx={} name={}",
                         flags,
-                        sym_index,
+                        ref_index,
                         name
+                    );
+                }
+                obj_val
+            } else if let Some(sym) = symbol_table.get(ref_index) {
+                // Fallback for streams whose reference indices do not line up
+                // with the reference table (defensive; should not happen for
+                // files written by R).
+                if std::env::var("RDS_DEBUG_REF_FALLBACK").is_ok() {
+                    debug_log!(
+                        "[TAG_REF_FALLBACK] idx={} sym_table={} ref_table={}",
+                        ref_index,
+                        symbol_table.len(),
+                        ref_table.next_index - 1
                     );
                 }
                 sym.clone()
             } else {
                 return Err(Error::InvalidFormat(format!(
                     "Invalid TAG REFSXP index {} (symbol table size={}, ref_table size={})",
-                    sym_index,
+                    ref_index,
                     symbol_table.len(),
                     ref_table.next_index - 1
                 )));

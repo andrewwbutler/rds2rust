@@ -1231,9 +1231,44 @@ impl RObject {
 impl PartialEq for RObject {
     fn eq(&self, other: &Self) -> bool {
         use RObject::*;
-        let a = self.as_concrete();
-        let b = other.as_concrete();
-        match (a, b) {
+
+        // Unwrap `Shared` by comparing through the read guard instead of
+        // cloning the (potentially large) underlying object. The previous
+        // implementation called `as_concrete()` on both sides unconditionally,
+        // which deep-clones every value being compared -- even when neither
+        // side is `Shared` at all. That made every `==` on a composite
+        // RObject (List, WithAttributes, ...) pay for a full recursive clone
+        // before the actual comparison, which is redundant and, on the dedup
+        // table's linear scan over many concrete objects, turns an O(n)
+        // scan into an O(n) scan of O(size) clones each.
+        //
+        // Fast path: two `Shared` wrappers around the same Arc are the same
+        // object, so they are trivially equal.
+        if let (Shared(a), Shared(b)) = (self, other) {
+            if Arc::ptr_eq(a, b) {
+                return true;
+            }
+        }
+        // For a `Shared` operand that isn't caught by the fast path above,
+        // clone its immediate payload and drop the read guard *before*
+        // recursing into `==`. Holding the guard across the recursive call
+        // (as an earlier version of this code did) would re-acquire the same
+        // RwLock if the other side -- or a nested element reached during
+        // recursion -- wraps the same Arc, which std::sync::RwLock documents
+        // as a potential deadlock. This only clones the immediate Shared
+        // payload, not the whole tree (the concrete-vs-concrete match below
+        // never goes through here), which stays cheap: Shared payloads on the
+        // hot dedup paths are small symbols.
+        if let Shared(a) = self {
+            let cloned = a.read().unwrap().clone();
+            return cloned == *other;
+        }
+        if let Shared(b) = other {
+            let cloned = b.read().unwrap().clone();
+            return *self == cloned;
+        }
+
+        match (self, other) {
             (Null, Null) => true,
             (Integer(x), Integer(y)) => x == y,
             (Real(x), Real(y)) => x == y,
