@@ -2772,6 +2772,19 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             }
         }
         S4SXP => RObject::Null,
+        PERSISTSXP => {
+            // Ref-hook strings; the OutStringVec payload must be consumed to
+            // keep the stream aligned (see parse_string_vec).
+            RObject::Character(parse_string_vec_async(ctx, cursor).await?.into())
+        }
+        PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL => {
+            // Package/namespace environment name payload; must be consumed.
+            RObject::Namespace(parse_string_vec_async(ctx, cursor).await?)
+        }
+        BASENAMESPACE_SXP => {
+            // No payload on the wire; R's reader returns R_BaseNamespace.
+            RObject::Namespace(vec![Arc::from("base")])
+        }
         _ => RObject::Null,
     };
 
@@ -3994,6 +4007,19 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             }
         }
         S4SXP => RObject::Null,
+        PERSISTSXP => {
+            // Ref-hook strings; the OutStringVec payload must be consumed to
+            // keep the stream aligned (see parse_string_vec).
+            RObject::Character(parse_string_vec_async(ctx, cursor).await?.into())
+        }
+        PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL => {
+            // Package/namespace environment name payload; must be consumed.
+            RObject::Namespace(parse_string_vec_async(ctx, cursor).await?)
+        }
+        BASENAMESPACE_SXP => {
+            // No payload on the wire; R's reader returns R_BaseNamespace.
+            RObject::Namespace(vec![Arc::from("base")])
+        }
         _ => RObject::Null,
     };
 
@@ -4071,6 +4097,43 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
 
     Ok(obj)
 }
+/// Async mirror of `parse_string_vec` for the wasm sequential paths: consume
+/// an `OutStringVec` payload (PERSISTSXP / PACKAGESXP / NAMESPACESXP) and
+/// return its strings. Uses `guard_allocation_common` because a sequential
+/// input's total length may be unknown.
+#[cfg(target_arch = "wasm32")]
+async fn parse_string_vec_async<C: AsyncCursor>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+) -> Result<Vec<Arc<str>>> {
+    let _names_placeholder = read_i32_async(cursor).await?;
+    // The length is written by WriteLENGTH: long vectors are encoded as -1
+    // followed by the upper and lower 32-bit halves of the 64-bit length.
+    let n = read_i32_async(cursor).await?;
+    let n: u64 = if n == -1 {
+        let upper = read_i32_async(cursor).await? as u32 as u64;
+        let lower = read_i32_async(cursor).await? as u32 as u64;
+        (upper << 32) | lower
+    } else if n < 0 {
+        return Err(Error::InvalidFormat(format!(
+            "Negative string vector count {}",
+            n
+        )));
+    } else {
+        n as u64
+    };
+    let n = usize::try_from(n)
+        .map_err(|_| Error::InvalidFormat(format!("String vector count {} exceeds usize", n)))?;
+    guard_allocation_common(ctx, n, 4, "string vector")?;
+    let mut strings: Vec<Arc<str>> = Vec::with_capacity(n);
+    for _ in 0..n {
+        let item_flags = read_u32_async(cursor).await?;
+        let s = parse_charsxp_content_async(ctx, cursor, item_flags).await?;
+        strings.push(Arc::from(s.as_str()));
+    }
+    Ok(strings)
+}
+
 #[cfg(target_arch = "wasm32")]
 async fn parse_charsxp_content_async<C: AsyncCursor>(
     ctx: &mut ParserContext,
