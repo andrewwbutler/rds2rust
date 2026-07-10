@@ -299,24 +299,85 @@ fn test_basenamespace_alignment() {
     assert_eq!(character_values(&items[1]), ["base-ok"]);
 }
 
-/// A hand-built version-2 XDR stream whose PACKAGESXP payload declares a
-/// negative (non-long-vector-marker) string count must be rejected with an
-/// error, not a panic or a silent desync.
-#[test]
-fn test_packagesxp_negative_count_rejected() {
+/// Build a hand-crafted version-2 XDR stream: header followed by `body`.
+fn v2_stream(body: &[i32]) -> Vec<u8> {
     let mut data: Vec<u8> = Vec::new();
     data.extend_from_slice(b"X\n"); // XDR format marker
     data.extend_from_slice(&2i32.to_be_bytes()); // serialization version 2
     data.extend_from_slice(&0x040303i32.to_be_bytes()); // writer R version
     data.extend_from_slice(&0x020300i32.to_be_bytes()); // min reader R version
-    data.extend_from_slice(&248i32.to_be_bytes()); // PACKAGESXP flags
-    data.extend_from_slice(&0i32.to_be_bytes()); // names placeholder
-    data.extend_from_slice(&(-2i32).to_be_bytes()); // invalid count
+    for word in body {
+        data.extend_from_slice(&word.to_be_bytes());
+    }
+    data
+}
 
+/// A PACKAGESXP payload declaring a negative (non-long-vector-marker) string
+/// count must be rejected with an error, not a panic or a silent desync.
+#[test]
+fn test_packagesxp_negative_count_rejected() {
+    // PACKAGESXP flags, names placeholder, invalid count
+    let data = v2_stream(&[248, 0, -2]);
     let result = read_rds(&data);
     assert!(
         result.is_err(),
         "negative string vector count must be rejected, got {:?}",
         result.map(|r| r.object.variant_name().to_string())
     );
+}
+
+/// R's InStringVec errors on a non-zero names placeholder; so do we. The
+/// stream is otherwise complete and valid, so a parser that ignores the
+/// placeholder would succeed - the assertion checks for the specific
+/// validation error, not just any failure.
+#[test]
+fn test_stringvec_nonzero_names_placeholder_rejected() {
+    // PACKAGESXP flags, names placeholder = 1, count = 1,
+    // CHARSXP flags (UTF-8), length 1
+    let mut data = v2_stream(&[248, 1, 1, 0x00040009, 1]);
+    data.push(b'x');
+    let err = format!(
+        "{:?}",
+        read_rds(&data).expect_err("non-zero names placeholder must be rejected")
+    );
+    assert!(err.contains("names marker"), "unexpected error: {}", err);
+}
+
+/// Each string-vec item must be an inline CHARSXP; any other type in the item
+/// flags word means the stream is corrupt and must not be misread as string
+/// bytes. The stream is shaped so a parser without the type check would
+/// happily misread the payload as a one-character string.
+#[test]
+fn test_stringvec_wrong_item_type_rejected() {
+    // PACKAGESXP flags, placeholder 0, count 1, item flags = INTSXP (13),
+    // "length" 1
+    let mut data = v2_stream(&[248, 0, 1, 13, 1]);
+    data.push(b'x');
+    let err = format!(
+        "{:?}",
+        read_rds(&data).expect_err("non-CHARSXP string vector item must be rejected")
+    );
+    assert!(
+        err.contains("expected CHARSXP"),
+        "unexpected error: {}",
+        err
+    );
+}
+
+/// BCREPREF (243) / BCREPDEF (244) only occur inside bytecode payloads (where
+/// parse_bc_lang decodes them with a dedicated reps table). At top level they
+/// mean the stream is corrupt; previously the parser resolved `flags >> 8`
+/// against the main reference table, returning an arbitrary wrong object.
+#[test]
+fn test_bcrep_outside_bytecode_rejected() {
+    for bcrep_type in [243, 244] {
+        let data = v2_stream(&[bcrep_type]);
+        let result = read_rds(&data);
+        assert!(
+            result.is_err(),
+            "type {} outside bytecode must be rejected, got {:?}",
+            bcrep_type,
+            result.map(|r| r.object.variant_name().to_string())
+        );
+    }
 }

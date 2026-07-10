@@ -77,6 +77,15 @@ The version in `Cargo.toml` has not been bumped yet.
 - The wasm sequential parse and skip paths now consume PERSISTSXP /
   PACKAGESXP / NAMESPACESXP payloads instead of desyncing.
 
+### Changed
+
+- Corrupt streams that previously misparsed silently now fail fast with
+  `InvalidFormat` errors: a non-zero names placeholder in an `OutStringVec`
+  payload (R errors here too), a non-CHARSXP item type in such a payload, and
+  BCREPREF/BCREPDEF bytecode-representation markers encountered outside a
+  bytecode payload (previously resolved against the main reference table,
+  returning an arbitrary wrong object). Files written by R are unaffected.
+
 ### Performance
 
 - `RObject::PartialEq` and the dedup cache no longer deep-clone both operands

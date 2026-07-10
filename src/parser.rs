@@ -4114,7 +4114,7 @@ async fn parse_string_vec_async<C: AsyncCursor>(
     ctx: &mut ParserContext,
     cursor: &mut C,
 ) -> Result<Vec<Arc<str>>> {
-    let _names_placeholder = read_i32_async(cursor).await?;
+    check_string_vec_names_placeholder(read_i32_async(cursor).await?)?;
     // The length is written by WriteLENGTH: long vectors are encoded as -1
     // followed by the upper and lower 32-bit halves of the 64-bit length.
     let n = read_i32_async(cursor).await?;
@@ -4136,6 +4136,7 @@ async fn parse_string_vec_async<C: AsyncCursor>(
     let mut strings: Vec<Arc<str>> = Vec::with_capacity(n);
     for _ in 0..n {
         let item_flags = read_u32_async(cursor).await?;
+        check_string_vec_item_flags(item_flags)?;
         let s = parse_charsxp_content_async(ctx, cursor, item_flags).await?;
         strings.push(Arc::from(s.as_str()));
     }
@@ -4555,18 +4556,17 @@ fn parse_object(
             return Ok(namespace_result);
         }
         BCREPREF | BCREPDEF => {
-            // Bytecode representation reference/definition
-            // These are used for circular references in bytecode serialization
-            // Treat as references similar to REFSXP
-            let ref_index_val = flags >> 8;
-
-            match ref_table.get(ref_index_val) {
-                Some(obj) => return Ok(RObject::Shared(obj)),
-                None => {
-                    // If not found in ref table, this might be a definition, return NULL for now
-                    RObject::Null
-                }
-            }
+            // Bytecode representation reference/definition. These only occur
+            // inside bytecode payloads, where parse_bc_lang handles them with
+            // a dedicated reps table (they are written as a bare type int
+            // followed by an index int, not as packed flags). R's ReadItem
+            // has no case for them either, so reaching this arm means the
+            // stream is corrupt or misparsed; erroring beats resolving a
+            // bogus index against the main reference table.
+            return Err(Error::InvalidFormat(format!(
+                "Bytecode representation type {} encountered outside bytecode context",
+                sexp_type
+            )));
         }
         NAMESPACESXP_SERIAL => {
             // Namespace marker in serialization format (type 249); the
@@ -5264,7 +5264,24 @@ fn parse_object_streaming<V: RdsVisitor>(
             parse_string_vec(ctx, cursor)?;
             StreamControl::Continue
         }
-        GENERICREFSXP | CLASSREFSXP | 244 => StreamControl::Continue,
+        GENERICREFSXP | CLASSREFSXP => StreamControl::Continue,
+        BCREPREF | BCREPDEF => {
+            if ctx.in_bytecode_context {
+                // The streaming traversal does not decode the bytecode wire
+                // format (bare type ints + rep indices; only the sync
+                // parse_bc_lang handles it properly), so tolerate rep markers
+                // inside bytecode as before - metadata traversal stumbles
+                // through the payload and emits its Unsupported warning.
+                StreamControl::Continue
+            } else {
+                // Outside bytecode these types mean a corrupt or misparsed
+                // stream; fail fast instead of silently continuing.
+                return Err(StreamingError::Parse(Error::InvalidFormat(format!(
+                    "Bytecode representation type {} encountered outside bytecode context",
+                    sexp_type
+                ))));
+            }
+        }
         _ if sexp_type > 25 && sexp_type < 238 => StreamControl::Continue,
         _ => return Err(StreamingError::Parse(Error::UnknownSexpType(sexp_type))),
     };
@@ -6996,6 +7013,40 @@ fn parse_promise_streaming<V: RdsVisitor>(
 
 #[allow(clippy::too_many_arguments)]
 fn parse_bytecode_streaming<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    emit: bool,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    progress: &mut StreamingProgressState<'_>,
+) -> StreamingResult<StreamControl, V::Error> {
+    // Mark bytecode context so the BCREPREF/BCREPDEF arms stay lenient while
+    // stumbling through the (not properly decoded) bytecode payload, but
+    // error outside it.
+    let prev_bytecode_ctx = ctx.in_bytecode_context;
+    ctx.in_bytecode_context = true;
+    let result = parse_bytecode_streaming_inner(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        emit,
+        visitor,
+        path,
+        progress,
+    );
+    ctx.in_bytecode_context = prev_bytecode_ctx;
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_bytecode_streaming_inner<V: RdsVisitor>(
     ctx: &mut ParserContext,
     cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
@@ -8961,7 +9012,7 @@ fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<
 /// be consumed even when the strings are unused, otherwise the cursor
 /// desynchronizes and every object after the entry is corrupted.
 fn parse_string_vec(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<Vec<Arc<str>>> {
-    let _names_placeholder = cursor.read_i32::<BigEndian>()?;
+    check_string_vec_names_placeholder(cursor.read_i32::<BigEndian>()?)?;
     // The length is written by WriteLENGTH: long vectors are encoded as -1
     // followed by the upper and lower 32-bit halves of the 64-bit length.
     let n = cursor.read_i32::<BigEndian>()?;
@@ -8985,10 +9036,43 @@ fn parse_string_vec(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Resu
     let mut strings: Vec<Arc<str>> = Vec::with_capacity(n);
     for _ in 0..n {
         let item_flags = cursor.read_i32::<BigEndian>()? as u32;
+        check_string_vec_item_flags(item_flags)?;
         let s = parse_charsxp_content(ctx, cursor, item_flags)?;
         strings.push(Arc::from(s.as_str()));
     }
     Ok(strings)
+}
+
+/// R's `InStringVec` errors on a non-zero names placeholder ("names in
+/// persistent strings are not supported yet"); a non-zero value means a
+/// corrupt or incompatible stream, so fail fast rather than misparse.
+fn check_string_vec_names_placeholder(placeholder: i32) -> Result<()> {
+    if placeholder != 0 {
+        return Err(Error::InvalidFormat(format!(
+            "Unsupported names marker {} in string vector payload",
+            placeholder
+        )));
+    }
+    Ok(())
+}
+
+/// Validate that a string-vec item's flags word carries the CHARSXP type.
+/// R writes each item via `WriteItem` on a CHARSXP, so the type sits in the
+/// low byte; the compact variant this codebase supports (see
+/// `parse_charsxp_content`) carries it in bits 8-15 with a zero low byte.
+fn check_string_vec_item_flags(item_flags: u32) -> Result<()> {
+    let item_type = if item_flags & 0xFF != 0 {
+        item_flags & 0xFF
+    } else {
+        (item_flags >> 8) & 0xFF
+    };
+    if item_type != CHARSXP {
+        return Err(Error::InvalidFormat(format!(
+            "String vector item has type {} (flags 0x{:08x}), expected CHARSXP",
+            item_type, item_flags
+        )));
+    }
+    Ok(())
 }
 
 /// Parse the content of a CHARSXP (without the header).

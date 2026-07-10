@@ -232,4 +232,29 @@ mod wasm_payload_tests {
         );
         assert_eq!(character_values(&items[1]), ["skip-aligned"]);
     }
+
+    /// The async mirror validates string-vec payloads like the sync consumer:
+    /// corrupting the names placeholder in an otherwise valid stream errors.
+    #[wasm_bindgen_test]
+    async fn test_stringvec_nonzero_placeholder_rejected_sequential() {
+        let mut data = PACKAGESXP_STREAM.to_vec();
+        // The names placeholder is the 4 bytes after the PACKAGESXP flags
+        // word (00 00 00 f8).
+        let pos = data
+            .windows(4)
+            .position(|w| w == [0x00, 0x00, 0x00, 0xf8])
+            .expect("PACKAGESXP flags not found")
+            + 4;
+        data[pos + 3] = 1;
+        let input = MockRdsInput { data };
+        let config = ParseConfig {
+            mode: ParseMode::LazyMetadata,
+            ..ParseConfig::default()
+        };
+        let result = read_rds_async(&input, config, AsyncParseConfig::default()).await;
+        assert!(
+            result.is_err(),
+            "non-zero names placeholder must be rejected by the async path"
+        );
+    }
 }
