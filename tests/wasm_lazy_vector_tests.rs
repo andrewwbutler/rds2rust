@@ -10,8 +10,6 @@ mod wasm_tests {
     };
     use wasm_bindgen_test::*;
 
-    wasm_bindgen_test_configure!(run_in_browser);
-
     struct TestAsyncInput {
         data: Vec<u8>,
     }
@@ -170,6 +168,6 @@ mod wasm_tests {
         let out = read_lazy_character_range_async(&input, span, 1, 2)
             .await
             .unwrap();
-        assert_eq!(out, vec![Arc::from("bbb"), Arc::from("bbb")]);
+        assert_eq!(out, vec![Some(Arc::from("bbb")), Some(Arc::from("bbb"))]);
     }
 }

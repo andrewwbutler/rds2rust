@@ -5,6 +5,10 @@
 //! must be consumed during parsing, otherwise the cursor desynchronizes and
 //! every object after the first persisted one is corrupted.
 
+// Native-only test file: excluded from wasm32 so `wasm-pack test`
+// (which builds every test target) can compile the workspace.
+#![cfg(not(target_arch = "wasm32"))]
+
 use rds2rust::{
     read_rds, traverse_rds_streaming, ObjectPath, ParseConfig, RObject, RdsVisitor, VisitAction,
 };

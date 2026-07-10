@@ -4,8 +4,8 @@
 //! The byte streams below are captured from R (the generating expression is
 //! in the comment above each constant) rather than read from tests/data,
 //! because wasm tests cannot access the filesystem and fixtures are
-//! gitignored. Runs under `wasm-bindgen-test-runner` in node (no
-//! run_in_browser configuration).
+//! gitignored. Runs in node via `wasm-pack test --node` (or directly under
+//! `wasm-bindgen-test-runner`).
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_payload_tests {

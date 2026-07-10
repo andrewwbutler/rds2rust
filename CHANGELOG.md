@@ -139,6 +139,14 @@ The version in `Cargo.toml` has not been bumped yet.
   parser's 1-based semantics. R never emits in-vector string references,
   so files written by R are unaffected.
 
+### Developer notes
+
+- `wasm-pack test --node` now works for the whole workspace: native-only test
+  files are cfg-gated off wasm32, the wasm test suites run under node instead
+  of requiring a browser (globals are looked up on `globalThis`), and two
+  previously-never-executed wasm test suites (streaming decompression, lazy
+  vectors) now run and pass. Requires Node >= 18 for `CompressionStream`.
+
 ### Performance
 
 - `RObject::PartialEq` and the dedup cache no longer deep-clone both operands

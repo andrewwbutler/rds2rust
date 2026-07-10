@@ -10,8 +10,6 @@ mod wasm_tests {
     use wasm_bindgen_test::*;
     use web_sys::Blob;
 
-    wasm_bindgen_test_configure!(run_in_browser);
-
     /// Helper to create a gzip-compressed blob from uncompressed data
     async fn create_gzip_blob(data: &[u8]) -> Blob {
         // Create a blob from the data
@@ -20,10 +18,11 @@ mod wasm_tests {
         blob_parts.push(&array);
         let uncompressed = Blob::new_with_u8_array_sequence(&blob_parts).unwrap();
 
-        // Use CompressionStream to gzip it
-        let window = web_sys::window().unwrap();
+        // Use CompressionStream to gzip it (looked up on the global scope so
+        // this works in both browsers and Node >= 18).
+        let global = js_sys::global();
         let compression_stream_class =
-            js_sys::Reflect::get(&window, &"CompressionStream".into()).unwrap();
+            js_sys::Reflect::get(&global, &"CompressionStream".into()).unwrap();
 
         let compressor = js_sys::Reflect::construct(
             &compression_stream_class
@@ -50,7 +49,7 @@ mod wasm_tests {
         let compressed_stream = pipe_through_fn.call1(&blob_stream, &transform).unwrap();
 
         // Convert stream to blob
-        let response_class = js_sys::Reflect::get(&window, &"Response".into()).unwrap();
+        let response_class = js_sys::Reflect::get(&js_sys::global(), &"Response".into()).unwrap();
         let response = js_sys::Reflect::construct(
             &response_class.dyn_into::<js_sys::Function>().unwrap(),
             &Array::of1(&compressed_stream),
