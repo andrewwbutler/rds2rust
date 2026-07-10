@@ -737,15 +737,23 @@ pub fn write_rds(obj: &RObject) -> Result<Vec<u8>> {
 /// let obj = RObject::Integer(VectorData::Owned(vec![1, 2, 3]));
 ///
 /// // Stream to a file (gzip compressed)
+/// # let path = std::env::temp_dir().join("rds2rust_doc_example.rds");
+/// # /*
 /// let file = File::create("output.rds")?;
+/// # */
+/// # let file = File::create(&path)?;
 /// write_rds_streaming(&obj, BufWriter::new(file))?;
 ///
 /// // Atomic write helper (native only)
 /// #[cfg(not(target_arch = "wasm32"))]
 /// {
 ///     use rds2rust::write_rds_atomic;
+/// # /*
 ///     write_rds_atomic(&obj, "output.rds")?;
+/// # */
+/// #     write_rds_atomic(&obj, &path)?;
 /// }
+/// # std::fs::remove_file(&path)?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 ///
