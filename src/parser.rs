@@ -2545,24 +2545,33 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                 let elem_flags = read_u32_async(cursor).await?;
                 let elem_type = elem_flags & 0xFF;
                 let elem_type_alt = (elem_flags >> 8) & 0xFF;
-                // Missing references and unknown element types degrade to NA
-                // (None) rather than fabricating a string.
+                // Invalid in-vector references fail fast (matching the
+                // native parser and chunk iterators); unknown element types
+                // degrade to NA (None) rather than fabricating a string.
                 let value: Option<Arc<str>> = if elem_type == REFSXP {
                     let ref_index = (elem_flags >> 8) as usize;
-                    string_cache
-                        .get(ref_index.saturating_sub(1))
-                        .cloned()
-                        .unwrap_or(None)
+                    if ref_index == 0 || ref_index > string_cache.len() {
+                        return Err(Error::InvalidFormat(format!(
+                            "Invalid string reference: {} (cache size: {})",
+                            ref_index,
+                            string_cache.len()
+                        )));
+                    }
+                    string_cache[ref_index - 1].clone()
                 } else if elem_type == SYMSXP {
                     let name_flags = read_u32_async(cursor).await?;
                     let name_type = name_flags & 0xFF;
                     let name_type_alt = (name_flags >> 8) & 0xFF;
                     if name_type == REFSXP {
                         let ref_index = (name_flags >> 8) as usize;
-                        string_cache
-                            .get(ref_index.saturating_sub(1))
-                            .cloned()
-                            .unwrap_or(None)
+                        if ref_index == 0 || ref_index > string_cache.len() {
+                            return Err(Error::InvalidFormat(format!(
+                                "Invalid string reference: {} (cache size: {})",
+                                ref_index,
+                                string_cache.len()
+                            )));
+                        }
+                        string_cache[ref_index - 1].clone()
                     } else if name_type == CHARSXP || name_type_alt == CHARSXP {
                         parse_charsxp_content_async(ctx, cursor, name_flags)
                             .await?
@@ -3854,24 +3863,33 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
                 let elem_flags = read_u32_async(cursor).await?;
                 let elem_type = elem_flags & 0xFF;
                 let elem_type_alt = (elem_flags >> 8) & 0xFF;
-                // Missing references and unknown element types degrade to NA
-                // (None) rather than fabricating a string.
+                // Invalid in-vector references fail fast (matching the
+                // native parser and chunk iterators); unknown element types
+                // degrade to NA (None) rather than fabricating a string.
                 let value: Option<Arc<str>> = if elem_type == REFSXP {
                     let ref_index = (elem_flags >> 8) as usize;
-                    string_cache
-                        .get(ref_index.saturating_sub(1))
-                        .cloned()
-                        .unwrap_or(None)
+                    if ref_index == 0 || ref_index > string_cache.len() {
+                        return Err(Error::InvalidFormat(format!(
+                            "Invalid string reference: {} (cache size: {})",
+                            ref_index,
+                            string_cache.len()
+                        )));
+                    }
+                    string_cache[ref_index - 1].clone()
                 } else if elem_type == SYMSXP {
                     let name_flags = read_u32_async(cursor).await?;
                     let name_type = name_flags & 0xFF;
                     let name_type_alt = (name_flags >> 8) & 0xFF;
                     if name_type == REFSXP {
                         let ref_index = (name_flags >> 8) as usize;
-                        string_cache
-                            .get(ref_index.saturating_sub(1))
-                            .cloned()
-                            .unwrap_or(None)
+                        if ref_index == 0 || ref_index > string_cache.len() {
+                            return Err(Error::InvalidFormat(format!(
+                                "Invalid string reference: {} (cache size: {})",
+                                ref_index,
+                                string_cache.len()
+                            )));
+                        }
+                        string_cache[ref_index - 1].clone()
                     } else if name_type == CHARSXP || name_type_alt == CHARSXP {
                         parse_charsxp_content_async(ctx, cursor, name_flags)
                             .await?
