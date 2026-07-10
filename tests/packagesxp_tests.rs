@@ -47,7 +47,7 @@ fn attr_of<'a>(obj: &'a RObject, name: &str) -> Option<&'a RObject> {
 
 fn character_values(obj: &RObject) -> Vec<String> {
     match unwrap_value(obj) {
-        RObject::Character(values) => values.as_vec().iter().map(|s| s.to_string()).collect(),
+        RObject::Character(values) => values.to_strings_with_na("<NA>"),
         other => panic!("expected character vector, got {:?}", other),
     }
 }

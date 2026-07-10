@@ -47,7 +47,7 @@ fn test_s4_simple() {
             match slots.get(&Arc::from("species")) {
                 Some(RObject::Character(species)) => {
                     assert_eq!(species.len(), 1);
-                    assert_eq!(species[0].as_ref(), "Tiger");
+                    assert_eq!(species[0].as_deref(), Some("Tiger"));
                 }
                 _ => panic!("Expected 'species' slot with character value"),
             }
@@ -65,7 +65,7 @@ fn test_s4_simple() {
             match slots.get(&Arc::from("habitat")) {
                 Some(RObject::Character(habitat)) => {
                     assert_eq!(habitat.len(), 1);
-                    assert_eq!(habitat[0].as_ref(), "Rainforest");
+                    assert_eq!(habitat[0].as_deref(), Some("Rainforest"));
                 }
                 _ => panic!("Expected 'habitat' slot with character value"),
             }
@@ -163,9 +163,9 @@ fn test_s4_complex() {
             match slots.get(&Arc::from("fish_species")) {
                 Some(RObject::Character(species)) => {
                     assert_eq!(species.len(), 3);
-                    assert_eq!(species[0].as_ref(), "clownfish");
-                    assert_eq!(species[1].as_ref(), "tang");
-                    assert_eq!(species[2].as_ref(), "angelfish");
+                    assert_eq!(species[0].as_deref(), Some("clownfish"));
+                    assert_eq!(species[1].as_deref(), Some("tang"));
+                    assert_eq!(species[2].as_deref(), Some("angelfish"));
                 }
                 _ => panic!("Expected 'fish_species' slot with character vector"),
             }
@@ -265,7 +265,7 @@ fn test_s4_as_attribute_container() {
     slots.insert(Arc::from("data"), RObject::Integer(vec![1, 2, 3].into()));
     slots.insert(
         Arc::from("metadata"),
-        RObject::Character(vec![Arc::from("test")].into()),
+        RObject::Character(vec![Some(Arc::from("test"))].into()),
     );
 
     let s4_obj = RObject::S4Object(Box::new(S4ObjectData {
@@ -305,7 +305,7 @@ fn test_s4_as_attribute_container() {
             match s4_data.slots.get(&Arc::from("metadata")) {
                 Some(RObject::Character(vals)) => {
                     assert_eq!(vals.len(), 1);
-                    assert_eq!(vals[0].as_ref(), "test");
+                    assert_eq!(vals[0].as_deref(), Some("test"));
                 }
                 _ => panic!("Expected 'metadata' slot with character value"),
             }
@@ -338,7 +338,7 @@ fn test_s4_nested_as_attribute() {
     outer_slots.insert(Arc::from("inner"), inner_s4);
     outer_slots.insert(
         Arc::from("name"),
-        RObject::Character(vec![Arc::from("outer")].into()),
+        RObject::Character(vec![Some(Arc::from("outer"))].into()),
     );
 
     let outer_s4 = RObject::S4Object(Box::new(S4ObjectData {
@@ -499,10 +499,12 @@ fn test_data_part_s4_flags_on_vector() {
     let mut class_attrs = Attributes::new();
     class_attrs.insert(
         Arc::from("package"),
-        RObject::Character(vec![Arc::from("ExamplePkg")].into()),
+        RObject::Character(vec![Some(Arc::from("ExamplePkg"))].into()),
     );
     let class_obj = RObject::WithAttributes {
-        object: Box::new(RObject::Character(vec![Arc::from("ExampleClass")].into())),
+        object: Box::new(RObject::Character(
+            vec![Some(Arc::from("ExampleClass"))].into(),
+        )),
         attributes: class_attrs,
     };
 
@@ -569,10 +571,12 @@ fn test_data_part_s4_roundtrip_preserves_class_attributes() {
     let mut class_attrs = Attributes::new();
     class_attrs.insert(
         Arc::from("package"),
-        RObject::Character(vec![Arc::from("ExamplePkg")].into()),
+        RObject::Character(vec![Some(Arc::from("ExamplePkg"))].into()),
     );
     let class_obj = RObject::WithAttributes {
-        object: Box::new(RObject::Character(vec![Arc::from("ExampleClass")].into())),
+        object: Box::new(RObject::Character(
+            vec![Some(Arc::from("ExampleClass"))].into(),
+        )),
         attributes: class_attrs,
     };
 
@@ -582,8 +586,8 @@ fn test_data_part_s4_roundtrip_preserves_class_attributes() {
     attrs.insert(
         Arc::from("dimnames"),
         RObject::List(vec![
-            RObject::Character(vec![Arc::from("r1"), Arc::from("r2")].into()),
-            RObject::Character(vec![Arc::from("c1"), Arc::from("c2")].into()),
+            RObject::Character(vec![Some(Arc::from("r1")), Some(Arc::from("r2"))].into()),
+            RObject::Character(vec![Some(Arc::from("c1")), Some(Arc::from("c2"))].into()),
         ]),
     );
 
@@ -621,7 +625,9 @@ fn test_data_part_s4_roundtrip_preserves_class_attributes() {
         _ => panic!("Expected class attribute to be character"),
     };
     assert!(
-        class_vec.iter().any(|name| name.as_ref() == "ExampleClass"),
+        class_vec
+            .iter()
+            .any(|name| name.as_deref() == Some("ExampleClass")),
         "Class name should be preserved"
     );
 
@@ -633,7 +639,9 @@ fn test_data_part_s4_roundtrip_preserves_class_attributes() {
         _ => panic!("Expected package attribute to be character"),
     };
     assert!(
-        package_vec.iter().any(|name| name.as_ref() == "ExamplePkg"),
+        package_vec
+            .iter()
+            .any(|name| name.as_deref() == Some("ExamplePkg")),
         "Package attribute should be preserved"
     );
 
@@ -925,10 +933,14 @@ fn test_s4_with_logical_matrix_data_slot() {
     let mut matrix_attrs = Attributes::new();
     matrix_attrs.insert("dim".into(), RObject::Integer(vec![n_rows, n_cols].into()));
 
-    let row_names: Vec<Arc<str>> = (0..n_rows)
-        .map(|i| format!("item_{}", i + 1).into())
+    let row_names: Vec<Option<Arc<str>>> = (0..n_rows)
+        .map(|i| Some(format!("item_{}", i + 1).into()))
         .collect();
-    let col_names: Vec<Arc<str>> = vec!["layer1".into(), "layer2".into(), "layer3".into()];
+    let col_names: Vec<Option<Arc<str>>> = vec![
+        Some("layer1".into()),
+        Some("layer2".into()),
+        Some("layer3".into()),
+    ];
 
     let dimnames = RObject::List(vec![
         RObject::Character(row_names.into()),
@@ -1008,7 +1020,7 @@ fn test_s4_with_outer_attributes_basic() {
     let mut attrs = Attributes::new();
     attrs.insert(
         "custom_attr".into(),
-        RObject::Character(vec!["value".into()].into()),
+        RObject::Character(vec![Some("value".into())].into()),
     );
 
     let obj = RObject::WithAttributes {
@@ -1064,8 +1076,10 @@ fn test_s4_with_dim_attributes() {
     s4_attrs.insert(
         "dimnames".into(),
         RObject::List(vec![
-            RObject::Character(vec!["r1".into(), "r2".into()].into()),
-            RObject::Character(vec!["c1".into(), "c2".into(), "c3".into()].into()),
+            RObject::Character(vec![Some("r1".into()), Some("r2".into())].into()),
+            RObject::Character(
+                vec![Some("c1".into()), Some("c2".into()), Some("c3".into())].into(),
+            ),
         ]),
     );
 
@@ -1149,7 +1163,7 @@ fn test_s4_class_attribute_cannot_be_overridden() {
     let mut attrs = Attributes::new();
     attrs.insert(
         "class".into(),
-        RObject::Character(vec!["FakeClass".into()].into()),
+        RObject::Character(vec![Some("FakeClass".into())].into()),
     );
     attrs.insert("other_attr".into(), RObject::Integer(vec![999].into()));
 
@@ -1221,7 +1235,7 @@ fn test_s4_with_nested_withattributes_in_slot() {
     let mut inner_attrs = Attributes::new();
     inner_attrs.insert(
         "inner_attr".into(),
-        RObject::Character(vec!["inner".into()].into()),
+        RObject::Character(vec![Some("inner".into())].into()),
     );
 
     let inner_with_attrs = RObject::WithAttributes {
@@ -1243,7 +1257,7 @@ fn test_s4_with_nested_withattributes_in_slot() {
     let mut outer_attrs = Attributes::new();
     outer_attrs.insert(
         "outer_attr".into(),
-        RObject::Character(vec!["outer".into()].into()),
+        RObject::Character(vec![Some("outer".into())].into()),
     );
 
     let obj = RObject::WithAttributes {

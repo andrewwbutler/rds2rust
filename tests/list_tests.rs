@@ -93,7 +93,7 @@ fn test_list_empty() {
 fn test_list_roundtrip() {
     let obj = RObject::List(vec![
         RObject::Integer(vec![1, 2, 3].into()),
-        RObject::Character(vec![Arc::from("test")].into()),
+        RObject::Character(vec![Some(Arc::from("test"))].into()),
         RObject::Real(vec![4.5].into()),
     ]);
     let serialized = write_rds(&obj).expect("Failed to write list");

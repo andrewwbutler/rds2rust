@@ -54,6 +54,47 @@ The version in `Cargo.toml` has not been bumped yet.
   but exact-string matchers will notice.
 - **wasm sequential parser** now returns the same `Character` / `Namespace`
   values as the native parser for the pseudo-types above, instead of `Null`.
+- **`NA_character_` is now a real missing value.** `RObject::Character`
+  elements changed from `Arc<str>` to `Option<Arc<str>>` (`None` is NA).
+  Previously NA parsed as the literal string `"NA"` — indistinguishable from
+  a real `"NA"` — and the writer silently turned missing data into the string
+  `"NA"` on roundtrip. This is the largest migration item in 0.2.0; every
+  element access chooses an NA policy at compile time:
+
+  ```rust
+  // element access
+  let s: &Arc<str> = &chars.as_vec()[0];              // before
+  let s: Option<&str> = chars.as_vec()[0].as_deref(); // after
+  let s = chars.as_vec()[0].as_deref().unwrap_or("NA"); // old behavior, explicit
+
+  // iteration
+  for s in vec.as_vec() { use_str(s); }                    // before
+  for s in vec.iter_strs().flatten() { use_str(s); }       // after (skip NAs)
+
+  // construction
+  RObject::Character(vec![Arc::from("x")].into())          // before
+  RObject::Character(VectorData::from_strs(["x"]))         // after (no NAs)
+  RObject::Character(vec![Some(Arc::from("x")), None].into()) // with NA
+
+  // test assertions
+  assert_eq!(v[0].as_ref(), "x");            // before
+  assert_eq!(v[0].as_deref(), Some("x"));    // after
+  ```
+
+  Helpers on character vectors: `from_strs`, `get_str(i) -> Option<&str>`,
+  `is_na(i)`, `iter_strs()`, and `to_strings_with_na(placeholder)` — the
+  explicit escape hatch reproducing the old rendering in one greppable call.
+- **Derived plain-string surfaces treat NA as absent**, except where position
+  is load-bearing: an NA in a `names` attribute yields an unnamed element in
+  place; NA class entries are skipped; `FactorData.levels` and
+  `DataFrameData.row_names` became `Vec<Option<Arc<str>>>` to preserve slots
+  (factor values index into levels positionally). NA in a symbol-name
+  position is now a parse error (R has no NA symbols).
+- **The writer emits R's real NA marker** (bare CHARSXP flags + length −1,
+  byte-identical to R's own output), so writing NA strings is possible for
+  the first time; roundtrips are `identical()` under R's `readRDS`.
+- **wasm/JS boundary**: NA strings surface as `null` instead of the string
+  `"NA"` in all character extraction and chunked-streaming APIs.
 
 ### Fixed
 

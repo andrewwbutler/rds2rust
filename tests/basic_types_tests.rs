@@ -379,7 +379,7 @@ fn test_character_single() {
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 1);
-            assert_eq!(vec[0].as_ref(), "hello");
+            assert_eq!(vec[0].as_deref(), Some("hello"));
         }
         other => panic!("Expected Character, got {:?}", other),
     }
@@ -400,9 +400,9 @@ fn test_character_vector() {
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 3);
-            assert_eq!(vec[0].as_ref(), "foo");
-            assert_eq!(vec[1].as_ref(), "bar");
-            assert_eq!(vec[2].as_ref(), "baz");
+            assert_eq!(vec[0].as_deref(), Some("foo"));
+            assert_eq!(vec[1].as_deref(), Some("bar"));
+            assert_eq!(vec[2].as_deref(), Some("baz"));
         }
         other => panic!("Expected Character vector, got {:?}", other),
     }
@@ -423,9 +423,12 @@ fn test_character_with_na() {
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 3);
-            assert_eq!(vec[0].as_ref(), "test");
-            assert_eq!(vec[1].as_ref(), "NA"); // NA_character_ is currently parsed as "NA"
-            assert_eq!(vec[2].as_ref(), "string");
+            assert_eq!(vec[0].as_deref(), Some("test"));
+            // NA_character_ is a true missing value: None, distinguishable
+            // from the legal string "NA".
+            assert_eq!(vec[1], None);
+            assert!(vec.is_na(1));
+            assert_eq!(vec[2].as_deref(), Some("string"));
         }
         other => panic!("Expected Character vector with NA, got {:?}", other),
     }
@@ -453,7 +456,7 @@ fn test_character_empty() {
 
 #[test]
 fn test_character_roundtrip() {
-    let obj = RObject::Character(vec![Arc::from("hello"), Arc::from("world")].into());
+    let obj = RObject::Character(vec![Some(Arc::from("hello")), Some(Arc::from("world"))].into());
     let serialized = write_rds(&obj).expect("Failed to write character vector");
     let deserialized = read_rds(&serialized)
         .expect("Failed to read character vector")
@@ -785,7 +788,7 @@ fn test_logical_vector_with_attributes() {
     let mut attrs = Attributes::new();
     attrs.insert(
         "test_attr".into(),
-        RObject::Character(vec!["value".into()].into()),
+        RObject::Character(vec![Some("value".into())].into()),
     );
 
     let obj = RObject::WithAttributes {
@@ -876,8 +879,15 @@ fn test_logical_matrix_with_dimnames() {
 
     // Add dimnames attribute
     let dimnames = RObject::List(vec![
-        RObject::Character(vec!["row1".into(), "row2".into()].into()),
-        RObject::Character(vec!["col1".into(), "col2".into(), "col3".into()].into()),
+        RObject::Character(vec![Some("row1".into()), Some("row2".into())].into()),
+        RObject::Character(
+            vec![
+                Some("col1".into()),
+                Some("col2".into()),
+                Some("col3".into()),
+            ]
+            .into(),
+        ),
     ]);
     attrs.insert("dimnames".into(), dimnames);
 
@@ -907,8 +917,10 @@ fn test_logical_matrix_attribute_order_variation() {
     attrs1.insert(
         "dimnames".into(),
         RObject::List(vec![
-            RObject::Character(vec!["r1".into(), "r2".into()].into()),
-            RObject::Character(vec!["c1".into(), "c2".into(), "c3".into()].into()),
+            RObject::Character(vec![Some("r1".into()), Some("r2".into())].into()),
+            RObject::Character(
+                vec![Some("c1".into()), Some("c2".into()), Some("c3".into())].into(),
+            ),
         ]),
     );
     let matrix1 = RObject::WithAttributes {
@@ -921,8 +933,10 @@ fn test_logical_matrix_attribute_order_variation() {
     attrs2.insert(
         "dimnames".into(),
         RObject::List(vec![
-            RObject::Character(vec!["r1".into(), "r2".into()].into()),
-            RObject::Character(vec!["c1".into(), "c2".into(), "c3".into()].into()),
+            RObject::Character(vec![Some("r1".into()), Some("r2".into())].into()),
+            RObject::Character(
+                vec![Some("c1".into()), Some("c2".into()), Some("c3".into())].into(),
+            ),
         ]),
     );
     attrs2.insert("dim".into(), RObject::Integer(vec![2, 3].into()));

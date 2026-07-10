@@ -125,7 +125,7 @@ fn test_s3_vector() {
             match attributes.get("description") {
                 Some(RObject::Character(desc)) => {
                     assert_eq!(desc.len(), 1);
-                    assert_eq!(desc[0].as_ref(), "A custom vector class");
+                    assert_eq!(desc[0].as_deref(), Some("A custom vector class"));
                 }
                 _ => panic!("Expected description attribute"),
             }

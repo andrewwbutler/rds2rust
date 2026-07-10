@@ -61,8 +61,8 @@ fn test_lazy_real_vector() {
 fn test_lazy_character_vector() {
     let obj = RObject::Character(
         (1..=50)
-            .map(|i| Arc::from(format!("str{}", i).as_str()))
-            .collect::<Vec<Arc<str>>>()
+            .map(|i| Some(Arc::from(format!("str{}", i).as_str())))
+            .collect::<Vec<Option<Arc<str>>>>()
             .into(),
     );
     let data = write_rds(&obj).expect("Failed to write");
@@ -108,8 +108,8 @@ fn test_lazy_list_with_vectors() {
         RObject::Real((1..=50).map(|i| i as f64).collect::<Vec<f64>>().into()),
         RObject::Character(
             (1..=50)
-                .map(|i| Arc::from(format!("s{}", i).as_str()))
-                .collect::<Vec<Arc<str>>>()
+                .map(|i| Some(Arc::from(format!("s{}", i).as_str())))
+                .collect::<Vec<Option<Arc<str>>>>()
                 .into(),
         ),
     ]);
@@ -238,11 +238,11 @@ fn test_lazy_character_range_reads_values() {
         }
     }
 
-    let mut values: Vec<Arc<str>> = Vec::with_capacity(50);
-    values.push(Arc::from("alpha"));
-    values.push(Arc::from("beta"));
+    let mut values: Vec<Option<Arc<str>>> = Vec::with_capacity(50);
+    values.push(Some(Arc::from("alpha")));
+    values.push(Some(Arc::from("beta")));
     for i in 2..50 {
-        values.push(Arc::from(format!("v{}", i).as_str()));
+        values.push(Some(Arc::from(format!("v{}", i).as_str())));
     }
     let obj = RObject::Character(values.into());
     let data = rds2rust::write_rds(&obj).expect("Failed to write");
@@ -258,7 +258,7 @@ fn test_lazy_character_range_reads_values() {
 
     let input = TestInput { data: decompressed };
     let range = read_lazy_character_range(&input, span, 1, 1).expect("read range");
-    assert_eq!(range, vec![Arc::from("beta")]);
+    assert_eq!(range, vec![Some(Arc::from("beta"))]);
 }
 
 // =============================================================================

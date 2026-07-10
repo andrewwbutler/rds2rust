@@ -226,7 +226,7 @@ pub enum CharacterChunkIter<'a> {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<'a> Iterator for CharacterChunkIter<'a> {
-    type Item = Result<Vec<Arc<str>>>;
+    type Item = Result<Vec<Option<Arc<str>>>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
@@ -238,14 +238,14 @@ impl<'a> Iterator for CharacterChunkIter<'a> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub struct OwnedCharacterChunkIter<'a> {
-    data: &'a [Arc<str>],
+    data: &'a [Option<Arc<str>>],
     pos: usize,
     config: ChunkConfig,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<'a> OwnedCharacterChunkIter<'a> {
-    fn new(data: &'a [Arc<str>], config: ChunkConfig) -> Self {
+    fn new(data: &'a [Option<Arc<str>>], config: ChunkConfig) -> Self {
         Self {
             data,
             pos: 0,
@@ -256,7 +256,7 @@ impl<'a> OwnedCharacterChunkIter<'a> {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<'a> Iterator for OwnedCharacterChunkIter<'a> {
-    type Item = Result<Vec<Arc<str>>>;
+    type Item = Result<Vec<Option<Arc<str>>>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.pos >= self.data.len() {
@@ -265,8 +265,8 @@ impl<'a> Iterator for OwnedCharacterChunkIter<'a> {
         let mut out = Vec::new();
         let mut bytes = 0usize;
         while self.pos < self.data.len() && out.len() < self.config.max_elements {
-            let value = Arc::clone(&self.data[self.pos]);
-            let value_bytes = value.len();
+            let value = self.data[self.pos].clone();
+            let value_bytes = value.as_deref().map_or(0, str::len);
             if !out.is_empty() && bytes + value_bytes > self.config.max_bytes {
                 break;
             }
@@ -286,7 +286,7 @@ pub struct LazyCharacterChunkIter<'a> {
     reader: SpanReader<'a>,
     remaining: usize,
     config: ChunkConfig,
-    cache: Vec<Arc<str>>,
+    cache: Vec<Option<Arc<str>>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -304,7 +304,7 @@ impl<'a> LazyCharacterChunkIter<'a> {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<'a> Iterator for LazyCharacterChunkIter<'a> {
-    type Item = Result<Vec<Arc<str>>>;
+    type Item = Result<Vec<Option<Arc<str>>>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
@@ -329,13 +329,13 @@ impl<'a> Iterator for LazyCharacterChunkIter<'a> {
                         self.cache.len()
                     ))));
                 }
-                Arc::clone(&self.cache[ref_index - 1])
+                self.cache[ref_index - 1].clone()
             } else if type_from_0_7 == CHARSXP || type_from_8_15 == CHARSXP {
                 let parsed = match parse_charsxp_content_streaming(&mut self.reader, flags) {
                     Ok(value) => value,
                     Err(err) => return Some(Err(err)),
                 };
-                self.cache.push(Arc::clone(&parsed));
+                self.cache.push(parsed.clone());
                 parsed
             } else {
                 return Some(Err(Error::Unsupported(
@@ -343,7 +343,7 @@ impl<'a> Iterator for LazyCharacterChunkIter<'a> {
                 )));
             };
 
-            let value_bytes = value.len();
+            let value_bytes = value.as_deref().map_or(0, str::len);
             if !out.is_empty() && bytes + value_bytes > self.config.max_bytes {
                 // Put it back? Not possible with streaming, so yield oversized element alone.
                 out.push(value);
@@ -455,7 +455,10 @@ impl<'a> SpanReader<'a> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn parse_charsxp_content_streaming(reader: &mut SpanReader<'_>, flags: u32) -> Result<Arc<str>> {
+fn parse_charsxp_content_streaming(
+    reader: &mut SpanReader<'_>,
+    flags: u32,
+) -> Result<Option<Arc<str>>> {
     let compact_length = (flags >> 24) & 0xFF;
     let use_compact = compact_length > 0;
 
@@ -467,7 +470,8 @@ fn parse_charsxp_content_streaming(reader: &mut SpanReader<'_>, flags: u32) -> R
     };
 
     if length == -1 {
-        return Ok(Arc::from("NA"));
+        // NA_character_
+        return Ok(None);
     }
     if length < 0 {
         return Err(Error::InvalidFormat(format!(
@@ -482,7 +486,7 @@ fn parse_charsxp_content_streaming(reader: &mut SpanReader<'_>, flags: u32) -> R
         Ok(s) => s,
         Err(_) => bytes.iter().map(|&b| b as char).collect(),
     };
-    Ok(Arc::from(string))
+    Ok(Some(Arc::from(string.as_str())))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -581,7 +585,7 @@ impl VectorData<Complex> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl VectorData<Arc<str>> {
+impl VectorData<Option<Arc<str>>> {
     pub fn iter_chunks<'a>(
         &'a self,
         source: Option<&'a dyn RdsInput>,
@@ -701,7 +705,7 @@ pub fn read_lazy_character_range(
     span: LazyVector,
     start: usize,
     count: usize,
-) -> Result<Vec<Arc<str>>> {
+) -> Result<Vec<Option<Arc<str>>>> {
     if count == 0 {
         return Ok(Vec::new());
     }
@@ -801,8 +805,12 @@ mod tests {
 
     #[test]
     fn iter_chunks_owned_character_respects_byte_cap() {
-        let values: Vec<Arc<str>> = vec![Arc::from("alpha"), Arc::from("beta"), Arc::from("g")];
-        let vector: VectorData<Arc<str>> = VectorData::Owned(values);
+        let values: Vec<Option<Arc<str>>> = vec![
+            Some(Arc::from("alpha")),
+            Some(Arc::from("beta")),
+            Some(Arc::from("g")),
+        ];
+        let vector: VectorData<Option<Arc<str>>> = VectorData::Owned(values);
         let config = ChunkConfig {
             max_elements: 10,
             max_bytes: 7,
@@ -810,8 +818,8 @@ mod tests {
         let mut iter = vector.iter_chunks(None, config).unwrap();
         let first = iter.next().unwrap().unwrap();
         let second = iter.next().unwrap().unwrap();
-        assert_eq!(first, vec![Arc::from("alpha")]);
-        assert_eq!(second, vec![Arc::from("beta"), Arc::from("g")]);
+        assert_eq!(first, vec![Some(Arc::from("alpha"))]);
+        assert_eq!(second, vec![Some(Arc::from("beta")), Some(Arc::from("g"))]);
     }
 
     #[test]

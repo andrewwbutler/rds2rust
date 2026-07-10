@@ -73,6 +73,14 @@ mod wasm_payload_tests {
         0x66, 0x74, 0x65, 0x72, 0x00, 0x00, 0x00, 0xfe,
     ];
 
+    // serialize(c("NA", NA_character_))
+    const NA_CHARACTER_STREAM: &[u8] = &[
+        0x58, 0x0a, 0x00, 0x00, 0x00, 0x03, 0x00, 0x04, 0x03, 0x03, 0x00, 0x03, 0x05, 0x00, 0x00,
+        0x00, 0x00, 0x05, 0x55, 0x54, 0x46, 0x2d, 0x38, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x04, 0x00, 0x09, 0x00, 0x00, 0x00, 0x02, 0x4e, 0x41, 0x00, 0x00, 0x00, 0x09,
+        0xff, 0xff, 0xff, 0xff,
+    ];
+
     // serialize(list(inner = list(pkg_env, persist_env, base_ns, "pad1"), after = "skip-aligned"), refhook = <persist_env only>)
     const SKIP_PATH_STREAM: &[u8] = &[
         0x58, 0x0a, 0x00, 0x00, 0x00, 0x03, 0x00, 0x04, 0x03, 0x03, 0x00, 0x03, 0x05, 0x00, 0x00,
@@ -147,7 +155,7 @@ mod wasm_payload_tests {
 
     fn character_values(obj: &RObject) -> Vec<String> {
         match unwrap_value(obj) {
-            RObject::Character(values) => values.as_vec().iter().map(|s| s.to_string()).collect(),
+            RObject::Character(values) => values.to_strings_with_na("<NA>"),
             other => panic!("expected character vector, got {}", other.variant_name()),
         }
     }
@@ -256,5 +264,20 @@ mod wasm_payload_tests {
             result.is_err(),
             "non-zero names placeholder must be rejected by the async path"
         );
+    }
+
+    /// NA_character_ parses as None through the wasm sequential path,
+    /// distinguishable from the legal string "NA".
+    #[wasm_bindgen_test]
+    async fn test_na_character_sequential() {
+        let obj = parse_sequential(NA_CHARACTER_STREAM).await;
+        match unwrap_value(&obj) {
+            RObject::Character(vec) => {
+                assert_eq!(vec.len(), 2);
+                assert_eq!(vec[0].as_deref(), Some("NA"));
+                assert_eq!(vec[1], None);
+            }
+            other => panic!("expected character vector, got {}", other.variant_name()),
+        }
     }
 }

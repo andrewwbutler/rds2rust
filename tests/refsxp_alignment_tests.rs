@@ -87,7 +87,7 @@ fn assert_string(items: &[RObject], index: usize, expected: &str) {
     match items[index].as_concrete() {
         RObject::Character(values) => {
             assert_eq!(values.len(), 1);
-            assert_eq!(values[0].as_ref(), expected);
+            assert_eq!(values[0].as_deref(), Some(expected));
         }
         other => panic!(
             "items[{}] resolved to {} instead of Character",
@@ -351,7 +351,7 @@ fn test_plain_symbol_no_double_registration() {
         RObject::Symbol(Arc::from("a")),
         RObject::Symbol(Arc::from("b")),
         RObject::Symbol(Arc::from("a")),
-        RObject::Character(vec![Arc::from("tail")].into()),
+        RObject::Character(vec![Some(Arc::from("tail"))].into()),
     ]);
 
     let output = write_rds(&obj).expect("Failed to serialize");
@@ -425,7 +425,7 @@ fn test_plain_symbol_tag_and_value_dedup() {
     };
     let obj = RObject::List(vec![
         env,
-        RObject::Character(vec![Arc::from("tail")].into()),
+        RObject::Character(vec![Some(Arc::from("tail"))].into()),
     ]);
 
     let output = write_rds(&obj).expect("Failed to serialize");

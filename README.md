@@ -92,10 +92,7 @@ use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create an R object (e.g., a character vector)
-    let obj = RObject::Character(VectorData::Owned(vec![
-        Arc::from("hello"),
-        Arc::from("world"),
-    ]));
+    let obj = RObject::Character(VectorData::from_strs(["hello", "world"]));
 
     // Serialize to RDS format (automatically gzip compressed)
     let rds_data = write_rds(&obj)?;
@@ -118,10 +115,7 @@ use std::io::BufWriter;
 use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let obj = RObject::Character(VectorData::Owned(vec![
-        Arc::from("hello"),
-        Arc::from("streaming"),
-    ]));
+    let obj = RObject::Character(VectorData::from_strs(["hello", "streaming"]));
 
     // Stream to a file (gzip compressed)
     let file = File::create("output.rds")?;
@@ -524,7 +518,7 @@ pub enum RObject {
     Integer(VectorData<i32>),
     Real(VectorData<f64>),
     Logical(VectorData<Logical>),
-    Character(VectorData<Arc<str>>),
+    Character(VectorData<Option<Arc<str>>>), // None = NA_character_
     Symbol(Arc<str>),
     Raw(VectorData<u8>),
     Complex(VectorData<Complex>),
@@ -558,6 +552,8 @@ pub enum RObject {
 R's special values are represented as:
 
 - **NA (integers)**: `RObject::NA_INTEGER` constant (`i32::MIN`)
+- **NA (character)**: `None` (`Option<Arc<str>>` elements); use `.as_deref()`
+  or the `is_na(i)` / `get_str(i)` helpers — distinguishable from the string `"NA"`
 - **NA (logicals)**: `Logical::Na` enum variant
 - **NA (real)**: Check with `f64::is_nan()`
 - **Inf/-Inf**: `f64::INFINITY` and `f64::NEG_INFINITY`

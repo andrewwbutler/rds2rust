@@ -370,7 +370,7 @@ fn write_symbol_with_tracking<W: Write>(
 
     // First time writing this symbol - write SYMSXP
     write_flags(writer, SYMSXP, false, false, false)?;
-    write_charsxp(writer, name.as_ref())?;
+    write_charsxp(writer, Some(name.as_ref()))?;
 
     // Atomically register in both index spaces - NO manual next_index manipulation!
     let indices = register_symbol_atomic(name.clone(), shared_ptr, ref_table, symbol_tracker);
@@ -1059,7 +1059,7 @@ fn write_namespace<W: Write>(
     writer.write_u32::<BigEndian>(names.len() as u32)?;
 
     for name in names {
-        write_charsxp(writer, name.as_ref())?;
+        write_charsxp(writer, Some(name.as_ref()))?;
     }
 
     Ok(())
@@ -1148,17 +1148,25 @@ fn write_logical_vector<W: Write>(writer: &mut W, vec: &[Logical]) -> Result<()>
 }
 
 /// Write a character vector.
-fn write_character_vector<W: Write>(writer: &mut W, vec: &[Arc<str>]) -> Result<()> {
+fn write_character_vector<W: Write>(writer: &mut W, vec: &[Option<Arc<str>>]) -> Result<()> {
     write_flags(writer, STRSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(vec.len() as u32)?;
     for s in vec {
-        write_charsxp(writer, s.as_ref())?;
+        write_charsxp(writer, s.as_deref())?;
     }
     Ok(())
 }
 
 /// Write a CHARSXP (internal string).
-fn write_charsxp<W: Write>(writer: &mut W, s: &str) -> Result<()> {
+fn write_charsxp<W: Write>(writer: &mut W, s: Option<&str>) -> Result<()> {
+    let Some(s) = s else {
+        // NA_character_: R writes a bare CHARSXP flags word (no encoding
+        // level bits) followed by length -1 and no bytes. Verified against
+        // R's own output for serialize(c("NA", NA_character_)).
+        writer.write_u32::<BigEndian>(CHARSXP)?;
+        writer.write_i32::<BigEndian>(-1)?;
+        return Ok(());
+    };
     let bytes = s.as_bytes();
     // Check if the string is ASCII
     let is_ascii = bytes.iter().all(|&b| b < 128);
@@ -1260,15 +1268,17 @@ fn write_language<W: Write>(
             symbol_tracker,
         )?;
     } else {
-        // If it's a single-element Character, write it as a symbol (function name)
+        // If it's a single-element non-NA Character, write it as a symbol
+        // (function name); an NA cannot be a symbol name.
         match function {
-            RObject::Character(vec) if vec.len() == 1 => {
+            RObject::Character(vec) if vec.len() == 1 && vec[0].is_some() => {
+                let name = vec[0].as_deref().expect("guarded is_some");
                 if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
-                    debug_log!("[LANGUAGE] Writing function as symbol: '{}'", vec[0]);
+                    debug_log!("[LANGUAGE] Writing function as symbol: '{}'", name);
                 }
                 write_symbol_with_tracking(
                     writer,
-                    Arc::from(vec[0].as_ref()),
+                    Arc::from(name),
                     None, // Plain string, not Shared
                     SymbolContext::NonTagPreferSymbol,
                     ref_table,
@@ -1344,10 +1354,10 @@ fn write_language_with_attrs<W: Write>(
         )?;
     } else {
         match function {
-            RObject::Character(vec) if vec.len() == 1 => {
+            RObject::Character(vec) if vec.len() == 1 && vec[0].is_some() => {
                 write_symbol_with_tracking(
                     writer,
-                    Arc::from(vec[0].as_ref()),
+                    Arc::from(vec[0].as_deref().expect("guarded is_some")),
                     None,
                     SymbolContext::NonTagPreferSymbol,
                     ref_table,
@@ -1505,10 +1515,10 @@ fn write_pairlist_internal<W: Write>(
                 )?;
             } else {
                 match &element.value {
-                    RObject::Character(vec) if vec.len() == 1 => {
+                    RObject::Character(vec) if vec.len() == 1 && vec[0].is_some() => {
                         write_symbol_with_tracking(
                             writer,
-                            Arc::from(vec[0].as_ref()),
+                            Arc::from(vec[0].as_deref().expect("guarded is_some")),
                             None, // Plain string, not Shared
                             SymbolContext::NonTagPreferSymbol,
                             ref_table,
@@ -1640,7 +1650,7 @@ fn write_symbol_with_ref<W: Write>(
     } else {
         // Write the symbol for the first time
         write_flags(writer, SYMSXP, false, false, false)?;
-        write_charsxp(writer, name)?;
+        write_charsxp(writer, Some(name))?;
     }
     Ok(())
 }
@@ -1963,7 +1973,7 @@ fn write_bytecode_body<W: Write>(
 fn write_dataframe<W: Write>(
     writer: &mut W,
     columns: &IndexMap<Arc<str>, RObject>,
-    row_names: &[Arc<str>],
+    row_names: &[Option<Arc<str>>],
     ref_table: &mut RefTable,
     symbol_tracker: &mut SymbolTracker,
     symbol_context: SymbolContext,
@@ -1985,14 +1995,17 @@ fn write_dataframe<W: Write>(
 
     // Write attributes (names, row.names, class)
     let mut attrs = Attributes::new();
-    attrs.insert(Arc::from("names"), RObject::Character(column_names.into()));
+    attrs.insert(
+        Arc::from("names"),
+        RObject::Character(crate::types::wrap_some(&column_names).into()),
+    );
     attrs.insert(
         Arc::from("row.names"),
         RObject::Character(row_names.to_vec().into()),
     );
     attrs.insert(
         Arc::from("class"),
-        RObject::Character(vec![Arc::from("data.frame")].into()),
+        RObject::Character(vec![Some(Arc::from("data.frame"))].into()),
     );
 
     write_attributes(writer, &attrs, ref_table, symbol_tracker, symbol_context)?;
@@ -2092,7 +2105,7 @@ fn write_s3_object<W: Write>(
     let mut attrs = attributes.clone();
     attrs.insert(
         Arc::from("class"),
-        RObject::Character(class.to_vec().into()),
+        RObject::Character(crate::types::wrap_some(class).into()),
     );
 
     write_object_with_attributes(
@@ -2116,12 +2129,12 @@ fn build_s4_attributes(
 
     // For S4 objects, the class attribute must have a package attribute
     // Use the stored package if available, otherwise fall back to ".GlobalEnv" for user-defined classes
-    let class_obj = RObject::Character(class.to_vec().into());
+    let class_obj = RObject::Character(crate::types::wrap_some(class).into());
     let mut class_attrs = Attributes::new();
     let pkg_value = package.cloned().unwrap_or_else(|| Arc::from(".GlobalEnv"));
     class_attrs.insert(
         Arc::from("package"),
-        RObject::Character(vec![pkg_value].into()),
+        RObject::Character(vec![Some(pkg_value)].into()),
     );
 
     let class_with_package = RObject::WithAttributes {
@@ -2234,7 +2247,7 @@ fn write_object_with_attributes<W: Write>(
             write_flags_with_object(writer, STRSXP, true, false, is_s4_object, is_s3_object)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             for s in vec {
-                write_charsxp(writer, s)?;
+                write_charsxp(writer, s.as_deref())?;
             }
         }
         RObject::Logical(vec) => {
@@ -2458,7 +2471,7 @@ fn write_attributes<W: Write>(
     // Check if this is a data.frame - they require specific attribute order
     let is_dataframe = attributes.attrs.iter().any(|(k, v)| {
         k.as_ref() == "class"
-            && matches!(**v, RObject::Character(ref vec) if vec.iter().any(|s| s.as_ref() == "data.frame"))
+            && matches!(**v, RObject::Character(ref vec) if vec.iter().any(|s| s.as_deref() == Some("data.frame")))
     });
 
     // Check if this is an S4 object - they should preserve slot order
