@@ -36,7 +36,12 @@ fn test_multiple_s4_same_class_roundtrip() {
 
                 // Verify name slot
                 if let Some(RObject::Character(vec)) = s4.slots.get(&Arc::from("name")) {
-                    assert_eq!(vec[0].as_ref(), *expected_name, "Item {} name mismatch", i);
+                    assert_eq!(
+                        vec[0].as_deref(),
+                        Some(*expected_name),
+                        "Item {} name mismatch",
+                        i
+                    );
                 } else {
                     panic!("Item {} name slot missing or wrong type", i);
                 }
@@ -98,8 +103,8 @@ fn test_multiple_s4_with_matrices_roundtrip() {
                 // Check label slot
                 if let Some(RObject::Character(vec)) = s4.slots.get(&Arc::from("label")) {
                     assert_eq!(
-                        vec[0].as_ref(),
-                        *expected_label,
+                        vec[0].as_deref(),
+                        Some(*expected_label),
                         "Item {} label mismatch",
                         i
                     );
@@ -131,7 +136,7 @@ fn test_multiple_s4_with_matrices_roundtrip() {
                             if let Some(RObject::List(dimnames)) = attributes.get("dimnames") {
                                 if let Some(RObject::Character(rownames)) = dimnames.first() {
                                     assert!(
-                                        rownames[0].as_ref().starts_with("Row"),
+                                        rownames[0].as_deref().unwrap().starts_with("Row"),
                                         "Item {} primary_matrix rownames should be Row1, Row2",
                                         i
                                     );
@@ -156,7 +161,7 @@ fn test_multiple_s4_with_matrices_roundtrip() {
                         if let Some(RObject::List(dimnames)) = attributes.get("dimnames") {
                             if let Some(RObject::Character(rownames)) = dimnames.first() {
                                 assert!(
-                                    rownames[0].as_ref().starts_with("Item"),
+                                    rownames[0].as_deref().unwrap().starts_with("Item"),
                                     "Item {} secondary_matrix rownames should be ItemA, ItemB",
                                     i
                                 );

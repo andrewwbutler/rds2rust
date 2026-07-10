@@ -352,14 +352,16 @@ impl RdsVisitor for DatasetInfoVisitor {
             match key.as_ref() {
                 "class" => match value {
                     crate::RObject::Character(names) => {
-                        frame.class = Some(names.iter().cloned().collect());
+                        // NA class entries are treated as absent.
+                        frame.class = Some(names.iter().flatten().cloned().collect());
                     }
                     crate::RObject::Symbol(name) => {
                         frame.class = Some(vec![name]);
                     }
                     crate::RObject::WithAttributes { object, .. } => match object.as_ref() {
                         crate::RObject::Character(names) => {
-                            frame.class = Some(names.iter().cloned().collect());
+                            // NA class entries are treated as absent.
+                            frame.class = Some(names.iter().flatten().cloned().collect());
                         }
                         crate::RObject::Symbol(name) => {
                             frame.class = Some(vec![name.clone()]);
@@ -375,7 +377,14 @@ impl RdsVisitor for DatasetInfoVisitor {
                 }
                 "names" => {
                     if let crate::RObject::Character(values) = value {
-                        frame.names = Some(values.iter().cloned().collect());
+                        // Names are positional; an NA name keeps its slot,
+                        // rendered with R's NA display convention.
+                        frame.names = Some(
+                            values
+                                .iter()
+                                .map(|v| v.clone().unwrap_or_else(|| Arc::from("<NA>")))
+                                .collect(),
+                        );
                     }
                 }
                 "row.names" => {

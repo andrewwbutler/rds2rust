@@ -104,9 +104,9 @@ fn test_bytecode_in_list() {
     if let Some(attrs) = attrs_opt {
         if let Some(RObject::Character(names)) = attrs.get("names") {
             assert_eq!(names.len(), 3);
-            assert_eq!(names[0].as_ref(), "name");
-            assert_eq!(names[1].as_ref(), "func");
-            assert_eq!(names[2].as_ref(), "data");
+            assert_eq!(names[0].as_deref(), Some("name"));
+            assert_eq!(names[1].as_deref(), Some("func"));
+            assert_eq!(names[2].as_deref(), Some("data"));
         }
     }
 
@@ -118,7 +118,7 @@ fn test_bytecode_in_list() {
         match &elements[0] {
             RObject::Character(vec) => {
                 assert_eq!(vec.len(), 1);
-                assert_eq!(vec[0].as_ref(), "my_function");
+                assert_eq!(vec[0].as_deref(), Some("my_function"));
             }
             _ => panic!("Expected first element to be Character vector"),
         }

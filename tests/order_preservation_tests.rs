@@ -48,7 +48,11 @@ fn test_dataframe_column_order_preservation() {
         ),
     );
 
-    let row_names = vec![Arc::from("1"), Arc::from("2"), Arc::from("3")];
+    let row_names = vec![
+        Some(Arc::from("1")),
+        Some(Arc::from("2")),
+        Some(Arc::from("3")),
+    ];
 
     let df = RObject::DataFrame(Box::new(DataFrameData {
         columns: columns.clone(),
@@ -90,7 +94,11 @@ fn test_dataframe_column_order_with_many_columns() {
         columns.insert(Arc::from(*name), RObject::Integer(vec![1, 2, 3].into()));
     }
 
-    let row_names = vec![Arc::from("1"), Arc::from("2"), Arc::from("3")];
+    let row_names = vec![
+        Some(Arc::from("1")),
+        Some(Arc::from("2")),
+        Some(Arc::from("3")),
+    ];
 
     let df = RObject::DataFrame(Box::new(DataFrameData {
         columns: columns.clone(),
@@ -133,7 +141,7 @@ fn test_s4_slot_order_preservation() {
     slots.insert(Arc::from("slot.value"), RObject::List(vec![]));
     slots.insert(
         Arc::from("slot.orig"),
-        RObject::Character(vec![Arc::from("payload")].into()),
+        RObject::Character(vec![Some(Arc::from("payload"))].into()),
     );
     slots.insert(Arc::from("meta.features"), RObject::List(vec![]));
     slots.insert(Arc::from("misc"), RObject::List(vec![]));
@@ -231,7 +239,7 @@ fn test_symbol_in_s4_slot() {
 #[test]
 fn test_symbol_vs_character_distinction() {
     // Verify that regular character vectors don't get confused with Symbols
-    let char_vec = RObject::Character(vec![Arc::from("regular_string")].into());
+    let char_vec = RObject::Character(vec![Some(Arc::from("regular_string"))].into());
     let symbol = RObject::Symbol(Arc::from("\x01NULL\x01"));
 
     // Write and read both
@@ -249,7 +257,7 @@ fn test_symbol_vs_character_distinction() {
     match deserialized_char {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 1);
-            assert_eq!(vec[0].as_ref(), "regular_string");
+            assert_eq!(vec[0].as_deref(), Some("regular_string"));
         }
         _ => panic!("Expected Character after deserialization"),
     }
@@ -272,14 +280,14 @@ fn test_dataframe_with_ordered_columns_as_s4_slot() {
     let mut df_columns = IndexMap::new();
     df_columns.insert(
         Arc::from("gene_name"),
-        RObject::Character(vec![Arc::from("GENE1"), Arc::from("GENE2")].into()),
+        RObject::Character(vec![Some(Arc::from("GENE1")), Some(Arc::from("GENE2"))].into()),
     );
     df_columns.insert(Arc::from("mean_expr"), RObject::Real(vec![5.2, 3.1].into()));
     df_columns.insert(Arc::from("variance"), RObject::Real(vec![1.5, 0.8].into()));
 
     let df = RObject::DataFrame(Box::new(DataFrameData {
         columns: df_columns,
-        row_names: vec![Arc::from("1"), Arc::from("2")],
+        row_names: vec![Some(Arc::from("1")), Some(Arc::from("2"))],
     }));
 
     // Wrap DataFrame in S4 object

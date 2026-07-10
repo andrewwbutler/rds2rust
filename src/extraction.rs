@@ -773,9 +773,16 @@ pub fn extract_vectors_streaming(
             VectorTarget::Character(vec) => {
                 write_header(&mut file, VectorKind::Character, vec.len(), 0)?;
                 for value in vec.iter() {
-                    let bytes = value.as_bytes();
-                    file.write_i32::<BigEndian>(bytes.len() as i32)?;
-                    file.write_all(bytes)?;
+                    match value {
+                        Some(value) => {
+                            let bytes = value.as_bytes();
+                            file.write_i32::<BigEndian>(bytes.len() as i32)?;
+                            file.write_all(bytes)?;
+                        }
+                        // NA_character_: mirror R's wire convention
+                        // (length -1, no bytes).
+                        None => file.write_i32::<BigEndian>(-1)?,
+                    }
                 }
                 (VectorKind::Character, vec.len(), 0)
             }
@@ -1094,9 +1101,16 @@ fn extract_vectors_to_raw_files_internal(
             VectorTarget::Character(vec) => {
                 write_header(&mut file, VectorKind::Character, vec.len(), 0)?;
                 for value in vec.iter() {
-                    let bytes = value.as_bytes();
-                    file.write_i32::<BigEndian>(bytes.len() as i32)?;
-                    file.write_all(bytes)?;
+                    match value {
+                        Some(value) => {
+                            let bytes = value.as_bytes();
+                            file.write_i32::<BigEndian>(bytes.len() as i32)?;
+                            file.write_all(bytes)?;
+                        }
+                        // NA_character_: mirror R's wire convention
+                        // (length -1, no bytes).
+                        None => file.write_i32::<BigEndian>(-1)?,
+                    }
                 }
                 (VectorKind::Character, vec.len(), 0)
             }
@@ -1333,7 +1347,7 @@ fn write_lazy_character_vector_streaming(
     let chunk_size = resolve_stream_chunk_size(budget_bytes)?;
     let mut reader = SpanReader::new(input, span, chunk_size)?;
     write_header(file, VectorKind::Character, span.length, 0)?;
-    let mut cache: Vec<Arc<str>> = Vec::new();
+    let mut cache: Vec<Option<Arc<str>>> = Vec::new();
 
     for _ in 0..span.length {
         let flags = reader.read_u32()?;
@@ -1434,7 +1448,7 @@ fn write_lazy_character_vector(data: &[u8], span: LazyVector, file: &mut File) -
     write_header(file, VectorKind::Character, span.length, 0)?;
     let slice = slice_for_span(data, span)?;
     let mut cursor = std::io::Cursor::new(slice);
-    let mut cache: Vec<Arc<str>> = Vec::new();
+    let mut cache: Vec<Option<Arc<str>>> = Vec::new();
 
     for _ in 0..span.length {
         let flags = cursor.read_u32::<BigEndian>()?;
@@ -1465,14 +1479,23 @@ fn write_lazy_character_vector(data: &[u8], span: LazyVector, file: &mut File) -
     Ok(())
 }
 
-fn write_string_record(file: &mut File, value: &Arc<str>) -> Result<()> {
-    let bytes = value.as_bytes();
-    file.write_i32::<BigEndian>(bytes.len() as i32)?;
-    file.write_all(bytes)?;
+fn write_string_record(file: &mut File, value: &Option<Arc<str>>) -> Result<()> {
+    match value {
+        Some(value) => {
+            let bytes = value.as_bytes();
+            file.write_i32::<BigEndian>(bytes.len() as i32)?;
+            file.write_all(bytes)?;
+        }
+        // NA_character_: mirror R's wire convention (length -1, no bytes).
+        None => file.write_i32::<BigEndian>(-1)?,
+    }
     Ok(())
 }
 
-fn parse_charsxp_content_raw(cursor: &mut std::io::Cursor<&[u8]>, flags: u32) -> Result<Arc<str>> {
+fn parse_charsxp_content_raw(
+    cursor: &mut std::io::Cursor<&[u8]>,
+    flags: u32,
+) -> Result<Option<Arc<str>>> {
     let compact_length = (flags >> 24) & 0xFF;
     let use_compact = compact_length > 0;
 
@@ -1485,7 +1508,8 @@ fn parse_charsxp_content_raw(cursor: &mut std::io::Cursor<&[u8]>, flags: u32) ->
     };
 
     if length == -1 {
-        return Ok(Arc::from("NA"));
+        // NA_character_
+        return Ok(None);
     }
     if length < 0 {
         return Err(Error::InvalidFormat(format!(
@@ -1503,7 +1527,7 @@ fn parse_charsxp_content_raw(cursor: &mut std::io::Cursor<&[u8]>, flags: u32) ->
         Err(_) => bytes.iter().map(|&b| b as char).collect(),
     };
 
-    Ok(Arc::from(string))
+    Ok(Some(Arc::from(string.as_str())))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1600,7 +1624,10 @@ impl<'a> SpanReader<'a> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn parse_charsxp_content_streaming(reader: &mut SpanReader<'_>, flags: u32) -> Result<Arc<str>> {
+fn parse_charsxp_content_streaming(
+    reader: &mut SpanReader<'_>,
+    flags: u32,
+) -> Result<Option<Arc<str>>> {
     let compact_length = (flags >> 24) & 0xFF;
     let use_compact = compact_length > 0;
 
@@ -1612,7 +1639,8 @@ fn parse_charsxp_content_streaming(reader: &mut SpanReader<'_>, flags: u32) -> R
     };
 
     if length == -1 {
-        return Ok(Arc::from("NA"));
+        // NA_character_
+        return Ok(None);
     }
     if length < 0 {
         return Err(Error::InvalidFormat(format!(
@@ -1627,7 +1655,7 @@ fn parse_charsxp_content_streaming(reader: &mut SpanReader<'_>, flags: u32) -> R
         Ok(s) => s,
         Err(_) => bytes.iter().map(|&b| b as char).collect(),
     };
-    Ok(Arc::from(string))
+    Ok(Some(Arc::from(string.as_str())))
 }
 
 fn write_header(file: &mut File, kind: VectorKind, length: usize, elem_size: usize) -> Result<()> {
@@ -1695,7 +1723,7 @@ pub(crate) enum VectorTarget<'a> {
     Logical(Cow<'a, [Logical]>),
     Raw(Cow<'a, [u8]>),
     Complex(Cow<'a, [crate::Complex]>),
-    Character(Cow<'a, [std::sync::Arc<str>]>),
+    Character(Cow<'a, [Option<std::sync::Arc<str>>]>),
     LazyInteger(LazyVector),
     LazyReal(LazyVector),
     LazyLogical(LazyVector),
@@ -1938,9 +1966,9 @@ fn list_name_index(attributes: &crate::Attributes, name: &str) -> Option<usize> 
 
 fn list_name_index_from_obj(obj: &RObject, name: &str) -> Option<usize> {
     match obj {
-        RObject::Character(VectorData::Owned(values)) => {
-            values.iter().position(|value| value.as_ref() == name)
-        }
+        RObject::Character(VectorData::Owned(values)) => values
+            .iter()
+            .position(|value| value.as_deref() == Some(name)),
         RObject::WithAttributes { object, .. } => list_name_index_from_obj(object, name),
         RObject::Shared(inner) => {
             let inner = inner.read().ok()?;

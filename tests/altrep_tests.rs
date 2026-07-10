@@ -103,9 +103,9 @@ fn test_altrep_in_list() {
     // Check the list has correct names
     if let Some(RObject::Character(names)) = attrs.get("names") {
         assert_eq!(names.len(), 3);
-        assert_eq!(names[0].as_ref(), "seq");
-        assert_eq!(names[1].as_ref(), "data");
-        assert_eq!(names[2].as_ref(), "another_seq");
+        assert_eq!(names[0].as_deref(), Some("seq"));
+        assert_eq!(names[1].as_deref(), Some("data"));
+        assert_eq!(names[2].as_deref(), Some("another_seq"));
     } else {
         panic!("Expected 'names' attribute");
     }

@@ -239,7 +239,7 @@ impl<'a> AsyncSpanReader<'a> {
 async fn parse_charsxp_content_streaming_async(
     reader: &mut AsyncSpanReader<'_>,
     flags: u32,
-) -> Result<Arc<str>> {
+) -> Result<Option<Arc<str>>> {
     let compact_length = (flags >> 24) & 0xFF;
     let use_compact = compact_length > 0;
 
@@ -251,7 +251,8 @@ async fn parse_charsxp_content_streaming_async(
     };
 
     if length == -1 {
-        return Ok(Arc::from("NA"));
+        // NA_character_
+        return Ok(None);
     }
     if length < 0 {
         return Err(Error::InvalidFormat(format!(
@@ -266,7 +267,7 @@ async fn parse_charsxp_content_streaming_async(
         Ok(s) => s,
         Err(_) => bytes.iter().map(|&b| b as char).collect(),
     };
-    Ok(Arc::from(string))
+    Ok(Some(Arc::from(string.as_str())))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -274,7 +275,7 @@ pub struct AsyncLazyCharacterChunkIter<'a> {
     reader: AsyncSpanReader<'a>,
     remaining: usize,
     config: AsyncChunkConfig,
-    cache: Vec<Arc<str>>,
+    cache: Vec<Option<Arc<str>>>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -293,7 +294,7 @@ impl<'a> AsyncLazyCharacterChunkIter<'a> {
         })
     }
 
-    pub async fn next_chunk(&mut self) -> Result<Option<Vec<Arc<str>>>> {
+    pub async fn next_chunk(&mut self) -> Result<Option<Vec<Option<Arc<str>>>>> {
         if self.remaining == 0 {
             return Ok(None);
         }
@@ -313,10 +314,10 @@ impl<'a> AsyncLazyCharacterChunkIter<'a> {
                         self.cache.len()
                     )));
                 }
-                Arc::clone(&self.cache[ref_index - 1])
+                self.cache[ref_index - 1].clone()
             } else if type_from_0_7 == CHARSXP || type_from_8_15 == CHARSXP {
                 let parsed = parse_charsxp_content_streaming_async(&mut self.reader, flags).await?;
-                self.cache.push(Arc::clone(&parsed));
+                self.cache.push(parsed.clone());
                 parsed
             } else {
                 return Err(Error::Unsupported(
@@ -324,7 +325,7 @@ impl<'a> AsyncLazyCharacterChunkIter<'a> {
                 ));
             };
 
-            let value_bytes = value.len();
+            let value_bytes = value.as_deref().map_or(0, str::len);
             if !out.is_empty() && bytes + value_bytes > self.config.max_bytes {
                 out.push(value);
                 self.remaining -= 1;

@@ -2467,11 +2467,12 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                     Arc::from("NA")
                 }
             } else if name_type_from_0_7 == CHARSXP || name_type_from_8_15 == CHARSXP {
-                Arc::from(
-                    parse_charsxp_content_async(ctx, cursor, name_flags)
-                        .await?
-                        .as_str(),
-                )
+                parse_charsxp_content_async(ctx, cursor, name_flags)
+                    .await?
+                    .map(|s| Arc::from(s.as_str()))
+                    .ok_or_else(|| {
+                        Error::InvalidFormat("NA_character_ in symbol name position".to_string())
+                    })?
             } else {
                 Arc::from("NA")
             };
@@ -2481,7 +2482,7 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
         }
         CHARSXP => {
             let string = parse_charsxp_content_async(ctx, cursor, flags).await?;
-            RObject::Character(vec![Arc::from(string.as_str())].into())
+            RObject::Character(vec![string.map(|s| Arc::from(s.as_str()))].into())
         }
         STRSXP => {
             let length = read_u32_async(cursor).await? as usize;
@@ -2538,18 +2539,20 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
 
             #[cfg(target_arch = "wasm32")]
             log_large_alloc(ctx, "strsxp", length);
-            let mut vec = Vec::with_capacity(length);
-            let mut string_cache: Vec<Arc<str>> = Vec::new();
+            let mut vec: Vec<Option<Arc<str>>> = Vec::with_capacity(length);
+            let mut string_cache: Vec<Option<Arc<str>>> = Vec::new();
             for _ in 0..length {
                 let elem_flags = read_u32_async(cursor).await?;
                 let elem_type = elem_flags & 0xFF;
                 let elem_type_alt = (elem_flags >> 8) & 0xFF;
-                let value = if elem_type == REFSXP {
+                // Missing references and unknown element types degrade to NA
+                // (None) rather than fabricating a string.
+                let value: Option<Arc<str>> = if elem_type == REFSXP {
                     let ref_index = (elem_flags >> 8) as usize;
                     string_cache
                         .get(ref_index.saturating_sub(1))
                         .cloned()
-                        .unwrap_or_else(|| Arc::from("NA"))
+                        .unwrap_or(None)
                 } else if elem_type == SYMSXP {
                     let name_flags = read_u32_async(cursor).await?;
                     let name_type = name_flags & 0xFF;
@@ -2559,24 +2562,20 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                         string_cache
                             .get(ref_index.saturating_sub(1))
                             .cloned()
-                            .unwrap_or_else(|| Arc::from("NA"))
+                            .unwrap_or(None)
                     } else if name_type == CHARSXP || name_type_alt == CHARSXP {
-                        Arc::from(
-                            parse_charsxp_content_async(ctx, cursor, name_flags)
-                                .await?
-                                .as_str(),
-                        )
+                        parse_charsxp_content_async(ctx, cursor, name_flags)
+                            .await?
+                            .map(|s| Arc::from(s.as_str()))
                     } else {
-                        Arc::from("NA")
+                        None
                     }
                 } else if elem_type == CHARSXP || elem_type_alt == CHARSXP {
-                    Arc::from(
-                        parse_charsxp_content_async(ctx, cursor, elem_flags)
-                            .await?
-                            .as_str(),
-                    )
+                    parse_charsxp_content_async(ctx, cursor, elem_flags)
+                        .await?
+                        .map(|s| Arc::from(s.as_str()))
                 } else {
-                    Arc::from("NA")
+                    None
                 };
                 string_cache.push(value.clone());
                 vec.push(value);
@@ -3058,11 +3057,12 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
                 Arc::from("NA")
             }
         } else if name_type_from_0_7 == CHARSXP || name_type_from_8_15 == CHARSXP {
-            Arc::from(
-                parse_charsxp_content_async(ctx, cursor, name_flags)
-                    .await?
-                    .as_str(),
-            )
+            parse_charsxp_content_async(ctx, cursor, name_flags)
+                .await?
+                .map(|s| Arc::from(s.as_str()))
+                .ok_or_else(|| {
+                    Error::InvalidFormat("NA_character_ in symbol name position".to_string())
+                })?
         } else {
             Arc::from("NA")
         };
@@ -3081,10 +3081,13 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
 
     if sexp_type == CHARSXP {
         let name = parse_charsxp_content_async(ctx, cursor, flags).await?;
-        let obj = RObject::Character(vec![Arc::from(name.as_str())].into());
+        let obj = RObject::Character(vec![name.as_deref().map(Arc::from)].into());
         #[cfg(target_arch = "wasm32")]
         if sequential_debug_enabled() {
-            let msg = format!("seq tag CHARSXP resolved='{}'", name);
+            let msg = format!(
+                "seq tag CHARSXP resolved='{}'",
+                name.as_deref().unwrap_or("<NA>")
+            );
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
         return Ok((extract_tag_name(&obj), Some(obj)));
@@ -3759,11 +3762,12 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
                     Arc::from("NA")
                 }
             } else if name_type_from_0_7 == CHARSXP || name_type_from_8_15 == CHARSXP {
-                Arc::from(
-                    parse_charsxp_content_async(ctx, cursor, name_flags)
-                        .await?
-                        .as_str(),
-                )
+                parse_charsxp_content_async(ctx, cursor, name_flags)
+                    .await?
+                    .map(|s| Arc::from(s.as_str()))
+                    .ok_or_else(|| {
+                        Error::InvalidFormat("NA_character_ in symbol name position".to_string())
+                    })?
             } else {
                 Arc::from("NA")
             };
@@ -3773,7 +3777,7 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
         }
         CHARSXP => {
             let string = parse_charsxp_content_async(ctx, cursor, flags).await?;
-            RObject::Character(vec![Arc::from(string.as_str())].into())
+            RObject::Character(vec![string.map(|s| Arc::from(s.as_str()))].into())
         }
         STRSXP => {
             let length = read_u32_async(cursor).await? as usize;
@@ -3844,18 +3848,20 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
                 })));
             }
 
-            let mut vec = Vec::with_capacity(length);
-            let mut string_cache: Vec<Arc<str>> = Vec::new();
+            let mut vec: Vec<Option<Arc<str>>> = Vec::with_capacity(length);
+            let mut string_cache: Vec<Option<Arc<str>>> = Vec::new();
             for _ in 0..length {
                 let elem_flags = read_u32_async(cursor).await?;
                 let elem_type = elem_flags & 0xFF;
                 let elem_type_alt = (elem_flags >> 8) & 0xFF;
-                let value = if elem_type == REFSXP {
+                // Missing references and unknown element types degrade to NA
+                // (None) rather than fabricating a string.
+                let value: Option<Arc<str>> = if elem_type == REFSXP {
                     let ref_index = (elem_flags >> 8) as usize;
                     string_cache
                         .get(ref_index.saturating_sub(1))
                         .cloned()
-                        .unwrap_or_else(|| Arc::from("NA"))
+                        .unwrap_or(None)
                 } else if elem_type == SYMSXP {
                     let name_flags = read_u32_async(cursor).await?;
                     let name_type = name_flags & 0xFF;
@@ -3865,24 +3871,20 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
                         string_cache
                             .get(ref_index.saturating_sub(1))
                             .cloned()
-                            .unwrap_or_else(|| Arc::from("NA"))
+                            .unwrap_or(None)
                     } else if name_type == CHARSXP || name_type_alt == CHARSXP {
-                        Arc::from(
-                            parse_charsxp_content_async(ctx, cursor, name_flags)
-                                .await?
-                                .as_str(),
-                        )
+                        parse_charsxp_content_async(ctx, cursor, name_flags)
+                            .await?
+                            .map(|s| Arc::from(s.as_str()))
                     } else {
-                        Arc::from("NA")
+                        None
                     }
                 } else if elem_type == CHARSXP || elem_type_alt == CHARSXP {
-                    Arc::from(
-                        parse_charsxp_content_async(ctx, cursor, elem_flags)
-                            .await?
-                            .as_str(),
-                    )
+                    parse_charsxp_content_async(ctx, cursor, elem_flags)
+                        .await?
+                        .map(|s| Arc::from(s.as_str()))
                 } else {
-                    Arc::from("NA")
+                    None
                 };
                 string_cache.push(value.clone());
                 vec.push(value);
@@ -4185,7 +4187,15 @@ async fn parse_pseudo_stringvec_async<C: AsyncCursor>(
         PERSISTSXP => RObject::Character(parse_string_vec_async(ctx, cursor).await?.into()),
         // Package/namespace environment name payload; must be consumed.
         PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL => {
-            RObject::Namespace(parse_string_vec_async(ctx, cursor).await?)
+            // Namespace names are a derived plain-string surface: NA entries
+            // are treated as absent.
+            RObject::Namespace(
+                parse_string_vec_async(ctx, cursor)
+                    .await?
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+            )
         }
         // No payload on the wire; R's reader returns R_BaseNamespace.
         BASENAMESPACE_SXP => RObject::Namespace(vec![Arc::from("base")]),
@@ -4206,7 +4216,7 @@ async fn parse_pseudo_stringvec_async<C: AsyncCursor>(
 async fn parse_string_vec_async<C: AsyncCursor>(
     ctx: &mut ParserContext,
     cursor: &mut C,
-) -> Result<Vec<Arc<str>>> {
+) -> Result<Vec<Option<Arc<str>>>> {
     check_string_vec_names_placeholder(read_i32_async(cursor).await?)?;
     // The length is written by WriteLENGTH: long vectors are encoded as -1
     // followed by the upper and lower 32-bit halves of the 64-bit length.
@@ -4226,12 +4236,12 @@ async fn parse_string_vec_async<C: AsyncCursor>(
     let n = usize::try_from(n)
         .map_err(|_| Error::InvalidFormat(format!("String vector count {} exceeds usize", n)))?;
     guard_allocation_common(ctx, n, 4, "string vector")?;
-    let mut strings: Vec<Arc<str>> = Vec::with_capacity(n);
+    let mut strings: Vec<Option<Arc<str>>> = Vec::with_capacity(n);
     for _ in 0..n {
         let item_flags = read_u32_async(cursor).await?;
         check_string_vec_item_flags(item_flags)?;
         let s = parse_charsxp_content_async(ctx, cursor, item_flags).await?;
-        strings.push(Arc::from(s.as_str()));
+        strings.push(s.map(|s| Arc::from(s.as_str())));
     }
     Ok(strings)
 }
@@ -4241,7 +4251,7 @@ async fn parse_charsxp_content_async<C: AsyncCursor>(
     ctx: &mut ParserContext,
     cursor: &mut C,
     flags: u32,
-) -> Result<String> {
+) -> Result<Option<String>> {
     let compact_flag = (flags >> 24) & 0xFF;
     let use_compact = compact_flag > 0;
 
@@ -4253,7 +4263,8 @@ async fn parse_charsxp_content_async<C: AsyncCursor>(
     };
 
     if length == -1 {
-        return Ok(String::from("NA"));
+        // NA_character_
+        return Ok(None);
     }
     if length < 0 {
         return Err(Error::InvalidFormat(format!(
@@ -4271,7 +4282,7 @@ async fn parse_charsxp_content_async<C: AsyncCursor>(
         Err(_) => bytes.iter().map(|&b| b as char).collect(),
     };
 
-    Ok(string)
+    Ok(Some(string))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -4279,7 +4290,7 @@ async fn parse_charsxp_content_async<C: AsyncCursor>(
 async fn parse_charsxp_async<C: AsyncCursor>(
     ctx: &mut ParserContext,
     cursor: &mut C,
-) -> Result<String> {
+) -> Result<Option<String>> {
     let flags = read_u32_async(cursor).await?;
     let type_from_0_7 = flags & 0xFF;
     let type_from_8_15 = (flags >> 8) & 0xFF;
@@ -4288,8 +4299,9 @@ async fn parse_charsxp_async<C: AsyncCursor>(
         return parse_charsxp_content_async(ctx, cursor, flags).await;
     }
 
+    // Handle NULL as NA_character_ (defensive; maps to None like length -1).
     if type_from_0_7 == NILSXP || type_from_0_7 == NILVALUE_SXP {
-        return Ok(String::from("NA"));
+        return Ok(None);
     }
 
     if type_from_0_7 == REFSXP {
@@ -4554,7 +4566,7 @@ fn parse_object(
             // Sometimes CHARSXP appears standalone (like for encoding markers)
             let string = parse_charsxp_content(ctx, cursor, flags)?;
             // Return as a single-element character vector for now
-            RObject::Character(vec![Arc::from(string.as_str())].into())
+            RObject::Character(vec![string.map(|s| Arc::from(s.as_str()))].into())
         }
         CLOSXP => parse_closure(ctx, cursor, has_tag, ref_table, symbol_table, dedup_table)?,
         ENVSXP => parse_environment(ctx, cursor, ref_table, symbol_table, dedup_table)?,
@@ -4589,7 +4601,12 @@ fn parse_object(
                 resolved = match concrete {
                     RObject::Symbol(name) => RObject::Symbol(name),
                     RObject::Character(names) if !names.is_empty() && names.is_loaded() => {
-                        RObject::Symbol(names[0].clone())
+                        // An NA first element cannot become a symbol name;
+                        // keep the character vector as-is in that case.
+                        match names[0].clone() {
+                            Some(name) => RObject::Symbol(name),
+                            None => RObject::Character(names),
+                        }
                     }
                     other => other,
                 };
@@ -4693,7 +4710,14 @@ fn parse_object(
             // R_FindPackageEnv. The payload must be consumed to keep the
             // stream aligned, and the entry occupies one reference slot
             // (AddReadRef in R's reader), so fill the placeholder.
-            let package_result = RObject::Namespace(parse_string_vec(ctx, cursor)?);
+            // Namespace names are a derived plain-string surface: an NA entry
+            // is treated as absent (a package name cannot be NA).
+            let package_result = RObject::Namespace(
+                parse_string_vec(ctx, cursor)?
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+            );
 
             if has_attr {
                 let _attrs = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
@@ -4926,7 +4950,7 @@ fn parse_object(
         symbol_table.add(obj.clone());
         if std::env::var("RDS_DEBUG_SYM").is_ok() {
             if let RObject::Character(names) = &obj {
-                if let Some(name) = names.first() {
+                if let Some(Some(name)) = names.first() {
                     debug_log!("[SYMBOL_ADD] {}", name);
                 }
             }
@@ -5794,12 +5818,15 @@ where
             // referent just to pull a name out of it.
             extract_tag_name(&inner).unwrap_or_else(|| Arc::from("NA"))
         } else if name_type_from_8_15 == CHARSXP || name_type_from_0_7 == CHARSXP {
-            Arc::from(
-                parse_charsxp_content_async(ctx, cursor, name_flags)
-                    .await
-                    .map_err(StreamingError::Parse)?
-                    .as_str(),
-            )
+            parse_charsxp_content_async(ctx, cursor, name_flags)
+                .await
+                .map_err(StreamingError::Parse)?
+                .map(|s| Arc::from(s.as_str()))
+                .ok_or_else(|| {
+                    StreamingError::Parse(Error::InvalidFormat(
+                        "NA_character_ in symbol name position".to_string(),
+                    ))
+                })?
         } else {
             return Err(StreamingError::Parse(Error::InvalidFormat(format!(
                 "Unexpected SYMSXP name type {} (flags: 0x{:08x})",
@@ -5853,7 +5880,7 @@ where
             )))
             .await?;
         }
-        let obj = RObject::Character(vec![Arc::from(name.as_str())].into());
+        let obj = RObject::Character(vec![name.as_deref().map(Arc::from)].into());
         return Ok(extract_tag_name(&obj));
     }
 
@@ -6318,14 +6345,15 @@ fn parse_symbol_streaming<V: RdsVisitor>(
 ) -> StreamingResult<StreamControl, V::Error> {
     let name_obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
     let symbol_obj = match name_obj {
-        RObject::Character(names) if names.len() == 1 => {
-            let name = &names[0];
-            if name.as_ref() == "\x01NULL\x01" {
-                RObject::Symbol(names.into_vec().into_iter().next().unwrap())
-            } else {
-                RObject::Symbol(name.clone())
+        RObject::Character(names) if names.len() == 1 => match &names[0] {
+            Some(name) => RObject::Symbol(name.clone()),
+            // NA_character_ is not a legal symbol name in R.
+            None => {
+                return Err(StreamingError::Parse(Error::InvalidFormat(
+                    "NA_character_ in symbol name position".to_string(),
+                )))
             }
-        }
+        },
         other => other,
     };
     symbol_table.add(symbol_obj.clone());
@@ -7604,9 +7632,10 @@ fn parse_character_vector_full(
         );
     }
 
-    let mut vec = Vec::with_capacity(length);
-    // Local string cache for REFSXP within this character vector
-    let mut string_cache: Vec<Arc<str>> = Vec::new();
+    let mut vec: Vec<Option<Arc<str>>> = Vec::with_capacity(length);
+    // Local string cache for REFSXP within this character vector.
+    // Entries are Option: an NA element occupies a cache slot too.
+    let mut string_cache: Vec<Option<Arc<str>>> = Vec::new();
 
     for _ in 0..length {
         // Parse the flags to check the type
@@ -7635,7 +7664,7 @@ fn parse_character_vector_full(
             // The name can also be a REFSXP, so handle that case
             match parse_charsxp(ctx, cursor) {
                 Ok(name_string) => {
-                    let arc_str: Arc<str> = Arc::from(name_string.as_str());
+                    let arc_str: Option<Arc<str>> = name_string.map(|s| Arc::from(s.as_str()));
                     string_cache.push(arc_str.clone());
                     vec.push(arc_str);
                 }
@@ -7650,8 +7679,8 @@ fn parse_character_vector_full(
                             } else {
                                 // Reference out of range - might be global ref or error
                                 // Use placeholder for now
-                                let arc_str: Arc<str> =
-                                    Arc::from(format!("<ref_{}>", ref_index).as_str());
+                                let arc_str: Option<Arc<str>> =
+                                    Some(Arc::from(format!("<ref_{}>", ref_index).as_str()));
                                 string_cache.push(arc_str.clone());
                                 vec.push(arc_str);
                             }
@@ -7674,7 +7703,7 @@ fn parse_character_vector_full(
             // Nested character vector - this is unusual and suggests a different structure
             // For now, skip it entirely by using a placeholder
             // TODO: Investigate if this should be handled differently
-            let arc_str: Arc<str> = Arc::from("<nested_strsxp>");
+            let arc_str: Option<Arc<str>> = Some(Arc::from("<nested_strsxp>"));
             string_cache.push(arc_str.clone());
             vec.push(arc_str);
 
@@ -7685,10 +7714,10 @@ fn parse_character_vector_full(
             // Check if it's a CHARSXP (most common case)
             let type_from_8_15 = (flags >> 8) & 0xFF;
             if type_from_0_7 == CHARSXP || type_from_8_15 == CHARSXP {
-                // Reset position and parse as CHARSXP
+                // Reset position and parse as CHARSXP (None = NA_character_)
                 cursor.set_position(pos);
                 let string = parse_charsxp(ctx, cursor)?;
-                let arc_str: Arc<str> = Arc::from(string.as_str());
+                let arc_str: Option<Arc<str>> = string.map(|s| Arc::from(s.as_str()));
 
                 // Add to local string cache for future REFSXP references
                 string_cache.push(arc_str.clone());
@@ -7716,13 +7745,15 @@ fn parse_character_vector_full(
                     RObject::Real(v) => format!("<real_vec_len_{}>", v.len()),
                     RObject::Logical(v) if v.len() == 1 => format!("{:?}", v[0]),
                     RObject::Logical(v) => format!("<logical_vec_len_{}>", v.len()),
-                    RObject::Character(v) if v.len() == 1 => v[0].to_string(),
+                    RObject::Character(v) if v.len() == 1 => {
+                        v[0].as_deref().unwrap_or("<NA>").to_string()
+                    }
                     RObject::Character(v) => format!("<char_vec_len_{}>", v.len()),
                     RObject::Null => "NULL".to_string(),
                     _ => format!("<object_type_{}>", type_from_0_7),
                 };
 
-                let arc_str: Arc<str> = Arc::from(string_repr.as_str());
+                let arc_str: Option<Arc<str>> = Some(Arc::from(string_repr.as_str()));
                 string_cache.push(arc_str.clone());
                 vec.push(arc_str);
             }
@@ -7857,18 +7888,15 @@ fn parse_symbol(
 
     // Extract the name
     match name_obj {
-        RObject::Character(names) if names.len() == 1 => {
-            let name = &names[0];
-            // Check for the special NULL marker used by R for OptionalCharacter slots
-            if name.as_ref() == "\x01NULL\x01" {
-                Ok(RObject::Symbol(
-                    names.into_vec().into_iter().next().unwrap(),
-                ))
-            } else {
-                // Regular symbol
-                Ok(RObject::Symbol(name.clone()))
-            }
-        }
+        RObject::Character(names) if names.len() == 1 => match &names[0] {
+            // Covers both regular names and the special "\x01NULL\x01" marker
+            // used by R for OptionalCharacter slots.
+            Some(name) => Ok(RObject::Symbol(name.clone())),
+            // NA_character_ is not a legal symbol name in R.
+            None => Err(Error::InvalidFormat(
+                "NA_character_ in symbol name position".to_string(),
+            )),
+        },
         RObject::Character(names) => Ok(RObject::Character(names)),
         _ => {
             // If we got something unexpected, just return it
@@ -8339,7 +8367,14 @@ fn parse_environment(
 /// OutStringVec holding the namespace name (and spec version).
 /// They trigger automatic package loading when the RDS file is read in R.
 fn parse_namespace(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<RObject> {
-    Ok(RObject::Namespace(parse_string_vec(ctx, cursor)?))
+    // Namespace names are a derived plain-string surface: an NA entry is
+    // treated as absent (a namespace name cannot be NA).
+    Ok(RObject::Namespace(
+        parse_string_vec(ctx, cursor)?
+            .into_iter()
+            .flatten()
+            .collect(),
+    ))
 }
 
 /// Parse a language object (LANGSXP).
@@ -8709,8 +8744,9 @@ fn extract_tag_name(tag_obj: &RObject) -> Option<Arc<str>> {
 fn extract_tag_name_concrete(tag_obj: &RObject) -> Option<Arc<str>> {
     match tag_obj {
         RObject::Symbol(name) => Some(name.clone()),
-        // Only extract from loaded character vectors to avoid panics
-        RObject::Character(vec) if !vec.is_empty() && vec.is_loaded() => Some(vec[0].clone()),
+        // Only extract from loaded character vectors to avoid panics. An NA
+        // first element yields None: the element is simply unnamed (R5).
+        RObject::Character(vec) if !vec.is_empty() && vec.is_loaded() => vec[0].clone(),
         // Includes Null and lazy character vectors - return None gracefully
         _ => None,
     }
@@ -8890,14 +8926,13 @@ fn extract_altrep_class_name(class_info: &RObject) -> Option<String> {
     // 3. List with class information
     match class_info {
         RObject::Character(vec) if vec.len() >= 2 => {
-            // Return the class name (second element)
-            let class_name = vec[1].to_string();
-            Some(class_name)
+            // Return the class name (second element); an NA entry cannot be
+            // a class name.
+            vec[1].as_deref().map(str::to_string)
         }
         RObject::Character(vec) if vec.len() == 1 => {
             // Sometimes just the class name
-            let class_name = vec[0].to_string();
-            Some(class_name)
+            vec[0].as_deref().map(str::to_string)
         }
         RObject::Symbol(name) => Some(name.to_string()),
         RObject::Pairlist(elements) => {
@@ -8908,8 +8943,8 @@ fn extract_altrep_class_name(class_info: &RObject) -> Option<String> {
             for elem in elements.iter() {
                 // Check if this is a character vector (symbol converted to character)
                 if let RObject::Character(vec) = &elem.value {
-                    if !vec.is_empty() {
-                        let class_name = vec[0].to_string();
+                    if let Some(Some(name)) = vec.first() {
+                        let class_name = name.to_string();
                         // Common ALTREP class names
                         if class_name.contains("wrap_")
                             || class_name.contains("compact_")
@@ -8924,9 +8959,8 @@ fn extract_altrep_class_name(class_info: &RObject) -> Option<String> {
             // If we have at least 2 elements, try the second one (often the class)
             if elements.len() >= 2 {
                 if let RObject::Character(vec) = &elements[1].value {
-                    if !vec.is_empty() {
-                        let class_name = vec[0].to_string();
-                        return Some(class_name);
+                    if let Some(Some(name)) = vec.first() {
+                        return Some(name.to_string());
                     }
                 }
             }
@@ -8935,8 +8969,8 @@ fn extract_altrep_class_name(class_info: &RObject) -> Option<String> {
         RObject::List(elements) if elements.len() >= 2 => {
             // List might contain [package, class]
             if let RObject::Character(vec) = &elements[1] {
-                if !vec.is_empty() {
-                    return Some(vec[0].to_string());
+                if let Some(Some(name)) = vec.first() {
+                    return Some(name.to_string());
                 }
             }
             None
@@ -9060,8 +9094,8 @@ fn convert_compact_intseq(ctx: &mut ParserContext, state: RObject) -> Result<ROb
     Ok(RObject::Integer(vec.into()))
 }
 
-/// Parse a CHARSXP (internal character string).
-fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<String> {
+/// Parse a CHARSXP (internal character string). `None` is `NA_character_`.
+fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<Option<String>> {
     // Read the CHARSXP header
     let flags = cursor.read_u32::<BigEndian>()?;
     let type_from_0_7 = flags & 0xFF;
@@ -9089,9 +9123,10 @@ fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<
         return Ok(string);
     }
 
-    // Handle NULL as NA_character_
+    // Handle NULL as NA_character_ (a defensive path: R itself has exactly
+    // one character missing value, so this maps to None like length -1).
     if type_from_0_7 == NILSXP || type_from_0_7 == NILVALUE_SXP {
-        return Ok(String::from("NA"));
+        return Ok(None);
     }
 
     // Handle REFSXP - this can appear when a symbol name is a reference to a previously seen string
@@ -9130,7 +9165,10 @@ fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<
 /// length, then `length` CHARSXP items (each with its own flags word). It must
 /// be consumed even when the strings are unused, otherwise the cursor
 /// desynchronizes and every object after the entry is corrupted.
-fn parse_string_vec(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<Vec<Arc<str>>> {
+fn parse_string_vec(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+) -> Result<Vec<Option<Arc<str>>>> {
     check_string_vec_names_placeholder(cursor.read_i32::<BigEndian>()?)?;
     // The length is written by WriteLENGTH: long vectors are encoded as -1
     // followed by the upper and lower 32-bit halves of the 64-bit length.
@@ -9152,12 +9190,12 @@ fn parse_string_vec(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Resu
     // Each CHARSXP item occupies at least a 4-byte flags word; validate the
     // count against the remaining stream before allocating.
     guard_allocation(ctx, n, 4, cursor, "string vector")?;
-    let mut strings: Vec<Arc<str>> = Vec::with_capacity(n);
+    let mut strings: Vec<Option<Arc<str>>> = Vec::with_capacity(n);
     for _ in 0..n {
         let item_flags = cursor.read_i32::<BigEndian>()? as u32;
         check_string_vec_item_flags(item_flags)?;
         let s = parse_charsxp_content(ctx, cursor, item_flags)?;
-        strings.push(Arc::from(s.as_str()));
+        strings.push(s.map(|s| Arc::from(s.as_str())));
     }
     Ok(strings)
 }
@@ -9205,7 +9243,7 @@ fn parse_charsxp_content(
     ctx: &mut ParserContext,
     cursor: &mut RdsCursor<'_>,
     flags: u32,
-) -> Result<String> {
+) -> Result<Option<String>> {
     let pos_before = cursor.position();
     if debug_enabled() {
         debug_log!("[parse_charsxp_content] Starting at pos {}", pos_before);
@@ -9234,7 +9272,7 @@ fn parse_charsxp_content(
 
     if length == -1 {
         // NA_character_
-        return Ok(String::from("NA"));
+        return Ok(None);
     }
 
     if length < 0 {
@@ -9263,7 +9301,7 @@ fn parse_charsxp_content(
         }
     };
 
-    Ok(string)
+    Ok(Some(string))
 }
 
 /// Parse attributes from a pairlist object.
@@ -9434,6 +9472,8 @@ fn parse_attributes(attr_obj: RObject, ctx: &mut ParserContext) -> Result<Attrib
                     if let RObject::Character(names) = names_obj.as_concrete() {
                         let mut attrs = Attributes::new();
                         for (idx, name) in names.iter().enumerate() {
+                            // An NA name yields no attribute key (unnamed).
+                            let Some(name) = name else { continue };
                             if name.is_empty() || idx >= list.len() {
                                 continue;
                             }
@@ -9485,7 +9525,14 @@ fn parse_attributes(attr_obj: RObject, ctx: &mut ParserContext) -> Result<Attrib
             if !s4.class.is_empty() {
                 attrs.insert(
                     Arc::from("class"),
-                    RObject::Character(s4.class.clone().into()),
+                    RObject::Character(
+                        s4.class
+                            .iter()
+                            .cloned()
+                            .map(Some)
+                            .collect::<Vec<_>>()
+                            .into(),
+                    ),
                 );
             }
             for (slot_name, slot_value) in &s4.slots {
@@ -9510,7 +9557,7 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
     let class_attr = attributes.get("class")?.as_concrete();
     let is_dataframe = match class_attr {
         RObject::Character(classes) => {
-            classes.is_loaded() && classes.iter().any(|c| c.as_ref() == "data.frame")
+            classes.is_loaded() && classes.iter().any(|c| c.as_deref() == Some("data.frame"))
         }
         _ => false,
     };
@@ -9537,9 +9584,12 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
         return None;
     }
 
-    // Build the columns IndexMap (preserves insertion order from R)
+    // Build the columns IndexMap (preserves insertion order from R).
+    // Columns are keyed by name; a pathological NA column name cannot be a
+    // key, so such a column is skipped (treat-NA-as-absent, R5).
     let mut columns = IndexMap::new();
     for (name, column) in column_names.iter().zip(columns_list.iter()) {
+        let Some(name) = name else { continue };
         columns.insert(name.clone(), column.clone());
     }
 
@@ -9554,12 +9604,14 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
                 if indices.len() == 2 && indices[0] == RObject::NA_INTEGER && indices[1] < 0 {
                     // Compact format: expand to ["1", "2", ..., "n"]
                     let n = -indices[1] as usize;
-                    (1..=n).map(|i| Arc::from(i.to_string().as_str())).collect()
+                    (1..=n)
+                        .map(|i| Some(Arc::from(i.to_string().as_str())))
+                        .collect()
                 } else {
                     // Explicit integer row names: convert to strings
                     indices
                         .iter()
-                        .map(|i| Arc::from(i.to_string().as_str()))
+                        .map(|i| Some(Arc::from(i.to_string().as_str())))
                         .collect()
                 }
             }
@@ -9575,7 +9627,7 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
                         _ => 0,
                     })
                     .unwrap_or(0))
-                    .map(|i| Arc::from(i.to_string().as_str()))
+                    .map(|i| Some(Arc::from(i.to_string().as_str())))
                     .collect()
             }
         }
@@ -9591,7 +9643,9 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
                 _ => 0,
             })
             .unwrap_or(0);
-        (1..=n).map(|i| Arc::from(i.to_string().as_str())).collect()
+        (1..=n)
+            .map(|i| Some(Arc::from(i.to_string().as_str())))
+            .collect()
     };
 
     Some(RObject::DataFrame(Box::new(DataFrameData {
@@ -9611,13 +9665,13 @@ fn try_convert_to_factor(obj: &RObject, attributes: &Attributes) -> Option<RObje
     };
 
     // Check if "factor" is in the class list
-    let is_factor = classes.iter().any(|c| c.as_ref() == "factor");
+    let is_factor = classes.iter().any(|c| c.as_deref() == Some("factor"));
     if !is_factor {
         return None;
     }
 
     // Check if it's an ordered factor
-    let ordered = classes.iter().any(|c| c.as_ref() == "ordered");
+    let ordered = classes.iter().any(|c| c.as_deref() == Some("ordered"));
 
     // The base object should be an integer vector (the indices)
     let values = match obj {
@@ -9669,7 +9723,9 @@ fn convert_to_s3_object(obj: RObject, mut attributes: Attributes) -> RObject {
         .and_then(|idx| match attributes.attrs[idx].1.as_concrete() {
             RObject::Character(classes) => {
                 if classes.is_loaded() {
-                    Some(classes.as_vec().clone())
+                    // Class names are a derived plain-string surface: an NA
+                    // entry is treated as absent (skipped).
+                    Some(classes.as_vec().iter().flatten().cloned().collect())
                 } else {
                     None
                 }
@@ -9728,7 +9784,8 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
             match class_obj {
                 RObject::Character(classes) => {
                     if classes.is_loaded() {
-                        (classes.as_vec().clone(), None)
+                        // NA class entries are treated as absent.
+                        (classes.as_vec().iter().flatten().cloned().collect(), None)
                     } else {
                         (vec![], None)
                     }
@@ -9738,10 +9795,11 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
                     attributes: class_attrs,
                 } => {
                     // Unwrap the WithAttributes to get the actual class vector
+                    // (NA class entries are treated as absent).
                     let classes = match object.as_ref() {
                         RObject::Character(classes) => {
                             if classes.is_loaded() {
-                                classes.as_vec().clone()
+                                classes.as_vec().iter().flatten().cloned().collect()
                             } else {
                                 vec![]
                             }
@@ -9751,7 +9809,7 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
                     // Extract the package attribute from the class's attributes
                     let pkg = class_attrs.get("package").and_then(|p| match p {
                         RObject::Character(pkgs) if pkgs.is_loaded() && !pkgs.is_empty() => {
-                            Some(pkgs[0].clone())
+                            pkgs[0].clone()
                         }
                         _ => None,
                     });
@@ -9781,7 +9839,7 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
     if package.is_none() {
         if let Some(pkg_attr) = attributes.get("package") {
             if let RObject::Character(pkgs) = pkg_attr.as_concrete() {
-                if let Some(first) = pkgs.first() {
+                if let Some(Some(first)) = pkgs.first() {
                     package = Some(first.clone());
                 }
             }

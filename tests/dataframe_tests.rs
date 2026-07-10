@@ -51,9 +51,9 @@ fn test_dataframe_simple() {
             match columns.get(&Arc::from("y")) {
                 Some(RObject::Character(vec)) => {
                     assert_eq!(vec.len(), 3);
-                    assert_eq!(vec[0].as_ref(), "a");
-                    assert_eq!(vec[1].as_ref(), "b");
-                    assert_eq!(vec[2].as_ref(), "c");
+                    assert_eq!(vec[0].as_deref(), Some("a"));
+                    assert_eq!(vec[1].as_deref(), Some("b"));
+                    assert_eq!(vec[2].as_deref(), Some("c"));
                 }
                 _ => panic!("Expected character column 'y'"),
             }
@@ -117,8 +117,8 @@ fn test_dataframe_mixed() {
             match columns.get(&Arc::from("char_col")) {
                 Some(RObject::Character(vec)) => {
                     assert_eq!(vec.len(), 4);
-                    assert_eq!(vec[0].as_ref(), "foo");
-                    assert_eq!(vec[3].as_ref(), "qux");
+                    assert_eq!(vec[0].as_deref(), Some("foo"));
+                    assert_eq!(vec[3].as_deref(), Some("qux"));
                 }
                 _ => panic!("Expected character column 'char_col'"),
             }
@@ -159,16 +159,16 @@ fn test_dataframe_rownames() {
 
             // Check row names
             assert_eq!(row_names.len(), 3);
-            assert_eq!(row_names[0].as_ref(), "person1");
-            assert_eq!(row_names[1].as_ref(), "person2");
-            assert_eq!(row_names[2].as_ref(), "person3");
+            assert_eq!(row_names[0].as_deref(), Some("person1"));
+            assert_eq!(row_names[1].as_deref(), Some("person2"));
+            assert_eq!(row_names[2].as_deref(), Some("person3"));
 
             // Verify data
             match columns.get(&Arc::from("name")) {
                 Some(RObject::Character(vec)) => {
-                    assert_eq!(vec[0].as_ref(), "Alice");
-                    assert_eq!(vec[1].as_ref(), "Bob");
-                    assert_eq!(vec[2].as_ref(), "Charlie");
+                    assert_eq!(vec[0].as_deref(), Some("Alice"));
+                    assert_eq!(vec[1].as_deref(), Some("Bob"));
+                    assert_eq!(vec[2].as_deref(), Some("Charlie"));
                 }
                 _ => panic!("Expected character column 'name'"),
             }

@@ -53,9 +53,9 @@ fn test_int_named() {
             match names.unwrap() {
                 RObject::Character(names_vec) => {
                     assert_eq!(names_vec.len(), 3);
-                    assert_eq!(names_vec[0].as_ref(), "a");
-                    assert_eq!(names_vec[1].as_ref(), "b");
-                    assert_eq!(names_vec[2].as_ref(), "c");
+                    assert_eq!(names_vec[0].as_deref(), Some("a"));
+                    assert_eq!(names_vec[1].as_deref(), Some("b"));
+                    assert_eq!(names_vec[2].as_deref(), Some("c"));
                 }
                 _ => panic!("Expected Character vector for names"),
             }
@@ -96,9 +96,9 @@ fn test_real_named() {
             match names.unwrap() {
                 RObject::Character(names_vec) => {
                     assert_eq!(names_vec.len(), 3);
-                    assert_eq!(names_vec[0].as_ref(), "x");
-                    assert_eq!(names_vec[1].as_ref(), "y");
-                    assert_eq!(names_vec[2].as_ref(), "z");
+                    assert_eq!(names_vec[0].as_deref(), Some("x"));
+                    assert_eq!(names_vec[1].as_deref(), Some("y"));
+                    assert_eq!(names_vec[2].as_deref(), Some("z"));
                 }
                 _ => panic!("Expected Character vector for names"),
             }
@@ -201,9 +201,9 @@ fn test_symbol_table_attribute_names() {
     // The "names" attribute should be ["first", "second", "third"]
     if let RObject::Character(names) = outer_attrs.get("names").unwrap() {
         assert_eq!(names.len(), 3, "Expected 3 names");
-        assert_eq!(names[0].as_ref(), "first");
-        assert_eq!(names[1].as_ref(), "second");
-        assert_eq!(names[2].as_ref(), "third");
+        assert_eq!(names[0].as_deref(), Some("first"));
+        assert_eq!(names[1].as_deref(), Some("second"));
+        assert_eq!(names[2].as_deref(), Some("third"));
     } else {
         panic!("Expected 'names' attribute to be Character vector");
     }
@@ -224,12 +224,12 @@ fn test_symbol_table_attribute_names() {
             if let RObject::Character(names) = inner_names {
                 assert_eq!(names.len(), 3);
                 assert_eq!(
-                    names[0].as_ref(),
-                    "a",
+                    names[0].as_deref(),
+                    Some("a"),
                     "First inner list names[0] should be 'a', not data from elsewhere"
                 );
-                assert_eq!(names[1].as_ref(), "b");
-                assert_eq!(names[2].as_ref(), "c");
+                assert_eq!(names[1].as_deref(), Some("b"));
+                assert_eq!(names[2].as_deref(), Some("c"));
             } else {
                 panic!("Expected inner names to be Character vector");
             }
@@ -249,12 +249,12 @@ fn test_symbol_table_attribute_names() {
             if let RObject::Character(names) = inner_names {
                 assert_eq!(names.len(), 3);
                 assert_eq!(
-                    names[0].as_ref(),
-                    "x",
+                    names[0].as_deref(),
+                    Some("x"),
                     "Second inner list names[0] should be 'x', not data from elsewhere"
                 );
-                assert_eq!(names[1].as_ref(), "y");
-                assert_eq!(names[2].as_ref(), "z");
+                assert_eq!(names[1].as_deref(), Some("y"));
+                assert_eq!(names[2].as_deref(), Some("z"));
             } else {
                 panic!("Expected inner names to be Character vector");
             }
@@ -274,12 +274,12 @@ fn test_symbol_table_attribute_names() {
             if let RObject::Character(names) = inner_names {
                 assert_eq!(names.len(), 3);
                 assert_eq!(
-                    names[0].as_ref(),
-                    "p",
+                    names[0].as_deref(),
+                    Some("p"),
                     "Third inner list names[0] should be 'p', not data from elsewhere"
                 );
-                assert_eq!(names[1].as_ref(), "q");
-                assert_eq!(names[2].as_ref(), "r");
+                assert_eq!(names[1].as_deref(), Some("q"));
+                assert_eq!(names[2].as_deref(), Some("r"));
             } else {
                 panic!("Expected inner names to be Character vector");
             }
