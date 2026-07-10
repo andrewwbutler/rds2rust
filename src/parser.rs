@@ -9525,14 +9525,7 @@ fn parse_attributes(attr_obj: RObject, ctx: &mut ParserContext) -> Result<Attrib
             if !s4.class.is_empty() {
                 attrs.insert(
                     Arc::from("class"),
-                    RObject::Character(
-                        s4.class
-                            .iter()
-                            .cloned()
-                            .map(Some)
-                            .collect::<Vec<_>>()
-                            .into(),
-                    ),
+                    RObject::Character(crate::types::wrap_some(&s4.class).into()),
                 );
             }
             for (slot_name, slot_value) in &s4.slots {

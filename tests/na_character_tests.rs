@@ -327,6 +327,31 @@ fn test_character_vector_helpers() {
     assert_eq!(with_na.to_strings_with_na("<NA>"), ["a", "<NA>", "NA"]);
 }
 
+/// NA_character_ in a symbol-name position is a parse error, not a symbol
+/// named "NA" (R has no NA symbols). Hand-built version-2 XDR stream:
+/// SYMSXP whose name CHARSXP carries the NA marker (length -1).
+#[test]
+fn test_na_symbol_name_rejected() {
+    let mut data: Vec<u8> = Vec::new();
+    data.extend_from_slice(b"X\n"); // XDR format marker
+    data.extend_from_slice(&2i32.to_be_bytes()); // serialization version 2
+    data.extend_from_slice(&0x040303i32.to_be_bytes()); // writer R version
+    data.extend_from_slice(&0x020300i32.to_be_bytes()); // min reader R version
+    data.extend_from_slice(&1i32.to_be_bytes()); // SYMSXP flags
+    data.extend_from_slice(&9i32.to_be_bytes()); // CHARSXP flags (bare)
+    data.extend_from_slice(&(-1i32).to_be_bytes()); // NA marker
+
+    let err = format!(
+        "{:?}",
+        read_rds(&data).expect_err("NA symbol name must be rejected")
+    );
+    assert!(
+        err.contains("symbol name"),
+        "unexpected error for NA symbol name: {}",
+        err
+    );
+}
+
 /// In-memory input source for lazy range reads.
 struct BytesInput {
     data: Vec<u8>,

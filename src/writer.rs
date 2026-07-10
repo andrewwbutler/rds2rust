@@ -1997,13 +1997,7 @@ fn write_dataframe<W: Write>(
     let mut attrs = Attributes::new();
     attrs.insert(
         Arc::from("names"),
-        RObject::Character(
-            column_names
-                .into_iter()
-                .map(Some)
-                .collect::<Vec<_>>()
-                .into(),
-        ),
+        RObject::Character(crate::types::wrap_some(&column_names).into()),
     );
     attrs.insert(
         Arc::from("row.names"),
@@ -2111,7 +2105,7 @@ fn write_s3_object<W: Write>(
     let mut attrs = attributes.clone();
     attrs.insert(
         Arc::from("class"),
-        RObject::Character(class.iter().cloned().map(Some).collect::<Vec<_>>().into()),
+        RObject::Character(crate::types::wrap_some(class).into()),
     );
 
     write_object_with_attributes(
@@ -2135,7 +2129,7 @@ fn build_s4_attributes(
 
     // For S4 objects, the class attribute must have a package attribute
     // Use the stored package if available, otherwise fall back to ".GlobalEnv" for user-defined classes
-    let class_obj = RObject::Character(class.iter().cloned().map(Some).collect::<Vec<_>>().into());
+    let class_obj = RObject::Character(crate::types::wrap_some(class).into());
     let mut class_attrs = Attributes::new();
     let pkg_value = package.cloned().unwrap_or_else(|| Arc::from(".GlobalEnv"));
     class_attrs.insert(

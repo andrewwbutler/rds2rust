@@ -173,6 +173,12 @@ impl<T> FromIterator<T> for VectorData<T> {
     }
 }
 
+/// Wrap plain strings in `Some` for character-vector construction (the
+/// no-NA case), shared by the writer and converter paths.
+pub(crate) fn wrap_some<T: Clone>(items: &[T]) -> Vec<Option<T>> {
+    items.iter().cloned().map(Some).collect()
+}
+
 /// Convenience helpers for character vectors (`VectorData<Option<Arc<str>>>`,
 /// where `None` is `NA_character_`).
 impl VectorData<Option<Arc<str>>> {
