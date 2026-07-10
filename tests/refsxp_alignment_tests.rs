@@ -87,7 +87,7 @@ fn assert_string(items: &[RObject], index: usize, expected: &str) {
     match items[index].as_concrete() {
         RObject::Character(values) => {
             assert_eq!(values.len(), 1);
-            assert_eq!(values[0].as_deref(), Some(expected.as_ref()));
+            assert_eq!(values[0].as_deref(), Some(expected));
         }
         other => panic!(
             "items[{}] resolved to {} instead of Character",

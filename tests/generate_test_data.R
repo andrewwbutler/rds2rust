@@ -453,6 +453,32 @@ con <- file(file.path(output_dir, "basenamespace.rds"), "wb")
 serialize(list(b = getNamespace("base"), after = "base-ok"), con)
 close(con)
 
+# NA_character_ fidelity fixtures: a true missing value must stay
+# distinguishable from the legal string "NA" end-to-end.
+saveRDS(c("NA", NA_character_), file.path(output_dir, "na_character_basic.rds"))
+
+# NA in a names attribute: the element keeps its position, unnamed.
+na_names_list <- list(1L, 2L, 3L)
+names(na_names_list) <- c("a", NA, "b")
+saveRDS(na_names_list, file.path(output_dir, "na_in_names.rds"))
+
+# NA inside a class vector (pathological but representable).
+na_class_obj <- list("payload")
+attr(na_class_obj, "class") <- c("foo", NA, "bar")
+saveRDS(na_class_obj, file.path(output_dir, "na_in_class.rds"))
+
+# Factor with an NA level (exclude = NULL): the level slot must be
+# preserved positionally or every later level lookup corrupts.
+na_level_factor <- factor(c("a", NA, "b"), exclude = NULL)
+saveRDS(na_level_factor, file.path(output_dir, "na_factor_level.rds"))
+
+# Data-frame string column containing both a real "NA" and a missing value.
+na_df <- data.frame(s = c("NA", NA, "x"), stringsAsFactors = FALSE)
+saveRDS(na_df, file.path(output_dir, "na_df_column.rds"))
+
+# Dedup distinctness: c("NA") and c(NA_character_) are different objects.
+saveRDS(list(x = "NA", y = NA_character_), file.path(output_dir, "na_dedup.rds"))
+
 
 # Reference tracking test cases
 # These test REFSXP (reference tracking) functionality
