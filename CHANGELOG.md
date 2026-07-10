@@ -91,6 +91,14 @@ The version in `Cargo.toml` has not been bumped yet.
 - `RObject::PartialEq` and the dedup cache no longer deep-clone both operands
   on every comparison; a pathological 147 KB help-database entry went from
   ~9.3 s (post-alignment, pre-fix) to ~35 ms (#3).
+- The dedup cache's linear scan was replaced with a fingerprint index plus an
+  early-out for never-cached object types. A file with 20,000 distinct small
+  character vectors went from ~1.38 s to ~7 ms (release build); typical files
+  improve modestly (a real help-DB entry: 5.2 → 4.1 ms).
+- Resolving a REFSXP in TAG position no longer deep-clones the referenced
+  object (twice); symbols and S4 objects stay concrete, other referents are
+  wrapped as shared handles, and tag names are extracted without
+  materializing the referent.
 
 ### Validation
 

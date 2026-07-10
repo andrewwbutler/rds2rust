@@ -638,9 +638,11 @@ impl SymbolTable {
 /// Uses Arc-based sharing for efficient cloning of deduplicated objects.
 struct DedupTable {
     /// Cache of previously seen objects wrapped in Arc for cheap cloning
-    /// We use a Vec for simple linear search since most RDS files have a small
-    /// number of unique repeated objects (e.g., class names, common vectors)
     cache: Vec<Arc<RObject>>,
+    /// Fingerprint -> indices into `cache`. Lookups probe only the matching
+    /// bucket instead of scanning the whole cache, which degraded to O(n^2)
+    /// comparisons on files with many distinct small cacheable objects.
+    index: HashMap<u64, Vec<u32>>,
     /// Statistics for monitoring deduplication effectiveness
     hits: usize,
     misses: usize,
@@ -650,6 +652,7 @@ impl DedupTable {
     fn new() -> Self {
         DedupTable {
             cache: Vec::new(),
+            index: HashMap::new(),
             hits: 0,
             misses: 0,
         }
@@ -668,25 +671,35 @@ impl DedupTable {
             return self.deduplicate(&obj_concrete);
         }
 
-        // Check if we've seen this object before.
-        // Cache entries are always already-concrete (they're stored via
-        // `obj.clone()` below, never a `Shared` wrapper), so comparing
-        // directly against `obj` avoids cloning either side of the comparison.
-        for cached in &self.cache {
-            if cached.as_ref() == obj {
-                // Found a match! Return a clone (cheap Arc clone for strings, actual clone for others)
-                self.hits += 1;
-                return Some((**cached).clone());
+        // Objects that would never be cached can never match a cached entry
+        // either: `==` requires the same variant, and for the length-gated
+        // vector variants equal contents imply equal length, hence equal
+        // cacheability. Skip both the lookup and the insert.
+        if !should_cache_for_dedup(obj) {
+            self.misses += 1;
+            return None;
+        }
+
+        // Probe only the fingerprint bucket; entries are always concrete
+        // (stored via `obj.clone()` below, never a `Shared` wrapper), so
+        // comparing directly against `obj` avoids cloning either side.
+        let fp = dedup_fingerprint(obj);
+        if let Some(bucket) = self.index.get(&fp) {
+            for &i in bucket {
+                let cached = &self.cache[i as usize];
+                if cached.as_ref() == obj {
+                    // Found a match! Return a clone (cheap Arc clone for strings, actual clone for others)
+                    self.hits += 1;
+                    return Some((**cached).clone());
+                }
             }
         }
 
         // New unique object - add to cache
         self.misses += 1;
-
-        // Only cache if it's likely to be repeated and not too large
-        if should_cache_for_dedup(obj) {
-            self.cache.push(Arc::new(obj.clone()));
-        }
+        let idx = self.cache.len() as u32;
+        self.cache.push(Arc::new(obj.clone()));
+        self.index.entry(fp).or_default().push(idx);
 
         None
     }
@@ -699,7 +712,13 @@ impl DedupTable {
     #[cfg(target_arch = "wasm32")]
     fn rollback(&mut self, checkpoint: (usize, usize, usize)) {
         let (len, hits, misses) = checkpoint;
-        self.cache.truncate(len);
+        if self.cache.len() > len {
+            self.cache.truncate(len);
+            self.index.retain(|_, bucket| {
+                bucket.retain(|&i| (i as usize) < len);
+                !bucket.is_empty()
+            });
+        }
         self.hits = hits;
         self.misses = misses;
     }
@@ -742,6 +761,73 @@ fn should_cache_for_dedup(obj: &RObject) -> bool {
         // Cache other small types
         _ => true,
     }
+}
+
+/// Compute a fingerprint for the dedup index.
+///
+/// Required invariant for *hit completeness*: `a == b` should imply
+/// `fingerprint(a) == fingerprint(b)` (a violation only misses a dedup
+/// opportunity, never corrupts results; false collisions are resolved by the
+/// full `==` inside the bucket). Only equality-implied fields are hashed, and
+/// only bounded projections of them: small cacheable vectors hash their full
+/// contents, potentially-large or composite variants hash a prefix or just
+/// the discriminant (sharing a per-variant bucket that degrades to a scan).
+fn dedup_fingerprint(obj: &RObject) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::mem::discriminant(obj).hash(&mut h);
+    match obj {
+        RObject::Character(v) if v.is_loaded() => {
+            for s in v.as_vec() {
+                s.hash(&mut h);
+            }
+        }
+        RObject::Integer(v) if v.is_loaded() => {
+            for x in v.as_vec() {
+                x.hash(&mut h);
+            }
+        }
+        RObject::Real(v) if v.is_loaded() => {
+            for x in v.as_vec() {
+                // Normalize -0.0 to 0.0 so equal floats fingerprint equally;
+                // NaN bit patterns only cost a failed probe.
+                let x = if *x == 0.0 { 0.0f64 } else { *x };
+                x.to_bits().hash(&mut h);
+            }
+        }
+        RObject::Logical(v) if v.is_loaded() => {
+            for x in v.as_vec() {
+                let b: u8 = match x {
+                    Logical::False => 0,
+                    Logical::True => 1,
+                    Logical::Na => 2,
+                };
+                b.hash(&mut h);
+            }
+        }
+        RObject::Symbol(name) => name.hash(&mut h),
+        RObject::Namespace(names) => {
+            for s in names {
+                s.hash(&mut h);
+            }
+        }
+        RObject::Factor(f) => {
+            // Factors can be arbitrarily large; hash a bounded prefix.
+            f.values.len().hash(&mut h);
+            f.levels.len().hash(&mut h);
+            for x in f.values.iter().take(8) {
+                x.hash(&mut h);
+            }
+            for s in f.levels.iter().take(8) {
+                s.hash(&mut h);
+            }
+        }
+        // Lazy vectors, markers (Null, MissingArg, ...), and composite
+        // catch-all variants (WithAttributes, Pairlist, Language, ...):
+        // discriminant-only bucket; the per-bucket `==` does the real work.
+        _ => {}
+    }
+    h.finish()
 }
 
 /// Determine if an object should be tracked in the reference table.
@@ -2376,7 +2462,7 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             let name = if name_type_from_0_7 == REFSXP {
                 let ref_index = name_flags >> 8;
                 if let Some(obj) = ref_table.get(ref_index) {
-                    extract_tag_name(obj.read().unwrap().clone()).unwrap_or_else(|| Arc::from("NA"))
+                    extract_tag_name(&*obj.read().unwrap()).unwrap_or_else(|| Arc::from("NA"))
                 } else {
                     Arc::from("NA")
                 }
@@ -2912,9 +2998,16 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
         // TAG REFSXP indices point into the single reference table; the symbol
         // table is only a defensive fallback for misaligned streams.
         let tag_obj = if let Some(obj) = ref_table.get(ref_index) {
-            obj.read()
-                .map_err(|_| Error::Unsupported("shared object lock poisoned".to_string()))?
-                .clone()
+            let inner = obj
+                .read()
+                .map_err(|_| Error::Unsupported("shared object lock poisoned".to_string()))?;
+            match &*inner {
+                // Keep symbols and S4 objects concrete (see
+                // parse_pairlist_element); share everything else instead of
+                // deep-cloning the referent.
+                RObject::Symbol(_) | RObject::S4Object(_) => inner.clone(),
+                _ => RObject::Shared(Arc::clone(&obj)),
+            }
         } else if let Some(sym) = symbol_table.get(ref_index) {
             sym.clone()
         } else {
@@ -2935,7 +3028,7 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
                 ref_table.next_index - 1
             )));
         };
-        return Ok((extract_tag_name(tag_obj.clone()), Some(tag_obj)));
+        return Ok((extract_tag_name(&tag_obj), Some(tag_obj)));
     }
 
     if sexp_type == SYMSXP {
@@ -2958,9 +3051,9 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
         let name = if name_type_from_0_7 == REFSXP {
             let ref_index = name_flags >> 8;
             if let Some(obj) = ref_table.get(ref_index) {
-                extract_tag_name(obj.read().unwrap().clone()).unwrap_or_else(|| Arc::from("NA"))
+                extract_tag_name(&*obj.read().unwrap()).unwrap_or_else(|| Arc::from("NA"))
             } else if let Some(sym) = symbol_table.get(ref_index) {
-                extract_tag_name(sym.clone()).unwrap_or_else(|| Arc::from("NA"))
+                extract_tag_name(sym).unwrap_or_else(|| Arc::from("NA"))
             } else {
                 Arc::from("NA")
             }
@@ -2994,7 +3087,7 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
             let msg = format!("seq tag CHARSXP resolved='{}'", name);
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
-        return Ok((extract_tag_name(obj.clone()), Some(obj)));
+        return Ok((extract_tag_name(&obj), Some(obj)));
     }
 
     let obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
@@ -3013,7 +3106,7 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
         );
         web_sys::console::debug_1(&JsValue::from_str(&msg));
     }
-    Ok((extract_tag_name(obj.clone()), Some(obj)))
+    Ok((extract_tag_name(&obj), Some(obj)))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3659,9 +3752,9 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             let name = if name_type_from_0_7 == REFSXP {
                 let ref_index = name_flags >> 8;
                 if let Some(obj) = ref_table.get(ref_index) {
-                    extract_tag_name(obj.read().unwrap().clone()).unwrap_or_else(|| Arc::from("NA"))
+                    extract_tag_name(&*obj.read().unwrap()).unwrap_or_else(|| Arc::from("NA"))
                 } else if let Some(sym) = symbol_table.get(ref_index) {
-                    extract_tag_name(sym.clone()).unwrap_or_else(|| Arc::from("NA"))
+                    extract_tag_name(sym).unwrap_or_else(|| Arc::from("NA"))
                 } else {
                     Arc::from("NA")
                 }
@@ -5641,16 +5734,17 @@ where
         let ref_index = flags >> 8;
         // TAG REFSXP indices point into the single reference table; the symbol
         // table is only a defensive fallback for misaligned streams.
-        let tag_obj = if let Some(obj) = ref_table.get(ref_index) {
-            obj.read()
-                .map_err(|_| {
-                    StreamingError::Parse(Error::Unsupported(
-                        "shared object lock poisoned".to_string(),
-                    ))
-                })?
-                .clone()
+        // Only the tag NAME is needed here; extract it under the read guard
+        // instead of deep-cloning the referent.
+        let tag_name = if let Some(obj) = ref_table.get(ref_index) {
+            let inner = obj.read().map_err(|_| {
+                StreamingError::Parse(Error::Unsupported(
+                    "shared object lock poisoned".to_string(),
+                ))
+            })?;
+            extract_tag_name(&inner)
         } else if let Some(sym) = symbol_table.get(ref_index) {
-            sym.clone()
+            extract_tag_name(sym)
         } else {
             return Err(StreamingError::Parse(Error::InvalidFormat(format!(
                 "Invalid TAG REFSXP index {} (symbol table size={}, ref table size={})",
@@ -5659,7 +5753,7 @@ where
                 ref_table.next_index - 1
             ))));
         };
-        return Ok(extract_tag_name(tag_obj));
+        return Ok(tag_name);
     }
 
     if sexp_type == SYMSXP {
@@ -5685,22 +5779,20 @@ where
 
         let name = if name_type_from_0_7 == REFSXP {
             let ref_index = name_flags >> 8;
-            let tag_obj = ref_table
-                .get(ref_index)
-                .ok_or_else(|| {
-                    StreamingError::Parse(Error::InvalidFormat(format!(
-                        "Invalid symbol REFSXP index {}",
-                        ref_index
-                    )))
-                })?
-                .read()
-                .map_err(|_| {
-                    StreamingError::Parse(Error::Unsupported(
-                        "shared object lock poisoned".to_string(),
-                    ))
-                })?
-                .clone();
-            extract_tag_name(tag_obj).unwrap_or_else(|| Arc::from("NA"))
+            let referent = ref_table.get(ref_index).ok_or_else(|| {
+                StreamingError::Parse(Error::InvalidFormat(format!(
+                    "Invalid symbol REFSXP index {}",
+                    ref_index
+                )))
+            })?;
+            let inner = referent.read().map_err(|_| {
+                StreamingError::Parse(Error::Unsupported(
+                    "shared object lock poisoned".to_string(),
+                ))
+            })?;
+            // Extract under the read guard instead of deep-cloning the
+            // referent just to pull a name out of it.
+            extract_tag_name(&inner).unwrap_or_else(|| Arc::from("NA"))
         } else if name_type_from_8_15 == CHARSXP || name_type_from_0_7 == CHARSXP {
             Arc::from(
                 parse_charsxp_content_async(ctx, cursor, name_flags)
@@ -5732,8 +5824,8 @@ where
         }
 
         let sym = RObject::Symbol(name.clone());
-        symbol_table.add(sym.clone());
-        return Ok(extract_tag_name(sym));
+        symbol_table.add(sym);
+        return Ok(Some(name));
     }
 
     if sexp_type == CHARSXP {
@@ -5762,7 +5854,7 @@ where
             .await?;
         }
         let obj = RObject::Character(vec![Arc::from(name.as_str())].into());
-        return Ok(extract_tag_name(obj));
+        return Ok(extract_tag_name(&obj));
     }
 
     let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
@@ -6437,13 +6529,10 @@ fn parse_pairlist_element_streaming<V: RdsVisitor>(
             // same as any other REFSXP. The symbol table is only a defensive
             // fallback for misaligned streams.
             if let Some(obj) = ref_table.get(ref_index) {
-                obj.read()
-                    .map_err(|_| {
-                        StreamingError::Parse(Error::Unsupported(
-                            "shared object lock poisoned".to_string(),
-                        ))
-                    })?
-                    .clone()
+                // Only the tag name is needed here; a shared handle avoids
+                // deep-cloning the referent (extract_tag_name reads through
+                // Shared).
+                RObject::Shared(obj)
             } else if let Some(sym) = symbol_table.get(ref_index) {
                 sym.clone()
             } else {
@@ -6458,7 +6547,7 @@ fn parse_pairlist_element_streaming<V: RdsVisitor>(
             cursor.set_position(pos);
             parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?
         };
-        extract_tag_name(tag_obj.clone())
+        extract_tag_name(&tag_obj)
     } else {
         None
     };
@@ -8139,7 +8228,7 @@ fn build_language_from_bc(car: RObject, cdr: RObject) -> RObject {
 }
 
 fn build_pairlist_from_bc(tag_obj: RObject, car: RObject, cdr: RObject) -> RObject {
-    let tag_name = extract_tag_name(tag_obj.clone());
+    let tag_name = extract_tag_name(&tag_obj);
     let tag_storage = match tag_obj {
         RObject::Null => None,
         other => Some(Box::new(other)),
@@ -8328,9 +8417,23 @@ fn parse_pairlist_element(
             let ref_index = flags >> 8;
 
             if let Some(obj) = ref_table.get(ref_index) {
-                let obj_val = obj.read().unwrap().clone();
+                let tag_obj = {
+                    let inner = obj.read().unwrap();
+                    match &*inner {
+                        // Symbols are the overwhelmingly common case and stay
+                        // concrete (a cheap clone). S4 objects must also stay
+                        // concrete: parse_attributes pattern-matches
+                        // RObject::S4Object on tag_object directly (the
+                        // __tag_s4_object__ special case).
+                        RObject::Symbol(_) | RObject::S4Object(_) => inner.clone(),
+                        // Anything else (environments, vectors, ...) is
+                        // wrapped as a shared handle instead of deep-cloning
+                        // the referent.
+                        _ => RObject::Shared(Arc::clone(&obj)),
+                    }
+                };
                 if std::env::var("RDS_DEBUG_TAG").is_ok() {
-                    let name = extract_tag_name(obj_val.clone())
+                    let name = extract_tag_name(&tag_obj)
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| "<unknown>".to_string());
                     debug_log!(
@@ -8340,7 +8443,7 @@ fn parse_pairlist_element(
                         name
                     );
                 }
-                obj_val
+                tag_obj
             } else if let Some(sym) = symbol_table.get(ref_index) {
                 // Fallback for streams whose reference indices do not line up
                 // with the reference table (defensive; should not happen for
@@ -8369,7 +8472,7 @@ fn parse_pairlist_element(
         };
 
         // Extract the tag name from the symbol or character object
-        let tag_name = extract_tag_name(tag_obj.clone());
+        let tag_name = extract_tag_name(&tag_obj);
         // Store both the extracted name and the raw object
         (tag_name, Some(Box::new(tag_obj)))
     } else {
@@ -8584,16 +8687,32 @@ fn parse_pairlist(
 ///
 /// Returns `None` if the tag is lazy (not loaded), to prevent panics during
 /// bytecode parsing with large character vectors.
-fn extract_tag_name(tag_obj: RObject) -> Option<Arc<str>> {
-    // Unwrap Shared wrappers first
-    let tag_obj = tag_obj.into_concrete();
-
+fn extract_tag_name(tag_obj: &RObject) -> Option<Arc<str>> {
     match tag_obj {
-        RObject::Symbol(name) => Some(name),
+        RObject::Shared(shared) => {
+            let guard = shared.read().unwrap();
+            if let RObject::Shared(inner) = &*guard {
+                // Nested Shared: clone only the wrapper (an Arc clone) and
+                // release the guard before recursing, so we never re-acquire
+                // a lock we already hold.
+                let inner = RObject::Shared(Arc::clone(inner));
+                drop(guard);
+                return extract_tag_name(&inner);
+            }
+            extract_tag_name_concrete(&guard)
+        }
+        other => extract_tag_name_concrete(other),
+    }
+}
+
+/// The non-Shared half of `extract_tag_name`.
+fn extract_tag_name_concrete(tag_obj: &RObject) -> Option<Arc<str>> {
+    match tag_obj {
+        RObject::Symbol(name) => Some(name.clone()),
         // Only extract from loaded character vectors to avoid panics
         RObject::Character(vec) if !vec.is_empty() && vec.is_loaded() => Some(vec[0].clone()),
-        RObject::Null => None,
-        _ => None, // Includes lazy character vectors - return None gracefully
+        // Includes Null and lazy character vectors - return None gracefully
+        _ => None,
     }
 }
 
