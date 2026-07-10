@@ -4753,14 +4753,15 @@ fn parse_object(
             RObject::MissingArg
         }
         GENERICREFSXP | CLASSREFSXP => {
-            // Generic function or class reference
-            // These reference metadata in the serialization stream
-            let ref_index_val = flags >> 8;
-
-            match ref_table.get(ref_index_val) {
-                Some(obj) => return Ok(RObject::Shared(obj)),
-                None => RObject::Null,
-            }
+            // Generic function / class references. R's own reader errors on
+            // these unconditionally ("this version of R cannot read class
+            // references"), so no valid stream contains them; erroring beats
+            // resolving flags >> 8 against the main reference table, which
+            // returned an arbitrary wrong object.
+            return Err(Error::InvalidFormat(format!(
+                "Generic function / class reference type {} cannot be read (R rejects these too)",
+                sexp_type
+            )));
         }
         PERSISTSXP => {
             // Persistent object written by a serialization ref hook, e.g.
@@ -5399,7 +5400,15 @@ fn parse_object_streaming<V: RdsVisitor>(
             parse_string_vec(ctx, cursor)?;
             StreamControl::Continue
         }
-        GENERICREFSXP | CLASSREFSXP => StreamControl::Continue,
+        GENERICREFSXP | CLASSREFSXP => {
+            // R's reader errors on these unconditionally; a stream containing
+            // them is unreadable, so fail fast instead of silently
+            // continuing past unconsumed payload.
+            return Err(StreamingError::Parse(Error::InvalidFormat(format!(
+                "Generic function / class reference type {} cannot be read (R rejects these too)",
+                sexp_type
+            ))));
+        }
         BCREPREF | BCREPDEF => {
             if ctx.in_bytecode_context {
                 // The streaming traversal does not decode the bytecode wire

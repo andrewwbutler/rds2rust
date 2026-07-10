@@ -364,6 +364,27 @@ fn test_stringvec_wrong_item_type_rejected() {
     );
 }
 
+/// GENERICREFSXP (245) / CLASSREFSXP (246): R's own reader errors on these
+/// unconditionally, so no readable stream contains them. Previously the
+/// parser resolved `flags >> 8` against the main reference table, returning
+/// an arbitrary wrong object.
+#[test]
+fn test_generic_class_refs_rejected() {
+    for ref_type in [245, 246] {
+        let data = v2_stream(&[ref_type]);
+        let err = format!(
+            "{:?}",
+            read_rds(&data).expect_err("generic/class reference must be rejected")
+        );
+        assert!(
+            err.contains("cannot be read"),
+            "unexpected error for type {}: {}",
+            ref_type,
+            err
+        );
+    }
+}
+
 /// BCREPREF (243) / BCREPDEF (244) only occur inside bytecode payloads (where
 /// parse_bc_lang decodes them with a dedicated reps table). At top level they
 /// mean the stream is corrupt; previously the parser resolved `flags >> 8`
