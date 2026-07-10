@@ -5,6 +5,10 @@
 //! 2. R can read the files and auto-load namespaces
 //! 3. S4 method dispatch works after loading
 
+// Native-only test file: excluded from wasm32 so `wasm-pack test`
+// (which builds every test target) can compile the workspace.
+#![cfg(not(target_arch = "wasm32"))]
+
 use rds2rust::{read_rds, write_rds, RObject};
 use std::fs;
 use std::process::Command;

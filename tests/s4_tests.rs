@@ -1,5 +1,9 @@
 //! Integration and roundtrip tests for S4 objects.
 
+// Native-only test file: excluded from wasm32 so `wasm-pack test`
+// (which builds every test target) can compile the workspace.
+#![cfg(not(target_arch = "wasm32"))]
+
 use indexmap::IndexMap;
 use rds2rust::{read_rds, write_rds, Attributes, Logical, RObject};
 use std::fs;

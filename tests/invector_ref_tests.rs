@@ -5,6 +5,10 @@
 //! fail fast rather than silently degrading. R's own serializer never emits
 //! these (CHARSXPs are not ref-tracked), so streams are hand-built.
 
+// Native-only test file: excluded from wasm32 so `wasm-pack test`
+// (which builds every test target) can compile the workspace.
+#![cfg(not(target_arch = "wasm32"))]
+
 use rds2rust::{read_rds, RObject, VectorData};
 use std::sync::Arc;
 

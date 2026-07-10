@@ -2,6 +2,10 @@
 //!
 //! Formulas are S3 objects with class="formula" and a Language base.
 
+// Native-only test file: excluded from wasm32 so `wasm-pack test`
+// (which builds every test target) can compile the workspace.
+#![cfg(not(target_arch = "wasm32"))]
+
 use rds2rust::{read_rds, write_rds, RObject};
 use std::fs;
 use std::path::Path;

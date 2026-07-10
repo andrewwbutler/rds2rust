@@ -8,8 +8,6 @@ mod wasm_tests {
     };
     use wasm_bindgen_test::*;
 
-    wasm_bindgen_test_configure!(run_in_browser);
-
     /// Mock random-access input source for testing
     struct MockRdsInput {
         data: Vec<u8>,
@@ -249,6 +247,9 @@ mod wasm_tests {
         let first = read_u32_generic(&mut cursor).await;
         assert_eq!(first, 5);
 
+        // as_sync_slice requires the bytes to be buffered first, matching
+        // how every parser call site pairs it with ensure_available.
+        cursor.ensure_available(4).await.unwrap();
         let slice = cursor.as_sync_slice(4).unwrap();
         assert_eq!(slice, &[10, 11, 12, 13]);
     }
@@ -266,6 +267,7 @@ mod wasm_tests {
         let first = read_u32_generic(&mut cursor).await;
         assert_eq!(first, 7);
 
+        cursor.ensure_available(4).await.unwrap();
         let slice = cursor.as_sync_slice(4).unwrap();
         assert_eq!(slice, &[20, 21, 22, 23]);
     }

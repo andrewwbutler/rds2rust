@@ -3,6 +3,10 @@
 //! These tests verify that users can construct RObject::WithAttributes
 //! programmatically using the exported Attributes struct.
 
+// Native-only test file: excluded from wasm32 so `wasm-pack test`
+// (which builds every test target) can compile the workspace.
+#![cfg(not(target_arch = "wasm32"))]
+
 use rds2rust::{read_rds, write_rds, Attributes, RObject};
 use std::sync::Arc;
 

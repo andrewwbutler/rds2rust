@@ -424,8 +424,8 @@ mod tests {
         .unwrap();
         let first = iter.next_chunk().await.unwrap().unwrap();
         let second = iter.next_chunk().await.unwrap().unwrap();
-        assert_eq!(first, vec![Arc::from("a")]);
-        assert_eq!(second, vec![Arc::from("bbb")]);
+        assert_eq!(first, vec![Some(Arc::from("a"))]);
+        assert_eq!(second, vec![Some(Arc::from("bbb"))]);
         assert!(iter.next_chunk().await.unwrap().is_none());
     }
 
