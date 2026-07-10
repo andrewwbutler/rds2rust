@@ -2772,18 +2772,8 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             }
         }
         S4SXP => RObject::Null,
-        PERSISTSXP => {
-            // Ref-hook strings; the OutStringVec payload must be consumed to
-            // keep the stream aligned (see parse_string_vec).
-            RObject::Character(parse_string_vec_async(ctx, cursor).await?.into())
-        }
-        PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL => {
-            // Package/namespace environment name payload; must be consumed.
-            RObject::Namespace(parse_string_vec_async(ctx, cursor).await?)
-        }
-        BASENAMESPACE_SXP => {
-            // No payload on the wire; R's reader returns R_BaseNamespace.
-            RObject::Namespace(vec![Arc::from("base")])
+        PERSISTSXP | PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => {
+            parse_pseudo_stringvec_async(sexp_type, ctx, cursor).await?
         }
         _ => RObject::Null,
     };
@@ -4007,18 +3997,8 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             }
         }
         S4SXP => RObject::Null,
-        PERSISTSXP => {
-            // Ref-hook strings; the OutStringVec payload must be consumed to
-            // keep the stream aligned (see parse_string_vec).
-            RObject::Character(parse_string_vec_async(ctx, cursor).await?.into())
-        }
-        PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL => {
-            // Package/namespace environment name payload; must be consumed.
-            RObject::Namespace(parse_string_vec_async(ctx, cursor).await?)
-        }
-        BASENAMESPACE_SXP => {
-            // No payload on the wire; R's reader returns R_BaseNamespace.
-            RObject::Namespace(vec![Arc::from("base")])
+        PERSISTSXP | PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => {
+            parse_pseudo_stringvec_async(sexp_type, ctx, cursor).await?
         }
         _ => RObject::Null,
     };
@@ -4097,6 +4077,34 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
 
     Ok(obj)
 }
+/// Shared handling for the string-vec-bearing pseudo-types in the wasm
+/// sequential parse and skip paths. Kept in one place so the two paths cannot
+/// drift: mis-consuming these payloads desynchronizes the stream.
+#[cfg(target_arch = "wasm32")]
+async fn parse_pseudo_stringvec_async<C: AsyncCursor>(
+    sexp_type: u32,
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+) -> Result<RObject> {
+    Ok(match sexp_type {
+        // Ref-hook strings; the OutStringVec payload must be consumed to
+        // keep the stream aligned (see parse_string_vec).
+        PERSISTSXP => RObject::Character(parse_string_vec_async(ctx, cursor).await?.into()),
+        // Package/namespace environment name payload; must be consumed.
+        PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL => {
+            RObject::Namespace(parse_string_vec_async(ctx, cursor).await?)
+        }
+        // No payload on the wire; R's reader returns R_BaseNamespace.
+        BASENAMESPACE_SXP => RObject::Namespace(vec![Arc::from("base")]),
+        other => {
+            return Err(Error::InvalidFormat(format!(
+                "parse_pseudo_stringvec_async called with non-pseudo type {}",
+                other
+            )))
+        }
+    })
+}
+
 /// Async mirror of `parse_string_vec` for the wasm sequential paths: consume
 /// an `OutStringVec` payload (PERSISTSXP / PACKAGESXP / NAMESPACESXP) and
 /// return its strings. Uses `guard_allocation_common` because a sequential
