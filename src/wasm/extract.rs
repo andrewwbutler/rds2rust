@@ -402,9 +402,14 @@ fn parse_character_vec(bytes: &[u8], length: usize) -> Result<Vec<Option<std::sy
 
         if type_from_0_7 == REFSXP {
             let ref_index = (flags >> 8) as usize;
-            let value = cache.get(ref_index).ok_or_else(|| {
-                Error::InvalidFormat(format!("invalid REFSXP index {}", ref_index))
-            })?;
+            // Wire REFSXP indices are 1-based (0 is invalid), matching the
+            // native parser and chunk iterators.
+            let value = ref_index
+                .checked_sub(1)
+                .and_then(|i| cache.get(i))
+                .ok_or_else(|| {
+                    Error::InvalidFormat(format!("invalid REFSXP index {}", ref_index))
+                })?;
             values.push(value.clone());
             continue;
         }

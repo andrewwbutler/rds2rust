@@ -266,6 +266,32 @@ mod wasm_payload_tests {
         );
     }
 
+    // Hand-built v2 stream: STRSXP ["a", ref@9] — out-of-range in-vector ref
+    const INVALID_INVECTOR_REF_STREAM: &[u8] = &[
+        0x58, 0x0a, 0x00, 0x00, 0x00, 0x02, 0x00, 0x04, 0x03, 0x03, 0x00, 0x02, 0x03, 0x00, 0x00,
+        0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x01,
+        0x61, 0x00, 0x00, 0x09, 0xff,
+    ];
+
+    /// An out-of-range in-vector string reference fails fast in the wasm
+    /// sequential path, matching the native parser and chunk iterators
+    /// (previously it silently degraded to NA).
+    #[wasm_bindgen_test]
+    async fn test_invector_invalid_ref_rejected_sequential() {
+        let input = MockRdsInput {
+            data: INVALID_INVECTOR_REF_STREAM.to_vec(),
+        };
+        let config = ParseConfig {
+            mode: ParseMode::LazyMetadata,
+            ..ParseConfig::default()
+        };
+        let result = read_rds_async(&input, config, AsyncParseConfig::default()).await;
+        assert!(
+            result.is_err(),
+            "out-of-range in-vector ref must be rejected by the sequential path"
+        );
+    }
+
     /// NA_character_ parses as None through the wasm sequential path,
     /// distinguishable from the legal string "NA".
     #[wasm_bindgen_test]

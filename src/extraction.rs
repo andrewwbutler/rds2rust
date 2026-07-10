@@ -1356,9 +1356,14 @@ fn write_lazy_character_vector_streaming(
 
         if type_from_0_7 == REFSXP {
             let ref_index = (flags >> 8) as usize;
-            let value = cache.get(ref_index).ok_or_else(|| {
-                Error::InvalidFormat(format!("invalid REFSXP index {}", ref_index))
-            })?;
+            // Wire REFSXP indices are 1-based (0 is invalid), matching the
+            // native parser and chunk iterators.
+            let value = ref_index
+                .checked_sub(1)
+                .and_then(|i| cache.get(i))
+                .ok_or_else(|| {
+                    Error::InvalidFormat(format!("invalid REFSXP index {}", ref_index))
+                })?;
             write_string_record(file, value)?;
             continue;
         }
@@ -1457,9 +1462,14 @@ fn write_lazy_character_vector(data: &[u8], span: LazyVector, file: &mut File) -
 
         if type_from_0_7 == REFSXP {
             let ref_index = (flags >> 8) as usize;
-            let value = cache.get(ref_index).ok_or_else(|| {
-                Error::InvalidFormat(format!("invalid REFSXP index {}", ref_index))
-            })?;
+            // Wire REFSXP indices are 1-based (0 is invalid), matching the
+            // native parser and chunk iterators.
+            let value = ref_index
+                .checked_sub(1)
+                .and_then(|i| cache.get(i))
+                .ok_or_else(|| {
+                    Error::InvalidFormat(format!("invalid REFSXP index {}", ref_index))
+                })?;
             write_string_record(file, value)?;
             continue;
         }

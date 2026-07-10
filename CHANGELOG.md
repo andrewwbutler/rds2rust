@@ -126,6 +126,13 @@ The version in `Cargo.toml` has not been bumped yet.
   BCREPREF/BCREPDEF bytecode-representation markers encountered outside a
   bytecode payload (previously resolved against the main reference table,
   returning an arbitrary wrong object). Files written by R are unaffected.
+- Invalid in-vector string references (REFSXP inside STRSXP with an
+  out-of-range or zero index) now fail fast in every reader: the wasm
+  sequential path previously degraded them silently, and three defensive
+  extraction readers resolved the 1-based wire index against the cache
+  without the off-by-one adjustment. All readers now share the native
+  parser's 1-based semantics. R never emits in-vector string references,
+  so files written by R are unaffected.
 
 ### Performance
 
