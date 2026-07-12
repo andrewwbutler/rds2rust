@@ -1,7 +1,31 @@
 use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Cursor;
+use std::sync::Arc;
 
 use crate::{Complex, Error, LazyVector, Logical, RObject, Result, VectorData};
+
+/// Adapts an in-memory decompressed stream to the `RdsInput` trait so the
+/// lazy character range reader (`chunk_iter::read_lazy_character_range`) can
+/// decode variable-length CHARSXP spans. Character spans record absolute
+/// offsets into this same buffer.
+#[cfg(not(target_arch = "wasm32"))]
+struct SliceRdsInput<'a>(&'a [u8]);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::RdsInput for SliceRdsInput<'_> {
+    fn read_at(&self, offset: u64, len: usize) -> Result<Vec<u8>> {
+        let start = offset as usize;
+        if start > self.0.len() {
+            return Ok(Vec::new());
+        }
+        let end = start.saturating_add(len).min(self.0.len());
+        Ok(self.0[start..end].to_vec())
+    }
+
+    fn len(&self) -> Option<u64> {
+        Some(self.0.len() as u64)
+    }
+}
 
 #[derive(Debug, PartialEq)]
 enum PathToken {
@@ -106,6 +130,21 @@ impl<'a> MaterializationContext<'a> {
         Ok(vec)
     }
 
+    /// Materialize a lazy character span. Unlike the numeric materializers,
+    /// character spans are variable-length (CHARSXP entries + intra-vector
+    /// REFSXP dedup), so this delegates to the shared range decoder rather
+    /// than doing fixed-stride element math. `None` elements are
+    /// `NA_character_`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn materialize_character_vector(
+        &mut self,
+        span: LazyVector,
+    ) -> Result<Vec<Option<Arc<str>>>> {
+        self.check_budget(span.byte_len as usize)?;
+        let input = SliceRdsInput(self.data);
+        crate::chunk_iter::read_lazy_character_range(&input, span, 0, span.length)
+    }
+
     pub fn materialize_integer_data(&mut self, vector: &mut VectorData<i32>) -> Result<()> {
         if let VectorData::Lazy(span) = *vector {
             *vector = VectorData::Owned(self.materialize_integer_vector(span)?);
@@ -137,6 +176,17 @@ impl<'a> MaterializationContext<'a> {
     pub fn materialize_complex_data(&mut self, vector: &mut VectorData<Complex>) -> Result<()> {
         if let VectorData::Lazy(span) = *vector {
             *vector = VectorData::Owned(self.materialize_complex_vector(span)?);
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn materialize_character_data(
+        &mut self,
+        vector: &mut VectorData<Option<Arc<str>>>,
+    ) -> Result<()> {
+        if let VectorData::Lazy(span) = *vector {
+            *vector = VectorData::Owned(self.materialize_character_vector(span)?);
         }
         Ok(())
     }
@@ -416,9 +466,20 @@ fn materialize_vector(obj: &mut RObject, ctx: &mut MaterializationContext<'_>) -
             ctx.materialize_complex_data(v)?;
             Ok(true)
         }
-        Character(_) => Err(Error::Unsupported(
-            "materialize character vectors not yet supported".to_string(),
-        )),
+        Character(v) => {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                ctx.materialize_character_data(v)?;
+                Ok(true)
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = v;
+                Err(Error::Unsupported(
+                    "materialize character vectors is native-only".to_string(),
+                ))
+            }
+        }
         _ => Ok(false),
     }
 }
@@ -471,4 +532,22 @@ pub fn materialize_raw_data(data: &[u8], vector: &mut VectorData<u8>) -> Result<
 pub fn materialize_complex_data(data: &[u8], vector: &mut VectorData<Complex>) -> Result<()> {
     let mut ctx = MaterializationContext::new(data);
     ctx.materialize_complex_data(vector)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn materialize_character_vector(
+    data: &[u8],
+    span: LazyVector,
+) -> Result<Vec<Option<Arc<str>>>> {
+    let mut ctx = MaterializationContext::new(data);
+    ctx.materialize_character_vector(span)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn materialize_character_data(
+    data: &[u8],
+    vector: &mut VectorData<Option<Arc<str>>>,
+) -> Result<()> {
+    let mut ctx = MaterializationContext::new(data);
+    ctx.materialize_character_data(vector)
 }

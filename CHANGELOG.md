@@ -164,6 +164,16 @@ The version in `Cargo.toml` has not been bumped yet.
   wrapped as shared handles, and tag names are extracted without
   materializing the referent.
 
+### Added
+
+- Lazy character vectors can now be materialized (native): previously
+  `materialize`/`materialize_path` returned `Unsupported` for character
+  columns while every numeric type worked. New
+  `materialize_character_vector` / `materialize_character_data` complete the
+  per-type API family. Implemented by reusing the hardened
+  `read_lazy_character_range` decoder, so NA elements and intra-vector string
+  references resolve identically to the eager parser.
+
 ### Validation
 
 - All 6,139 Rd help entries across 117 installed packages of an R 4.5.2

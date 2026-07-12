@@ -56,6 +56,9 @@ pub use materialization::{
     materialize_path, materialize_paths_with_budget, materialize_raw_data, materialize_raw_vector,
     materialize_real_data, materialize_real_vector, MaterializationContext,
 };
+// Character materialization reuses the native-only lazy range reader.
+#[cfg(not(target_arch = "wasm32"))]
+pub use materialization::{materialize_character_data, materialize_character_vector};
 #[cfg(not(target_arch = "wasm32"))]
 pub use source::{ChunkedCacheMetrics, ChunkedRdsSource, MmapRdsSource, RdsInput};
 #[cfg(not(target_arch = "wasm32"))]
