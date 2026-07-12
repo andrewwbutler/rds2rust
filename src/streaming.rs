@@ -933,7 +933,7 @@ fn traverse_object<V: RdsVisitor>(
                 path.pop();
             }
         }
-        RObject::Namespace(values) => {
+        RObject::Namespace(values) | RObject::PackageEnv(values) => {
             visitor
                 .on_vector_metadata(path, VectorKind::Character, values.len())
                 .map_err(StreamingError::Visitor)?;
@@ -1000,6 +1000,7 @@ fn object_type_name(obj: &RObject) -> &'static str {
         RObject::S3Object(_) => "S3Object",
         RObject::S4Object(_) => "S4Object",
         RObject::Namespace(_) => "Namespace",
+        RObject::PackageEnv(_) => "PackageEnv",
         RObject::GlobalEnv => "GlobalEnv",
         RObject::BaseEnv => "BaseEnv",
         RObject::EmptyEnv => "EmptyEnv",

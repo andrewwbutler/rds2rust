@@ -386,6 +386,11 @@ pub enum RObject {
     /// Contains namespace name components (e.g., ["Matrix"] or ["base"])
     Namespace(Vec<Arc<str>>),
 
+    /// Package environment reference (e.g. ["package:stats"]).
+    /// Serialized as PACKAGESXP; R resolves the name via R_FindPackageEnv
+    /// when the file is loaded.
+    PackageEnv(Vec<Arc<str>>),
+
     /// Global environment reference
     /// This is a singleton in R that persists across the session
     GlobalEnv,
@@ -582,6 +587,7 @@ impl RObject {
                 // Namespace is Vec<Arc<str>>, no nested RObjects
                 Namespace(ns)
             }
+            PackageEnv(names) => PackageEnv(names),
             // All other variants don't contain nested RObjects
             other => other,
         }
@@ -614,6 +620,7 @@ impl RObject {
             S3Object(_) => "S3Object",
             S4Object(_) => "S4Object",
             Namespace(_) => "Namespace",
+            PackageEnv(_) => "PackageEnv",
             GlobalEnv => "GlobalEnv",
             BaseEnv => "BaseEnv",
             EmptyEnv => "EmptyEnv",
@@ -739,8 +746,9 @@ impl RObject {
                     && expr.is_fully_loaded_impl(visited)
             }
 
-            // Namespace - just a Vec<Arc<str>>, always loaded
+            // Namespace/package env - just a Vec<Arc<str>>, always loaded
             Namespace(_ns) => true,
+            PackageEnv(_) => true,
 
             // WithAttributes wrapper
             WithAttributes { object, .. } => object.is_fully_loaded_impl(visited),
@@ -1057,8 +1065,9 @@ impl RObject {
                 expr.collect_lazy_spans_impl(&expr_path, spans, visited);
             }
 
-            // Namespace - just a Vec<Arc<str>>, no lazy data
+            // Namespace/package env - just a Vec<Arc<str>>, no lazy data
             Namespace(_ns) => {}
+            PackageEnv(_) => {}
 
             // WithAttributes wrapper
             WithAttributes { object, .. } => {
@@ -1262,6 +1271,7 @@ impl RObject {
 
             Factor(_)
             | Namespace(_)
+            | PackageEnv(_)
             | Null
             | Symbol(_)
             | Special { .. }
@@ -1408,6 +1418,7 @@ impl PartialEq for RObject {
             (S3Object(x), S3Object(y)) => x == y,
             (S4Object(x), S4Object(y)) => x == y,
             (Namespace(x), Namespace(y)) => x == y,
+            (PackageEnv(x), PackageEnv(y)) => x == y,
             (GlobalEnv, GlobalEnv) => true,
             (BaseEnv, BaseEnv) => true,
             (EmptyEnv, EmptyEnv) => true,

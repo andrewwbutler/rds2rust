@@ -167,6 +167,13 @@ mod wasm_payload_tests {
         }
     }
 
+    fn package_values(obj: &RObject) -> Vec<String> {
+        match unwrap_value(obj) {
+            RObject::PackageEnv(names) => names.iter().map(|s| s.to_string()).collect(),
+            other => panic!("expected package env, got {}", other.variant_name()),
+        }
+    }
+
     #[wasm_bindgen_test]
     async fn test_persistsxp_payload_consumed_sequential() {
         let obj = parse_sequential(PERSISTSXP_STREAM).await;
@@ -184,7 +191,7 @@ mod wasm_payload_tests {
         let obj = parse_sequential(PACKAGESXP_STREAM).await;
         let items = list_items(&obj);
         assert_eq!(items.len(), 2);
-        assert_eq!(namespace_values(&items[0]), ["package:stats"]);
+        assert_eq!(package_values(&items[0]), ["package:stats"]);
         assert_eq!(character_values(&items[1]), ["still-aligned"]);
     }
 

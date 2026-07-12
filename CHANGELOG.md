@@ -26,16 +26,19 @@ The version in `Cargo.toml` has not been bumped yet.
   help databases) now parse as `RObject::Character` holding the ref-hook
   strings (e.g. `"env::1"`). Previously they returned `Null` *and* silently
   corrupted everything after them in the stream.
-- **PACKAGESXP entries** (serialized package environments) now parse as
-  `RObject::Namespace` holding the environment name (e.g. `"package:stats"`)
-  and occupy one reference slot, matching R's reader. Previously `Null` plus
-  stream corruption.
+- **PACKAGESXP entries** (serialized package environments) now parse as a new
+  `RObject::PackageEnv` variant holding the environment name
+  (e.g. `"package:stats"`) and occupy one reference slot, matching R's reader.
+  Previously `Null` plus stream corruption. The writer emits PACKAGESXP for
+  this variant, so package environments now round-trip with their type intact
+  (previously they would have been rewritten as namespaces).
 - **BASENAMESPACE_SXP entries** now parse as `RObject::Namespace(["base"])`.
   Previously the parser consumed a phantom payload here, swallowing the next
   object in the stream.
-- **`RObject::Namespace` is now dual-purpose**: it represents both namespaces
-  (`NAMESPACESXP`) and package environments (`PACKAGESXP`). Package
-  environments are distinguishable by the `"package:"` prefix in the name.
+- **New `RObject::PackageEnv(Vec<Arc<str>>)` variant** distinguishes package
+  environments from namespaces at the type level (both share the same
+  OutStringVec wire shape but different SEXP types). Code that matches
+  `RObject` exhaustively must add a `PackageEnv` arm.
 - **Parsed structures may differ from 0.1.41 wherever the old output was
   silently wrong.** Any file sharing symbols or environments (e.g. `srcref`
   structures from `keep.source = TRUE`, R help databases) previously came
