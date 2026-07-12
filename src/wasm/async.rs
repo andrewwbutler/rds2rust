@@ -29,6 +29,9 @@ pub type AsyncSkipFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
 pub trait AsyncRdsInput {
     fn read_at<'a>(&'a self, offset: u64, len: usize) -> AsyncReadFuture<'a>;
     fn len(&self) -> Option<u64>;
+    fn is_empty(&self) -> Option<bool> {
+        self.len().map(|len| len == 0)
+    }
 }
 
 /// Trait for sequential-only input sources (e.g., streaming decompression).
@@ -129,7 +132,7 @@ pub fn recommended_buffer_config() -> AsyncCursorConfig {
         })
         .unwrap_or(4.0);
 
-    let buffer_mb = (device_memory_gb * 32.0_f64).min(128.0_f64).max(16.0_f64) as usize;
+    let buffer_mb = (device_memory_gb * 32.0_f64).clamp(16.0_f64, 128.0_f64) as usize;
     let max_buffer_mb = (buffer_mb * 4).min(512);
 
     AsyncCursorConfig {
@@ -174,8 +177,7 @@ impl<'a> AsyncBufferedCursor<'a> {
     }
 
     pub fn total_len(&self) -> Option<u64> {
-        let total = self.source.len();
-        total
+        self.source.len()
     }
 
     pub fn buffer_size(&self) -> usize {

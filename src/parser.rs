@@ -1150,7 +1150,7 @@ async fn parse_rds_internal_async(
     cursor: &mut AsyncBufferedCursor<'_>,
     ctx: &mut ParserContext,
 ) -> Result<RObject> {
-    let format_version = parse_with_sync_cursor_retry(cursor, 14, 14, |c| parse_header(c)).await?;
+    let format_version = parse_with_sync_cursor_retry(cursor, 14, 14, parse_header).await?;
 
     if format_version >= 3 {
         let enc_len = read_u32_async(cursor).await? as usize;
@@ -1231,7 +1231,7 @@ where
     I: crate::AsyncSequentialInput,
     V: RdsVisitor,
 {
-    let format_version = parse_with_sync_cursor_retry(cursor, 14, 14, |c| parse_header(c)).await?;
+    let format_version = parse_with_sync_cursor_retry(cursor, 14, 14, parse_header).await?;
     visitor
         .on_header(format_version)
         .map_err(StreamingError::Visitor)?;
@@ -1272,7 +1272,7 @@ async fn traverse_rds_internal_async_streaming<V: RdsVisitor>(
     visitor: &mut V,
     progress: Option<&mut dyn FnMut(StreamingProgress)>,
 ) -> StreamingResult<(), V::Error> {
-    let format_version = parse_with_sync_cursor_retry(cursor, 14, 14, |c| parse_header(c)).await?;
+    let format_version = parse_with_sync_cursor_retry(cursor, 14, 14, parse_header).await?;
     visitor
         .on_header(format_version)
         .map_err(StreamingError::Visitor)?;
@@ -1364,7 +1364,7 @@ async fn parse_object_async(
                     let bytes_to_skip = calculate_lazy_vector_bytes(&value);
                     if bytes_to_skip > 0 {
                         let msg = format!("Skipping lazy vector: sync_pos={}, bytes_to_skip={}, cursor_pos_before={}, cursor_pos_after={}",
-                            sync_pos, bytes_to_skip, cursor.position(), cursor.position() + bytes_to_skip as u64);
+                            sync_pos, bytes_to_skip, cursor.position(), cursor.position() + bytes_to_skip);
                         web_sys::console::debug_1(&wasm_bindgen::JsValue::from_str(&msg));
                         cursor.skip_bytes(bytes_to_skip as usize).await?;
                     }
@@ -1418,6 +1418,7 @@ async fn parse_object_async(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[cfg(target_arch = "wasm32")]
 async fn parse_object_streaming_async<C, V>(
     ctx: &mut ParserContext,
@@ -1634,6 +1635,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[cfg(target_arch = "wasm32")]
 async fn parse_altrep_streaming_sequential_async<C, V>(
     ctx: &mut ParserContext,
@@ -1727,6 +1729,7 @@ where
     Ok(StreamControl::Continue)
 }
 
+#[allow(clippy::too_many_arguments)]
 #[cfg(target_arch = "wasm32")]
 async fn try_parse_large_vector_streaming_async<C, V>(
     ctx: &mut ParserContext,
@@ -2475,7 +2478,7 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             let name = if name_type_from_0_7 == REFSXP {
                 let ref_index = name_flags >> 8;
                 if let Some(obj) = ref_table.get(ref_index) {
-                    extract_tag_name(&*obj.read().unwrap()).unwrap_or_else(|| Arc::from("NA"))
+                    extract_tag_name(&obj.read().unwrap()).unwrap_or_else(|| Arc::from("NA"))
                 } else {
                     Arc::from("NA")
                 }
@@ -3072,7 +3075,7 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
         let name = if name_type_from_0_7 == REFSXP {
             let ref_index = name_flags >> 8;
             if let Some(obj) = ref_table.get(ref_index) {
-                extract_tag_name(&*obj.read().unwrap()).unwrap_or_else(|| Arc::from("NA"))
+                extract_tag_name(&obj.read().unwrap()).unwrap_or_else(|| Arc::from("NA"))
             } else if let Some(sym) = symbol_table.get(ref_index) {
                 extract_tag_name(sym).unwrap_or_else(|| Arc::from("NA"))
             } else {
@@ -3231,11 +3234,13 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
             }
         }
         #[cfg(target_arch = "wasm32")]
-        if ctx.parsing_pairlist_root && ctx.mode == crate::ParseMode::LazyMetadata && skip_slot {
-            if sequential_debug_enabled() {
-                let msg = format!("seq pairlist skipping S4 slot tag={:?}", tag);
-                web_sys::console::debug_1(&JsValue::from_str(&msg));
-            }
+        if ctx.parsing_pairlist_root
+            && ctx.mode == crate::ParseMode::LazyMetadata
+            && skip_slot
+            && sequential_debug_enabled()
+        {
+            let msg = format!("seq pairlist skipping S4 slot tag={:?}", tag);
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
         #[cfg(target_arch = "wasm32")]
         if sequential_debug_enabled() && force_s4_tag {
@@ -3777,7 +3782,7 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             let name = if name_type_from_0_7 == REFSXP {
                 let ref_index = name_flags >> 8;
                 if let Some(obj) = ref_table.get(ref_index) {
-                    extract_tag_name(&*obj.read().unwrap()).unwrap_or_else(|| Arc::from("NA"))
+                    extract_tag_name(&obj.read().unwrap()).unwrap_or_else(|| Arc::from("NA"))
                 } else if let Some(sym) = symbol_table.get(ref_index) {
                     extract_tag_name(sym).unwrap_or_else(|| Arc::from("NA"))
                 } else {

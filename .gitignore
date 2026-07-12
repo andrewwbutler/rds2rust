@@ -2,3 +2,6 @@
 *.rds
 .serena
 .cargo
+
+# Ephemeral ce-review / pipeline artifacts
+.context/
