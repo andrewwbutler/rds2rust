@@ -63,6 +63,13 @@ fn namespace_values(obj: &RObject) -> Vec<String> {
     }
 }
 
+fn package_values(obj: &RObject) -> Vec<String> {
+    match unwrap_value(obj) {
+        RObject::PackageEnv(names) => names.iter().map(|s| s.to_string()).collect(),
+        other => panic!("expected package env, got {}", other.variant_name()),
+    }
+}
+
 fn shared_arc(obj: &RObject) -> Option<Arc<std::sync::RwLock<RObject>>> {
     match obj {
         RObject::Shared(arc) => Some(Arc::clone(arc)),
@@ -82,7 +89,7 @@ fn test_packagesxp_bare() {
     let obj = read_rds(&data)
         .expect("failed to parse packagesxp_bare.rds")
         .object;
-    assert_eq!(namespace_values(&obj), ["package:stats"]);
+    assert_eq!(package_values(&obj), ["package:stats"]);
 }
 
 #[test]
@@ -107,7 +114,7 @@ fn test_packagesxp_stream_alignment() {
     };
     assert_eq!(items.len(), 2);
 
-    assert_eq!(namespace_values(&items[0]), ["package:stats"]);
+    assert_eq!(package_values(&items[0]), ["package:stats"]);
 
     // The critical assertion: the object after the package entry parses
     // correctly, proving the PACKAGESXP payload was consumed.
@@ -137,8 +144,8 @@ fn test_packagesxp_ref_slots() {
     };
     assert_eq!(items.len(), 5);
 
-    assert_eq!(namespace_values(&items[0]), ["package:stats"]);
-    assert_eq!(namespace_values(&items[1]), ["package:stats"]);
+    assert_eq!(package_values(&items[0]), ["package:stats"]);
+    assert_eq!(package_values(&items[1]), ["package:stats"]);
 
     // Both occurrences must resolve to the same shared object.
     let p = shared_arc(&items[0]).expect("p should be Shared");
@@ -173,7 +180,7 @@ fn test_packagesxp_in_attributes() {
         .object;
 
     let pkgenv = attr_of(&obj, "pkgenv").expect("pkgenv attribute should survive");
-    assert_eq!(namespace_values(pkgenv), ["package:stats"]);
+    assert_eq!(package_values(pkgenv), ["package:stats"]);
 
     let tail_attr = attr_of(&obj, "tail_attr").expect("tail_attr attribute should survive");
     assert_eq!(character_values(tail_attr), ["tail"]);
@@ -301,6 +308,84 @@ fn test_basenamespace_alignment() {
 
     assert_eq!(namespace_values(&items[0]), ["base"]);
     assert_eq!(character_values(&items[1]), ["base-ok"]);
+}
+
+/// Writing a PackageEnv emits PACKAGESXP on the wire (not NAMESPACESXP), so
+/// a rds2rust roundtrip preserves the type — previously package environments
+/// were silently rewritten as namespaces.
+#[test]
+fn test_packagesxp_write_roundtrip() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("packagesxp_bare.rds");
+    let obj = rds2rust::read_rds(&data).expect("parse failed").object;
+    let rewritten = rds2rust::write_rds(&obj).expect("write failed");
+    let reread = rds2rust::read_rds(&rewritten)
+        .expect("re-read failed")
+        .object;
+    assert_eq!(package_values(&reread), ["package:stats"]);
+
+    // Byte-level check on the uncompressed stream: PACKAGESXP (0xf8), not
+    // NAMESPACESXP_SERIAL (0xf9).
+    use std::io::Read;
+    let mut raw = Vec::new();
+    flate2::read::GzDecoder::new(rewritten.as_slice())
+        .read_to_end(&mut raw)
+        .expect("gunzip failed");
+    let has_packagesxp = raw.windows(4).any(|w| w == [0x00, 0x00, 0x00, 0xf8]);
+    let has_namespacesxp = raw.windows(4).any(|w| w == [0x00, 0x00, 0x00, 0xf9]);
+    assert!(has_packagesxp, "rewritten stream must contain PACKAGESXP");
+    assert!(
+        !has_namespacesxp,
+        "rewritten stream must not contain NAMESPACESXP"
+    );
+}
+
+/// R itself can read what rds2rust writes for a package environment.
+#[test]
+fn test_packagesxp_write_roundtrip_through_r() {
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+    let r_available = std::process::Command::new("R")
+        .args(["--version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !r_available {
+        eprintln!("Skipping test: R not available");
+        return;
+    }
+
+    let data = read_test_file("packagesxp_bare.rds");
+    let obj = rds2rust::read_rds(&data).expect("parse failed").object;
+    let rewritten = rds2rust::write_rds(&obj).expect("write failed");
+    let path = std::env::temp_dir().join("rds2rust_packagesxp_roundtrip.rds");
+    std::fs::write(&path, &rewritten).expect("write file failed");
+
+    let r_code = format!(
+        "x <- readRDS('{}'); \
+         stopifnot(is.environment(x)); \
+         stopifnot(identical(environmentName(x), 'package:stats')); \
+         cat('PASS')",
+        path.display()
+    );
+    let output = std::process::Command::new("R")
+        .args(["--vanilla", "--slave", "-e", &r_code])
+        .output()
+        .expect("failed to run R");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("PASS"),
+        "R verification failed: {} {}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_file(&path);
 }
 
 /// Build a hand-crafted version-2 XDR stream: header followed by `body`.

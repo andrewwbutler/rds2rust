@@ -133,13 +133,20 @@ impl RefTable {
 
     /// Check if a namespace has been written before, returning its reference index if so.
     /// Otherwise, return None (caller decides whether/how to allocate).
-    fn check_namespace(&mut self, names: &[Arc<str>]) -> Option<u32> {
-        let key = names
+    fn check_namespace(&mut self, kind: &str, names: &[Arc<str>]) -> Option<u32> {
+        let key = Self::namespace_key(kind, names);
+        self.namespace_refs.get(&key).copied()
+    }
+
+    /// Dedup key for namespace-like objects; `kind` keeps namespaces and
+    /// package environments in separate key spaces.
+    fn namespace_key(kind: &str, names: &[Arc<str>]) -> String {
+        let joined = names
             .iter()
             .map(|s| s.as_ref())
             .collect::<Vec<_>>()
             .join("::");
-        self.namespace_refs.get(&key).copied()
+        format!("{}::{}", kind, joined)
     }
 
     /// Check if a symbol has been written before, returning its symbol index if so.
@@ -435,7 +442,10 @@ fn ref_key(obj: &RObject) -> Option<usize> {
             let guard = inner.read().unwrap();
             if matches!(
                 &*guard,
-                RObject::Symbol(_) | RObject::Environment { .. } | RObject::Namespace(_)
+                RObject::Symbol(_)
+                    | RObject::Environment { .. }
+                    | RObject::Namespace(_)
+                    | RObject::PackageEnv(_)
             ) {
                 Some(Arc::as_ptr(inner) as usize)
             } else {
@@ -443,7 +453,9 @@ fn ref_key(obj: &RObject) -> Option<usize> {
             }
         }
         RObject::Symbol(_) => None,
-        RObject::Environment { .. } | RObject::Namespace(_) => Some(obj as *const RObject as usize),
+        RObject::Environment { .. } | RObject::Namespace(_) | RObject::PackageEnv(_) => {
+            Some(obj as *const RObject as usize)
+        }
         _ => None,
     }
 }
@@ -588,7 +600,10 @@ fn write_object_inner<W: Write>(
             let guard = inner.read().unwrap();
             let inner_is_ref = matches!(
                 &*guard,
-                RObject::Symbol(_) | RObject::Environment { .. } | RObject::Namespace(_)
+                RObject::Symbol(_)
+                    | RObject::Environment { .. }
+                    | RObject::Namespace(_)
+                    | RObject::PackageEnv(_)
             );
             drop(guard);
             if !inner_is_ref || !allow_ref_tracking {
@@ -780,7 +795,10 @@ fn write_object_inner<W: Write>(
             let guard = inner.read().unwrap();
             let inner_is_ref = matches!(
                 &*guard,
-                RObject::Symbol(_) | RObject::Environment { .. } | RObject::Namespace(_)
+                RObject::Symbol(_)
+                    | RObject::Environment { .. }
+                    | RObject::Namespace(_)
+                    | RObject::PackageEnv(_)
             );
             drop(guard);
             if inner_is_ref {
@@ -948,6 +966,7 @@ fn write_object_inner<W: Write>(
             symbol_context,
         ),
         RObject::Namespace(names) => write_namespace(writer, names, ref_table, current_ref_idx),
+        RObject::PackageEnv(names) => write_package_env(writer, names, ref_table, current_ref_idx),
         RObject::GlobalEnv => write_global_env(writer),
         RObject::BaseEnv => write_base_env(writer),
         RObject::EmptyEnv => write_empty_env(writer),
@@ -1016,8 +1035,37 @@ fn write_namespace<W: Write>(
     ref_table: &mut RefTable,
     reserved_idx: Option<u32>,
 ) -> Result<()> {
-    // Check if this namespace was already written
-    if let Some(ref_idx) = ref_table.check_namespace(names) {
+    write_string_vec_env(
+        writer,
+        names,
+        NAMESPACESXP_SERIAL,
+        "ns",
+        ref_table,
+        reserved_idx,
+    )
+}
+
+/// Write a package environment (PACKAGESXP): same OutStringVec wire shape as
+/// a namespace, but R resolves the name via R_FindPackageEnv on load.
+fn write_package_env<W: Write>(
+    writer: &mut W,
+    names: &[Arc<str>],
+    ref_table: &mut RefTable,
+    reserved_idx: Option<u32>,
+) -> Result<()> {
+    write_string_vec_env(writer, names, PACKAGESXP, "pkg", ref_table, reserved_idx)
+}
+
+fn write_string_vec_env<W: Write>(
+    writer: &mut W,
+    names: &[Arc<str>],
+    wire_type: u32,
+    kind: &str,
+    ref_table: &mut RefTable,
+    reserved_idx: Option<u32>,
+) -> Result<()> {
+    // Check if this namespace/package env was already written
+    if let Some(ref_idx) = ref_table.check_namespace(kind, names) {
         // Write a reference to the previous occurrence
         write_refsxp(writer, ref_idx)?;
         return Ok(());
@@ -1028,31 +1076,21 @@ fn write_namespace<W: Write>(
     // Align the reference index with any reserved object slot (from ref tracking).
     let _idx = if let Some(idx) = reserved_idx {
         // Ensure the namespace_refs map records the existing index without bumping next_index again.
-        ref_table.namespace_refs.insert(
-            names
-                .iter()
-                .map(|s| s.as_ref())
-                .collect::<Vec<_>>()
-                .join("::"),
-            idx,
-        );
+        ref_table
+            .namespace_refs
+            .insert(RefTable::namespace_key(kind, names), idx);
         idx
     } else {
         // No reserved index; allocate a new one.
         let idx = ref_table.next_index;
         ref_table.next_index += 1;
-        ref_table.namespace_refs.insert(
-            names
-                .iter()
-                .map(|s| s.as_ref())
-                .collect::<Vec<_>>()
-                .join("::"),
-            idx,
-        );
+        ref_table
+            .namespace_refs
+            .insert(RefTable::namespace_key(kind, names), idx);
         idx
     };
 
-    write_flags(writer, NAMESPACESXP_SERIAL, false, false, false)?;
+    write_flags(writer, wire_type, false, false, false)?;
 
     // Write as OutStringVec format: flags, length, then CHARSXP entries
     writer.write_u32::<BigEndian>(0)?; // unused flags

@@ -806,7 +806,7 @@ fn dedup_fingerprint(obj: &RObject) -> u64 {
             }
         }
         RObject::Symbol(name) => name.hash(&mut h),
-        RObject::Namespace(names) => {
+        RObject::Namespace(names) | RObject::PackageEnv(names) => {
             for s in names {
                 s.hash(&mut h);
             }
@@ -4204,17 +4204,21 @@ async fn parse_pseudo_stringvec_async<C: AsyncCursor>(
         // keep the stream aligned (see parse_string_vec).
         PERSISTSXP => RObject::Character(parse_string_vec_async(ctx, cursor).await?.into()),
         // Package/namespace environment name payload; must be consumed.
-        PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL => {
-            // Namespace names are a derived plain-string surface: NA entries
-            // are treated as absent.
-            RObject::Namespace(
-                parse_string_vec_async(ctx, cursor)
-                    .await?
-                    .into_iter()
-                    .flatten()
-                    .collect(),
-            )
-        }
+        // Names are a derived plain-string surface: NA entries are absent.
+        PACKAGESXP => RObject::PackageEnv(
+            parse_string_vec_async(ctx, cursor)
+                .await?
+                .into_iter()
+                .flatten()
+                .collect(),
+        ),
+        NAMESPACESXP | NAMESPACESXP_SERIAL => RObject::Namespace(
+            parse_string_vec_async(ctx, cursor)
+                .await?
+                .into_iter()
+                .flatten()
+                .collect(),
+        ),
         // No payload on the wire; R's reader returns R_BaseNamespace.
         BASENAMESPACE_SXP => RObject::Namespace(vec![Arc::from("base")]),
         other => {
@@ -4728,9 +4732,9 @@ fn parse_object(
             // R_FindPackageEnv. The payload must be consumed to keep the
             // stream aligned, and the entry occupies one reference slot
             // (AddReadRef in R's reader), so fill the placeholder.
-            // Namespace names are a derived plain-string surface: an NA entry
+            // Package names are a derived plain-string surface: an NA entry
             // is treated as absent (a package name cannot be NA).
-            let package_result = RObject::Namespace(
+            let package_result = RObject::PackageEnv(
                 parse_string_vec(ctx, cursor)?
                     .into_iter()
                     .flatten()
@@ -5525,6 +5529,7 @@ fn emit_parsed_object_streaming<V: RdsVisitor>(
             | RObject::Language { .. }
             | RObject::Expression(_)
             | RObject::Namespace(_)
+            | RObject::PackageEnv(_)
             | RObject::GlobalEnv
             | RObject::BaseEnv
             | RObject::EmptyEnv
@@ -5686,6 +5691,7 @@ fn object_type_name(obj: &RObject) -> &'static str {
         RObject::S3Object(_) => "S3Object",
         RObject::S4Object(_) => "S4Object",
         RObject::Namespace(_) => "Namespace",
+        RObject::PackageEnv(_) => "PackageEnv",
         RObject::GlobalEnv => "GlobalEnv",
         RObject::BaseEnv => "BaseEnv",
         RObject::EmptyEnv => "EmptyEnv",
