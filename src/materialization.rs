@@ -1,5 +1,7 @@
 use byteorder::{BigEndian, ReadBytesExt};
 use std::io::Cursor;
+// Arc is only used by the native-only character materializers.
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 use crate::{Complex, Error, LazyVector, Logical, RObject, Result, VectorData};

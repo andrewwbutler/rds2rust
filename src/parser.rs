@@ -400,6 +400,19 @@ fn should_materialize_vector_tag(ctx: &ParserContext, tag: &Option<Arc<str>>) ->
 #[cfg(target_arch = "wasm32")]
 fn log_large_alloc(_ctx: &ParserContext, _kind: &str, _length: usize) {}
 
+/// Cap the up-front `Vec::with_capacity` reservation for a collection whose
+/// declared element count comes from untrusted input. Guards validate the
+/// count against the stream, but for variable-length elements (each item is
+/// read in a loop) the reservation should track bytes actually consumed, not
+/// the attacker-declared count. Reserving a bounded amount and letting the
+/// `Vec` grow keeps peak allocation proportional to real data.
+fn bounded_capacity(n: usize) -> usize {
+    // ~8 K elements is plenty for real string vectors / namespaces; anything
+    // larger grows on demand as items are read.
+    const MAX_EAGER_CAPACITY: usize = 8192;
+    n.min(MAX_EAGER_CAPACITY)
+}
+
 fn guard_allocation(
     ctx: &mut ParserContext,
     length: usize,
@@ -3857,7 +3870,7 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
                 })));
             }
 
-            let mut vec: Vec<Option<Arc<str>>> = Vec::with_capacity(length);
+            let mut vec: Vec<Option<Arc<str>>> = Vec::with_capacity(bounded_capacity(length));
             let mut string_cache: Vec<Option<Arc<str>>> = Vec::new();
             for _ in 0..length {
                 let elem_flags = read_u32_async(cursor).await?;
@@ -4258,7 +4271,10 @@ async fn parse_string_vec_async<C: AsyncCursor>(
     let n = usize::try_from(n)
         .map_err(|_| Error::InvalidFormat(format!("String vector count {} exceeds usize", n)))?;
     guard_allocation_common(ctx, n, 4, "string vector")?;
-    let mut strings: Vec<Option<Arc<str>>> = Vec::with_capacity(n);
+    // Bound the eager reservation (see parse_string_vec): the async path has
+    // no remaining-stream backstop, so a hostile count must not drive a huge
+    // `Vec::with_capacity` before any item is read.
+    let mut strings: Vec<Option<Arc<str>>> = Vec::with_capacity(bounded_capacity(n));
     for _ in 0..n {
         let item_flags = read_u32_async(cursor).await?;
         check_string_vec_item_flags(item_flags)?;
@@ -9223,7 +9239,11 @@ fn parse_string_vec(
     // Each CHARSXP item occupies at least a 4-byte flags word; validate the
     // count against the remaining stream before allocating.
     guard_allocation(ctx, n, 4, cursor, "string vector")?;
-    let mut strings: Vec<Option<Arc<str>>> = Vec::with_capacity(n);
+    // Bound the eager reservation: a hostile count must not drive a huge
+    // `Vec::with_capacity` before any item is read (the guard's element size
+    // is the on-wire minimum, not the 16-byte in-memory element). The Vec
+    // grows as real items are consumed.
+    let mut strings: Vec<Option<Arc<str>>> = Vec::with_capacity(bounded_capacity(n));
     for _ in 0..n {
         let item_flags = cursor.read_i32::<BigEndian>()? as u32;
         check_string_vec_item_flags(item_flags)?;
@@ -9260,6 +9280,15 @@ fn check_string_vec_item_flags(item_flags: u32) -> Result<()> {
         return Err(Error::InvalidFormat(format!(
             "String vector item has type {} (flags 0x{:08x}), expected CHARSXP",
             item_type, item_flags
+        )));
+    }
+    // R never writes attributes on OutStringVec CHARSXP items, and
+    // parse_charsxp_content does not consume an attribute object. Reject the
+    // bit so a hostile stream can't desync by promising attributes we'd skip.
+    if item_flags & HAS_ATTR_BIT != 0 {
+        return Err(Error::InvalidFormat(format!(
+            "String vector CHARSXP item unexpectedly carries attributes (flags 0x{:08x})",
+            item_flags
         )));
     }
     Ok(())

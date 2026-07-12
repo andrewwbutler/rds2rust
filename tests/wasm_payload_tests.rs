@@ -313,4 +313,33 @@ mod wasm_payload_tests {
             other => panic!("expected character vector, got {}", other.variant_name()),
         }
     }
+
+    // v2 header + PACKAGESXP flags + placeholder 0 + long-vector marker (-1)
+    // + upper=0 + lower=0x12000000 (~300M) and NO items. Without the
+    // bounded-capacity fix the async LazyMetadata path (no remaining-stream
+    // backstop) would drive a multi-GB Vec::with_capacity before reading an
+    // item. With the fix it errors quickly on running out of bytes.
+    const HUGE_COUNT_STREAM: &[u8] = &[
+        0x58, 0x0a, 0x00, 0x00, 0x00, 0x02, 0x00, 0x04, 0x03, 0x03, 0x00, 0x02, 0x03, 0x00, 0x00,
+        0x00, 0x00, 0xf8, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
+        0x12, 0x00, 0x00, 0x00,
+    ];
+
+    /// A hostile OutStringVec with an enormous count and no payload must not
+    /// OOM the async parser; it errors instead.
+    #[wasm_bindgen_test]
+    async fn test_huge_count_does_not_oom_sequential() {
+        let input = MockRdsInput {
+            data: HUGE_COUNT_STREAM.to_vec(),
+        };
+        let config = ParseConfig {
+            mode: ParseMode::LazyMetadata,
+            ..ParseConfig::default()
+        };
+        let result = read_rds_async(&input, config, AsyncParseConfig::default()).await;
+        assert!(
+            result.is_err(),
+            "a huge string-vec count with no payload must error, not allocate"
+        );
+    }
 }

@@ -7,6 +7,11 @@ date: 2026-07-09
 
 # fix: Consume PACKAGESXP payloads and close wasm parser payload gaps
 
+> **Superseded (2026-07-12):** this plan surfaced PACKAGESXP as `RObject::Namespace`
+> with a `"package:"` name-prefix convention. That was later replaced by the
+> dedicated `RObject::PackageEnv` variant — see the CHANGELOG 0.2.0 section.
+> The design notes below describe the intermediate approach, not current behavior.
+
 ## Overview
 
 PRs #2 and #3 (merged 2026-07-09) fixed stream desynchronization for PERSISTSXP payloads and reference-table misalignment, but each disclosed known gaps. This plan closes the two correctness gaps selected for this iteration:
