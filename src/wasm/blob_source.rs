@@ -201,7 +201,7 @@ impl BlobChunkedSource {
         let mut cache = self.inner.cache.borrow_mut();
         let evicted = cache.insert(idx, buf);
         if evicted > 0 {
-            self.inner.metrics.borrow_mut().evictions += evicted as u64;
+            self.inner.metrics.borrow_mut().evictions += evicted;
         }
     }
 

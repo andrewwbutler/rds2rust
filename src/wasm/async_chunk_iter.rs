@@ -403,7 +403,7 @@ mod tests {
     async fn async_lazy_character_chunk_iter_reads_values() {
         let mut data = Vec::new();
         for value in ["a", "bbb"] {
-            data.extend_from_slice(&(CHARSXP as u32).to_be_bytes());
+            data.extend_from_slice(&CHARSXP.to_be_bytes());
             data.extend_from_slice(&(value.len() as i32).to_be_bytes());
             data.extend_from_slice(value.as_bytes());
         }
