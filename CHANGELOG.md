@@ -134,6 +134,13 @@ The version in `Cargo.toml` has not been bumped yet.
   on these unconditionally, so no readable stream contains them; previously
   the parser resolved their index against the main reference table,
   returning an arbitrary wrong object.
+- Additional fail-fast hardening for hostile (non-R) streams: an `OutStringVec`
+  CHARSXP item carrying the `HAS_ATTR` bit is rejected (R never writes it, and
+  the item reader does not consume the promised attribute — so it would
+  otherwise desync), and the string-vec/character allocation paths cap the
+  eager `Vec::with_capacity` reservation so a hostile element count cannot
+  drive a multi-gigabyte allocation before any item is read (the async/wasm
+  path had no remaining-stream backstop).
 - Invalid in-vector string references (REFSXP inside STRSXP with an
   out-of-range or zero index) now fail fast in every reader: the wasm
   sequential path previously degraded them silently, and three defensive

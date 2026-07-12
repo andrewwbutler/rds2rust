@@ -88,7 +88,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```rust
 use rds2rust::{write_rds, RObject, VectorData};
 use std::fs;
-use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create an R object (e.g., a character vector)
@@ -112,7 +111,6 @@ For large outputs, stream directly to a `Write` sink to avoid buffering the whol
 use rds2rust::{write_rds_streaming, write_rds_atomic, RObject, VectorData};
 use std::fs::File;
 use std::io::BufWriter;
-use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let obj = RObject::Character(VectorData::from_strs(["hello", "streaming"]));
@@ -144,7 +142,8 @@ if let RObject::DataFrame(df) = obj {
     let species = df.columns.get("Species");
 
     // Access row names
-    println!("First row name: {}", df.row_names[0]);
+    // row names are Option<Arc<str>> (None = NA row name)
+    println!("First row name: {:?}", df.row_names[0]);
 
     // Iterate over columns
     for (name, values) in &df.columns {
@@ -434,16 +433,19 @@ if let RObject::Factor(factor) = obj {
         println!("Ordered factor with {} levels", factor.levels.len());
     }
 
-    // Get level labels
+    // Get level labels (each is Option<Arc<str>>; None = NA level)
     for level in &factor.levels {
-        println!("Level: {}", level);
+        match level {
+            Some(l) => println!("Level: {l}"),
+            None => println!("Level: <NA>"),
+        }
     }
 
     // Get values (1-based indices into levels)
     for &index in &factor.values {
         if index > 0 && index <= factor.levels.len() as i32 {
-            let level = &factor.levels[(index - 1) as usize];
-            println!("Value: {}", level);
+            let level = factor.levels[(index - 1) as usize].as_deref();
+            println!("Value: {}", level.unwrap_or("<NA>"));
         }
     }
 }
@@ -537,6 +539,7 @@ pub enum RObject {
     S3Object(Box<S3ObjectData>),
     S4Object(Box<S4ObjectData>),
     Namespace(Vec<Arc<str>>),
+    PackageEnv(Vec<Arc<str>>), // package environments (PACKAGESXP), e.g. "package:stats"
     GlobalEnv,
     BaseEnv,
     EmptyEnv,
@@ -609,7 +612,7 @@ let obj2 = Arc::clone(&obj);
 
 ## Development Status
 
-**Current version**: 0.1.40
+**Current version**: see CHANGELOG.md (0.2.0 in progress)
 
 **Test coverage**: extensive test suite covering core R object types and roundtrips
 

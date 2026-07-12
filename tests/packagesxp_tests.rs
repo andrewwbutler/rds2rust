@@ -453,6 +453,68 @@ fn test_stringvec_wrong_item_type_rejected() {
     );
 }
 
+/// R never writes attributes on OutStringVec CHARSXP items; a hostile stream
+/// setting HAS_ATTR (bit 9, 0x200) on such an item must be rejected rather
+/// than silently desyncing (parse_charsxp_content does not consume the
+/// promised attribute object).
+#[test]
+fn test_stringvec_item_with_attr_rejected() {
+    // PACKAGESXP flags, placeholder 0, count 1, item flags = CHARSXP|HAS_ATTR
+    // (0x209), length 1
+    let mut data = v2_stream(&[248, 0, 1, 0x209, 1]);
+    data.push(b'x');
+    let err = format!(
+        "{:?}",
+        read_rds(&data).expect_err("string-vec CHARSXP item with attributes must be rejected")
+    );
+    assert!(
+        err.contains("carries attributes"),
+        "unexpected error: {}",
+        err
+    );
+}
+
+/// A hostile OutStringVec whose declared count is enormous relative to the
+/// (tiny) payload must be rejected by the allocation guard, not drive a
+/// multi-gigabyte `Vec::with_capacity`. The native path's remaining-stream
+/// backstop catches this; the assertion is that it errors quickly.
+#[test]
+fn test_stringvec_huge_count_rejected() {
+    // PACKAGESXP flags, placeholder 0, then the long-vector marker (-1)
+    // followed by upper/lower halves encoding ~300 million, with no items.
+    let data = v2_stream(&[248, 0, -1, 0, 0x1200_0000]);
+    let result = read_rds(&data);
+    assert!(
+        result.is_err(),
+        "a huge string-vec count with no payload must be rejected, got {:?}",
+        result.map(|r| r.object.variant_name().to_string())
+    );
+}
+
+/// A namespace and a package environment with the same name must round-trip
+/// as distinct variants: the writer's dedup key space is kind-prefixed so the
+/// second is not emitted as a REFSXP into the first's slot.
+#[test]
+fn test_namespace_and_packageenv_same_name_roundtrip() {
+    use rds2rust::RObject;
+    let obj = RObject::List(vec![
+        RObject::Namespace(vec![std::sync::Arc::from("stats")]),
+        RObject::PackageEnv(vec![std::sync::Arc::from("package:stats")]),
+        RObject::Namespace(vec![std::sync::Arc::from("stats")]),
+        RObject::PackageEnv(vec![std::sync::Arc::from("package:stats")]),
+    ]);
+    let bytes = rds2rust::write_rds(&obj).expect("write failed");
+    let items = match unwrap_value(&rds2rust::read_rds(&bytes).expect("read failed").object) {
+        RObject::List(items) => items,
+        other => panic!("expected list, got {}", other.variant_name()),
+    };
+    assert_eq!(items.len(), 4);
+    assert_eq!(namespace_values(&items[0]), ["stats"]);
+    assert_eq!(package_values(&items[1]), ["package:stats"]);
+    assert_eq!(namespace_values(&items[2]), ["stats"]);
+    assert_eq!(package_values(&items[3]), ["package:stats"]);
+}
+
 /// GENERICREFSXP (245) / CLASSREFSXP (246): R's own reader errors on these
 /// unconditionally, so no readable stream contains them. Previously the
 /// parser resolved `flags >> 8` against the main reference table, returning
