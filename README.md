@@ -633,8 +633,8 @@ Licensed under:
 
 ## Resources
 
-- [RDS Format Documentation](RDS_FORMAT.md)
-- [Project Plan](PROJECT_PLAN.md)
+- [RDS Format Documentation](docs/RDS_FORMAT.md)
+- [Project Plan (historical archive)](docs/archive/PROJECT_PLAN.md)
 - [Test Generation Guide](tests/README.md)
 - [WASM Decompression Guide](docs/wasm_decompression.md)
 - [R Internals Manual](https://cran.r-project.org/doc/manuals/r-release/R-ints.html)
