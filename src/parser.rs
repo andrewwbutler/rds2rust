@@ -400,6 +400,19 @@ fn should_materialize_vector_tag(ctx: &ParserContext, tag: &Option<Arc<str>>) ->
 #[cfg(target_arch = "wasm32")]
 fn log_large_alloc(_ctx: &ParserContext, _kind: &str, _length: usize) {}
 
+/// Cap the up-front `Vec::with_capacity` reservation for a collection whose
+/// declared element count comes from untrusted input. Guards validate the
+/// count against the stream, but for variable-length elements (each item is
+/// read in a loop) the reservation should track bytes actually consumed, not
+/// the attacker-declared count. Reserving a bounded amount and letting the
+/// `Vec` grow keeps peak allocation proportional to real data.
+fn bounded_capacity(n: usize) -> usize {
+    // ~8 K elements is plenty for real string vectors / namespaces; anything
+    // larger grows on demand as items are read.
+    const MAX_EAGER_CAPACITY: usize = 8192;
+    n.min(MAX_EAGER_CAPACITY)
+}
+
 fn guard_allocation(
     ctx: &mut ParserContext,
     length: usize,
@@ -638,9 +651,11 @@ impl SymbolTable {
 /// Uses Arc-based sharing for efficient cloning of deduplicated objects.
 struct DedupTable {
     /// Cache of previously seen objects wrapped in Arc for cheap cloning
-    /// We use a Vec for simple linear search since most RDS files have a small
-    /// number of unique repeated objects (e.g., class names, common vectors)
     cache: Vec<Arc<RObject>>,
+    /// Fingerprint -> indices into `cache`. Lookups probe only the matching
+    /// bucket instead of scanning the whole cache, which degraded to O(n^2)
+    /// comparisons on files with many distinct small cacheable objects.
+    index: HashMap<u64, Vec<u32>>,
     /// Statistics for monitoring deduplication effectiveness
     hits: usize,
     misses: usize,
@@ -650,6 +665,7 @@ impl DedupTable {
     fn new() -> Self {
         DedupTable {
             cache: Vec::new(),
+            index: HashMap::new(),
             hits: 0,
             misses: 0,
         }
@@ -668,25 +684,35 @@ impl DedupTable {
             return self.deduplicate(&obj_concrete);
         }
 
-        // Check if we've seen this object before.
-        // Cache entries are always already-concrete (they're stored via
-        // `obj.clone()` below, never a `Shared` wrapper), so comparing
-        // directly against `obj` avoids cloning either side of the comparison.
-        for cached in &self.cache {
-            if cached.as_ref() == obj {
-                // Found a match! Return a clone (cheap Arc clone for strings, actual clone for others)
-                self.hits += 1;
-                return Some((**cached).clone());
+        // Objects that would never be cached can never match a cached entry
+        // either: `==` requires the same variant, and for the length-gated
+        // vector variants equal contents imply equal length, hence equal
+        // cacheability. Skip both the lookup and the insert.
+        if !should_cache_for_dedup(obj) {
+            self.misses += 1;
+            return None;
+        }
+
+        // Probe only the fingerprint bucket; entries are always concrete
+        // (stored via `obj.clone()` below, never a `Shared` wrapper), so
+        // comparing directly against `obj` avoids cloning either side.
+        let fp = dedup_fingerprint(obj);
+        if let Some(bucket) = self.index.get(&fp) {
+            for &i in bucket {
+                let cached = &self.cache[i as usize];
+                if cached.as_ref() == obj {
+                    // Found a match! Return a clone (cheap Arc clone for strings, actual clone for others)
+                    self.hits += 1;
+                    return Some((**cached).clone());
+                }
             }
         }
 
         // New unique object - add to cache
         self.misses += 1;
-
-        // Only cache if it's likely to be repeated and not too large
-        if should_cache_for_dedup(obj) {
-            self.cache.push(Arc::new(obj.clone()));
-        }
+        let idx = self.cache.len() as u32;
+        self.cache.push(Arc::new(obj.clone()));
+        self.index.entry(fp).or_default().push(idx);
 
         None
     }
@@ -699,7 +725,13 @@ impl DedupTable {
     #[cfg(target_arch = "wasm32")]
     fn rollback(&mut self, checkpoint: (usize, usize, usize)) {
         let (len, hits, misses) = checkpoint;
-        self.cache.truncate(len);
+        if self.cache.len() > len {
+            self.cache.truncate(len);
+            self.index.retain(|_, bucket| {
+                bucket.retain(|&i| (i as usize) < len);
+                !bucket.is_empty()
+            });
+        }
         self.hits = hits;
         self.misses = misses;
     }
@@ -742,6 +774,73 @@ fn should_cache_for_dedup(obj: &RObject) -> bool {
         // Cache other small types
         _ => true,
     }
+}
+
+/// Compute a fingerprint for the dedup index.
+///
+/// Required invariant for *hit completeness*: `a == b` should imply
+/// `fingerprint(a) == fingerprint(b)` (a violation only misses a dedup
+/// opportunity, never corrupts results; false collisions are resolved by the
+/// full `==` inside the bucket). Only equality-implied fields are hashed, and
+/// only bounded projections of them: small cacheable vectors hash their full
+/// contents, potentially-large or composite variants hash a prefix or just
+/// the discriminant (sharing a per-variant bucket that degrades to a scan).
+fn dedup_fingerprint(obj: &RObject) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::mem::discriminant(obj).hash(&mut h);
+    match obj {
+        RObject::Character(v) if v.is_loaded() => {
+            for s in v.as_vec() {
+                s.hash(&mut h);
+            }
+        }
+        RObject::Integer(v) if v.is_loaded() => {
+            for x in v.as_vec() {
+                x.hash(&mut h);
+            }
+        }
+        RObject::Real(v) if v.is_loaded() => {
+            for x in v.as_vec() {
+                // Normalize -0.0 to 0.0 so equal floats fingerprint equally;
+                // NaN bit patterns only cost a failed probe.
+                let x = if *x == 0.0 { 0.0f64 } else { *x };
+                x.to_bits().hash(&mut h);
+            }
+        }
+        RObject::Logical(v) if v.is_loaded() => {
+            for x in v.as_vec() {
+                let b: u8 = match x {
+                    Logical::False => 0,
+                    Logical::True => 1,
+                    Logical::Na => 2,
+                };
+                b.hash(&mut h);
+            }
+        }
+        RObject::Symbol(name) => name.hash(&mut h),
+        RObject::Namespace(names) | RObject::PackageEnv(names) => {
+            for s in names {
+                s.hash(&mut h);
+            }
+        }
+        RObject::Factor(f) => {
+            // Factors can be arbitrarily large; hash a bounded prefix.
+            f.values.len().hash(&mut h);
+            f.levels.len().hash(&mut h);
+            for x in f.values.iter().take(8) {
+                x.hash(&mut h);
+            }
+            for s in f.levels.iter().take(8) {
+                s.hash(&mut h);
+            }
+        }
+        // Lazy vectors, markers (Null, MissingArg, ...), and composite
+        // catch-all variants (WithAttributes, Pairlist, Language, ...):
+        // discriminant-only bucket; the per-bucket `==` does the real work.
+        _ => {}
+    }
+    h.finish()
 }
 
 /// Determine if an object should be tracked in the reference table.
@@ -1051,7 +1150,7 @@ async fn parse_rds_internal_async(
     cursor: &mut AsyncBufferedCursor<'_>,
     ctx: &mut ParserContext,
 ) -> Result<RObject> {
-    let format_version = parse_with_sync_cursor_retry(cursor, 14, 14, |c| parse_header(c)).await?;
+    let format_version = parse_with_sync_cursor_retry(cursor, 14, 14, parse_header).await?;
 
     if format_version >= 3 {
         let enc_len = read_u32_async(cursor).await? as usize;
@@ -1132,7 +1231,7 @@ where
     I: crate::AsyncSequentialInput,
     V: RdsVisitor,
 {
-    let format_version = parse_with_sync_cursor_retry(cursor, 14, 14, |c| parse_header(c)).await?;
+    let format_version = parse_with_sync_cursor_retry(cursor, 14, 14, parse_header).await?;
     visitor
         .on_header(format_version)
         .map_err(StreamingError::Visitor)?;
@@ -1173,7 +1272,7 @@ async fn traverse_rds_internal_async_streaming<V: RdsVisitor>(
     visitor: &mut V,
     progress: Option<&mut dyn FnMut(StreamingProgress)>,
 ) -> StreamingResult<(), V::Error> {
-    let format_version = parse_with_sync_cursor_retry(cursor, 14, 14, |c| parse_header(c)).await?;
+    let format_version = parse_with_sync_cursor_retry(cursor, 14, 14, parse_header).await?;
     visitor
         .on_header(format_version)
         .map_err(StreamingError::Visitor)?;
@@ -1265,7 +1364,7 @@ async fn parse_object_async(
                     let bytes_to_skip = calculate_lazy_vector_bytes(&value);
                     if bytes_to_skip > 0 {
                         let msg = format!("Skipping lazy vector: sync_pos={}, bytes_to_skip={}, cursor_pos_before={}, cursor_pos_after={}",
-                            sync_pos, bytes_to_skip, cursor.position(), cursor.position() + bytes_to_skip as u64);
+                            sync_pos, bytes_to_skip, cursor.position(), cursor.position() + bytes_to_skip);
                         web_sys::console::debug_1(&wasm_bindgen::JsValue::from_str(&msg));
                         cursor.skip_bytes(bytes_to_skip as usize).await?;
                     }
@@ -1319,6 +1418,7 @@ async fn parse_object_async(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[cfg(target_arch = "wasm32")]
 async fn parse_object_streaming_async<C, V>(
     ctx: &mut ParserContext,
@@ -1535,6 +1635,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 #[cfg(target_arch = "wasm32")]
 async fn parse_altrep_streaming_sequential_async<C, V>(
     ctx: &mut ParserContext,
@@ -1628,6 +1729,7 @@ where
     Ok(StreamControl::Continue)
 }
 
+#[allow(clippy::too_many_arguments)]
 #[cfg(target_arch = "wasm32")]
 async fn try_parse_large_vector_streaming_async<C, V>(
     ctx: &mut ParserContext,
@@ -2376,16 +2478,17 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             let name = if name_type_from_0_7 == REFSXP {
                 let ref_index = name_flags >> 8;
                 if let Some(obj) = ref_table.get(ref_index) {
-                    extract_tag_name(obj.read().unwrap().clone()).unwrap_or_else(|| Arc::from("NA"))
+                    extract_tag_name(&obj.read().unwrap()).unwrap_or_else(|| Arc::from("NA"))
                 } else {
                     Arc::from("NA")
                 }
             } else if name_type_from_0_7 == CHARSXP || name_type_from_8_15 == CHARSXP {
-                Arc::from(
-                    parse_charsxp_content_async(ctx, cursor, name_flags)
-                        .await?
-                        .as_str(),
-                )
+                parse_charsxp_content_async(ctx, cursor, name_flags)
+                    .await?
+                    .map(|s| Arc::from(s.as_str()))
+                    .ok_or_else(|| {
+                        Error::InvalidFormat("NA_character_ in symbol name position".to_string())
+                    })?
             } else {
                 Arc::from("NA")
             };
@@ -2395,7 +2498,7 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
         }
         CHARSXP => {
             let string = parse_charsxp_content_async(ctx, cursor, flags).await?;
-            RObject::Character(vec![Arc::from(string.as_str())].into())
+            RObject::Character(vec![string.map(|s| Arc::from(s.as_str()))].into())
         }
         STRSXP => {
             let length = read_u32_async(cursor).await? as usize;
@@ -2452,45 +2555,52 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
 
             #[cfg(target_arch = "wasm32")]
             log_large_alloc(ctx, "strsxp", length);
-            let mut vec = Vec::with_capacity(length);
-            let mut string_cache: Vec<Arc<str>> = Vec::new();
+            let mut vec: Vec<Option<Arc<str>>> = Vec::with_capacity(length);
+            let mut string_cache: Vec<Option<Arc<str>>> = Vec::new();
             for _ in 0..length {
                 let elem_flags = read_u32_async(cursor).await?;
                 let elem_type = elem_flags & 0xFF;
                 let elem_type_alt = (elem_flags >> 8) & 0xFF;
-                let value = if elem_type == REFSXP {
+                // Invalid in-vector references fail fast (matching the
+                // native parser and chunk iterators); unknown element types
+                // degrade to NA (None) rather than fabricating a string.
+                let value: Option<Arc<str>> = if elem_type == REFSXP {
                     let ref_index = (elem_flags >> 8) as usize;
-                    string_cache
-                        .get(ref_index.saturating_sub(1))
-                        .cloned()
-                        .unwrap_or_else(|| Arc::from("NA"))
+                    if ref_index == 0 || ref_index > string_cache.len() {
+                        return Err(Error::InvalidFormat(format!(
+                            "Invalid string reference: {} (cache size: {})",
+                            ref_index,
+                            string_cache.len()
+                        )));
+                    }
+                    string_cache[ref_index - 1].clone()
                 } else if elem_type == SYMSXP {
                     let name_flags = read_u32_async(cursor).await?;
                     let name_type = name_flags & 0xFF;
                     let name_type_alt = (name_flags >> 8) & 0xFF;
                     if name_type == REFSXP {
                         let ref_index = (name_flags >> 8) as usize;
-                        string_cache
-                            .get(ref_index.saturating_sub(1))
-                            .cloned()
-                            .unwrap_or_else(|| Arc::from("NA"))
+                        if ref_index == 0 || ref_index > string_cache.len() {
+                            return Err(Error::InvalidFormat(format!(
+                                "Invalid string reference: {} (cache size: {})",
+                                ref_index,
+                                string_cache.len()
+                            )));
+                        }
+                        string_cache[ref_index - 1].clone()
                     } else if name_type == CHARSXP || name_type_alt == CHARSXP {
-                        Arc::from(
-                            parse_charsxp_content_async(ctx, cursor, name_flags)
-                                .await?
-                                .as_str(),
-                        )
+                        parse_charsxp_content_async(ctx, cursor, name_flags)
+                            .await?
+                            .map(|s| Arc::from(s.as_str()))
                     } else {
-                        Arc::from("NA")
+                        None
                     }
                 } else if elem_type == CHARSXP || elem_type_alt == CHARSXP {
-                    Arc::from(
-                        parse_charsxp_content_async(ctx, cursor, elem_flags)
-                            .await?
-                            .as_str(),
-                    )
+                    parse_charsxp_content_async(ctx, cursor, elem_flags)
+                        .await?
+                        .map(|s| Arc::from(s.as_str()))
                 } else {
-                    Arc::from("NA")
+                    None
                 };
                 string_cache.push(value.clone());
                 vec.push(value);
@@ -2772,6 +2882,9 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             }
         }
         S4SXP => RObject::Null,
+        PERSISTSXP | PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => {
+            parse_pseudo_stringvec_async(sexp_type, ctx, cursor).await?
+        }
         _ => RObject::Null,
     };
 
@@ -2909,9 +3022,16 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
         // TAG REFSXP indices point into the single reference table; the symbol
         // table is only a defensive fallback for misaligned streams.
         let tag_obj = if let Some(obj) = ref_table.get(ref_index) {
-            obj.read()
-                .map_err(|_| Error::Unsupported("shared object lock poisoned".to_string()))?
-                .clone()
+            let inner = obj
+                .read()
+                .map_err(|_| Error::Unsupported("shared object lock poisoned".to_string()))?;
+            match &*inner {
+                // Keep symbols and S4 objects concrete (see
+                // parse_pairlist_element); share everything else instead of
+                // deep-cloning the referent.
+                RObject::Symbol(_) | RObject::S4Object(_) => inner.clone(),
+                _ => RObject::Shared(Arc::clone(&obj)),
+            }
         } else if let Some(sym) = symbol_table.get(ref_index) {
             sym.clone()
         } else {
@@ -2932,7 +3052,7 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
                 ref_table.next_index - 1
             )));
         };
-        return Ok((extract_tag_name(tag_obj.clone()), Some(tag_obj)));
+        return Ok((extract_tag_name(&tag_obj), Some(tag_obj)));
     }
 
     if sexp_type == SYMSXP {
@@ -2955,18 +3075,19 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
         let name = if name_type_from_0_7 == REFSXP {
             let ref_index = name_flags >> 8;
             if let Some(obj) = ref_table.get(ref_index) {
-                extract_tag_name(obj.read().unwrap().clone()).unwrap_or_else(|| Arc::from("NA"))
+                extract_tag_name(&obj.read().unwrap()).unwrap_or_else(|| Arc::from("NA"))
             } else if let Some(sym) = symbol_table.get(ref_index) {
-                extract_tag_name(sym.clone()).unwrap_or_else(|| Arc::from("NA"))
+                extract_tag_name(sym).unwrap_or_else(|| Arc::from("NA"))
             } else {
                 Arc::from("NA")
             }
         } else if name_type_from_0_7 == CHARSXP || name_type_from_8_15 == CHARSXP {
-            Arc::from(
-                parse_charsxp_content_async(ctx, cursor, name_flags)
-                    .await?
-                    .as_str(),
-            )
+            parse_charsxp_content_async(ctx, cursor, name_flags)
+                .await?
+                .map(|s| Arc::from(s.as_str()))
+                .ok_or_else(|| {
+                    Error::InvalidFormat("NA_character_ in symbol name position".to_string())
+                })?
         } else {
             Arc::from("NA")
         };
@@ -2985,13 +3106,16 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
 
     if sexp_type == CHARSXP {
         let name = parse_charsxp_content_async(ctx, cursor, flags).await?;
-        let obj = RObject::Character(vec![Arc::from(name.as_str())].into());
+        let obj = RObject::Character(vec![name.as_deref().map(Arc::from)].into());
         #[cfg(target_arch = "wasm32")]
         if sequential_debug_enabled() {
-            let msg = format!("seq tag CHARSXP resolved='{}'", name);
+            let msg = format!(
+                "seq tag CHARSXP resolved='{}'",
+                name.as_deref().unwrap_or("<NA>")
+            );
             web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
-        return Ok((extract_tag_name(obj.clone()), Some(obj)));
+        return Ok((extract_tag_name(&obj), Some(obj)));
     }
 
     let obj = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
@@ -3010,7 +3134,7 @@ async fn parse_tag_sequential_value_async<C: AsyncCursor>(
         );
         web_sys::console::debug_1(&JsValue::from_str(&msg));
     }
-    Ok((extract_tag_name(obj.clone()), Some(obj)))
+    Ok((extract_tag_name(&obj), Some(obj)))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -3110,11 +3234,13 @@ async fn parse_pairlist_sequential_value_async<C: AsyncCursor>(
             }
         }
         #[cfg(target_arch = "wasm32")]
-        if ctx.parsing_pairlist_root && ctx.mode == crate::ParseMode::LazyMetadata && skip_slot {
-            if sequential_debug_enabled() {
-                let msg = format!("seq pairlist skipping S4 slot tag={:?}", tag);
-                web_sys::console::debug_1(&JsValue::from_str(&msg));
-            }
+        if ctx.parsing_pairlist_root
+            && ctx.mode == crate::ParseMode::LazyMetadata
+            && skip_slot
+            && sequential_debug_enabled()
+        {
+            let msg = format!("seq pairlist skipping S4 slot tag={:?}", tag);
+            web_sys::console::debug_1(&JsValue::from_str(&msg));
         }
         #[cfg(target_arch = "wasm32")]
         if sequential_debug_enabled() && force_s4_tag {
@@ -3656,18 +3782,19 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             let name = if name_type_from_0_7 == REFSXP {
                 let ref_index = name_flags >> 8;
                 if let Some(obj) = ref_table.get(ref_index) {
-                    extract_tag_name(obj.read().unwrap().clone()).unwrap_or_else(|| Arc::from("NA"))
+                    extract_tag_name(&obj.read().unwrap()).unwrap_or_else(|| Arc::from("NA"))
                 } else if let Some(sym) = symbol_table.get(ref_index) {
-                    extract_tag_name(sym.clone()).unwrap_or_else(|| Arc::from("NA"))
+                    extract_tag_name(sym).unwrap_or_else(|| Arc::from("NA"))
                 } else {
                     Arc::from("NA")
                 }
             } else if name_type_from_0_7 == CHARSXP || name_type_from_8_15 == CHARSXP {
-                Arc::from(
-                    parse_charsxp_content_async(ctx, cursor, name_flags)
-                        .await?
-                        .as_str(),
-                )
+                parse_charsxp_content_async(ctx, cursor, name_flags)
+                    .await?
+                    .map(|s| Arc::from(s.as_str()))
+                    .ok_or_else(|| {
+                        Error::InvalidFormat("NA_character_ in symbol name position".to_string())
+                    })?
             } else {
                 Arc::from("NA")
             };
@@ -3677,7 +3804,7 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
         }
         CHARSXP => {
             let string = parse_charsxp_content_async(ctx, cursor, flags).await?;
-            RObject::Character(vec![Arc::from(string.as_str())].into())
+            RObject::Character(vec![string.map(|s| Arc::from(s.as_str()))].into())
         }
         STRSXP => {
             let length = read_u32_async(cursor).await? as usize;
@@ -3748,45 +3875,52 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
                 })));
             }
 
-            let mut vec = Vec::with_capacity(length);
-            let mut string_cache: Vec<Arc<str>> = Vec::new();
+            let mut vec: Vec<Option<Arc<str>>> = Vec::with_capacity(bounded_capacity(length));
+            let mut string_cache: Vec<Option<Arc<str>>> = Vec::new();
             for _ in 0..length {
                 let elem_flags = read_u32_async(cursor).await?;
                 let elem_type = elem_flags & 0xFF;
                 let elem_type_alt = (elem_flags >> 8) & 0xFF;
-                let value = if elem_type == REFSXP {
+                // Invalid in-vector references fail fast (matching the
+                // native parser and chunk iterators); unknown element types
+                // degrade to NA (None) rather than fabricating a string.
+                let value: Option<Arc<str>> = if elem_type == REFSXP {
                     let ref_index = (elem_flags >> 8) as usize;
-                    string_cache
-                        .get(ref_index.saturating_sub(1))
-                        .cloned()
-                        .unwrap_or_else(|| Arc::from("NA"))
+                    if ref_index == 0 || ref_index > string_cache.len() {
+                        return Err(Error::InvalidFormat(format!(
+                            "Invalid string reference: {} (cache size: {})",
+                            ref_index,
+                            string_cache.len()
+                        )));
+                    }
+                    string_cache[ref_index - 1].clone()
                 } else if elem_type == SYMSXP {
                     let name_flags = read_u32_async(cursor).await?;
                     let name_type = name_flags & 0xFF;
                     let name_type_alt = (name_flags >> 8) & 0xFF;
                     if name_type == REFSXP {
                         let ref_index = (name_flags >> 8) as usize;
-                        string_cache
-                            .get(ref_index.saturating_sub(1))
-                            .cloned()
-                            .unwrap_or_else(|| Arc::from("NA"))
+                        if ref_index == 0 || ref_index > string_cache.len() {
+                            return Err(Error::InvalidFormat(format!(
+                                "Invalid string reference: {} (cache size: {})",
+                                ref_index,
+                                string_cache.len()
+                            )));
+                        }
+                        string_cache[ref_index - 1].clone()
                     } else if name_type == CHARSXP || name_type_alt == CHARSXP {
-                        Arc::from(
-                            parse_charsxp_content_async(ctx, cursor, name_flags)
-                                .await?
-                                .as_str(),
-                        )
+                        parse_charsxp_content_async(ctx, cursor, name_flags)
+                            .await?
+                            .map(|s| Arc::from(s.as_str()))
                     } else {
-                        Arc::from("NA")
+                        None
                     }
                 } else if elem_type == CHARSXP || elem_type_alt == CHARSXP {
-                    Arc::from(
-                        parse_charsxp_content_async(ctx, cursor, elem_flags)
-                            .await?
-                            .as_str(),
-                    )
+                    parse_charsxp_content_async(ctx, cursor, elem_flags)
+                        .await?
+                        .map(|s| Arc::from(s.as_str()))
                 } else {
-                    Arc::from("NA")
+                    None
                 };
                 string_cache.push(value.clone());
                 vec.push(value);
@@ -3994,6 +4128,9 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             }
         }
         S4SXP => RObject::Null,
+        PERSISTSXP | PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => {
+            parse_pseudo_stringvec_async(sexp_type, ctx, cursor).await?
+        }
         _ => RObject::Null,
     };
 
@@ -4071,12 +4208,93 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
 
     Ok(obj)
 }
+/// Shared handling for the string-vec-bearing pseudo-types in the wasm
+/// sequential parse and skip paths. Kept in one place so the two paths cannot
+/// drift: mis-consuming these payloads desynchronizes the stream.
+#[cfg(target_arch = "wasm32")]
+async fn parse_pseudo_stringvec_async<C: AsyncCursor>(
+    sexp_type: u32,
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+) -> Result<RObject> {
+    Ok(match sexp_type {
+        // Ref-hook strings; the OutStringVec payload must be consumed to
+        // keep the stream aligned (see parse_string_vec).
+        PERSISTSXP => RObject::Character(parse_string_vec_async(ctx, cursor).await?.into()),
+        // Package/namespace environment name payload; must be consumed.
+        // Names are a derived plain-string surface: NA entries are absent.
+        PACKAGESXP => RObject::PackageEnv(
+            parse_string_vec_async(ctx, cursor)
+                .await?
+                .into_iter()
+                .flatten()
+                .collect(),
+        ),
+        NAMESPACESXP | NAMESPACESXP_SERIAL => RObject::Namespace(
+            parse_string_vec_async(ctx, cursor)
+                .await?
+                .into_iter()
+                .flatten()
+                .collect(),
+        ),
+        // No payload on the wire; R's reader returns R_BaseNamespace.
+        BASENAMESPACE_SXP => RObject::Namespace(vec![Arc::from("base")]),
+        other => {
+            return Err(Error::InvalidFormat(format!(
+                "parse_pseudo_stringvec_async called with non-pseudo type {}",
+                other
+            )))
+        }
+    })
+}
+
+/// Async mirror of `parse_string_vec` for the wasm sequential paths: consume
+/// an `OutStringVec` payload (PERSISTSXP / PACKAGESXP / NAMESPACESXP) and
+/// return its strings. Uses `guard_allocation_common` because a sequential
+/// input's total length may be unknown.
+#[cfg(target_arch = "wasm32")]
+async fn parse_string_vec_async<C: AsyncCursor>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+) -> Result<Vec<Option<Arc<str>>>> {
+    check_string_vec_names_placeholder(read_i32_async(cursor).await?)?;
+    // The length is written by WriteLENGTH: long vectors are encoded as -1
+    // followed by the upper and lower 32-bit halves of the 64-bit length.
+    let n = read_i32_async(cursor).await?;
+    let n: u64 = if n == -1 {
+        let upper = read_i32_async(cursor).await? as u32 as u64;
+        let lower = read_i32_async(cursor).await? as u32 as u64;
+        (upper << 32) | lower
+    } else if n < 0 {
+        return Err(Error::InvalidFormat(format!(
+            "Negative string vector count {}",
+            n
+        )));
+    } else {
+        n as u64
+    };
+    let n = usize::try_from(n)
+        .map_err(|_| Error::InvalidFormat(format!("String vector count {} exceeds usize", n)))?;
+    guard_allocation_common(ctx, n, 4, "string vector")?;
+    // Bound the eager reservation (see parse_string_vec): the async path has
+    // no remaining-stream backstop, so a hostile count must not drive a huge
+    // `Vec::with_capacity` before any item is read.
+    let mut strings: Vec<Option<Arc<str>>> = Vec::with_capacity(bounded_capacity(n));
+    for _ in 0..n {
+        let item_flags = read_u32_async(cursor).await?;
+        check_string_vec_item_flags(item_flags)?;
+        let s = parse_charsxp_content_async(ctx, cursor, item_flags).await?;
+        strings.push(s.map(|s| Arc::from(s.as_str())));
+    }
+    Ok(strings)
+}
+
 #[cfg(target_arch = "wasm32")]
 async fn parse_charsxp_content_async<C: AsyncCursor>(
     ctx: &mut ParserContext,
     cursor: &mut C,
     flags: u32,
-) -> Result<String> {
+) -> Result<Option<String>> {
     let compact_flag = (flags >> 24) & 0xFF;
     let use_compact = compact_flag > 0;
 
@@ -4088,7 +4306,8 @@ async fn parse_charsxp_content_async<C: AsyncCursor>(
     };
 
     if length == -1 {
-        return Ok(String::from("NA"));
+        // NA_character_
+        return Ok(None);
     }
     if length < 0 {
         return Err(Error::InvalidFormat(format!(
@@ -4106,7 +4325,7 @@ async fn parse_charsxp_content_async<C: AsyncCursor>(
         Err(_) => bytes.iter().map(|&b| b as char).collect(),
     };
 
-    Ok(string)
+    Ok(Some(string))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -4114,7 +4333,7 @@ async fn parse_charsxp_content_async<C: AsyncCursor>(
 async fn parse_charsxp_async<C: AsyncCursor>(
     ctx: &mut ParserContext,
     cursor: &mut C,
-) -> Result<String> {
+) -> Result<Option<String>> {
     let flags = read_u32_async(cursor).await?;
     let type_from_0_7 = flags & 0xFF;
     let type_from_8_15 = (flags >> 8) & 0xFF;
@@ -4123,8 +4342,9 @@ async fn parse_charsxp_async<C: AsyncCursor>(
         return parse_charsxp_content_async(ctx, cursor, flags).await;
     }
 
+    // Handle NULL as NA_character_ (defensive; maps to None like length -1).
     if type_from_0_7 == NILSXP || type_from_0_7 == NILVALUE_SXP {
-        return Ok(String::from("NA"));
+        return Ok(None);
     }
 
     if type_from_0_7 == REFSXP {
@@ -4389,7 +4609,7 @@ fn parse_object(
             // Sometimes CHARSXP appears standalone (like for encoding markers)
             let string = parse_charsxp_content(ctx, cursor, flags)?;
             // Return as a single-element character vector for now
-            RObject::Character(vec![Arc::from(string.as_str())].into())
+            RObject::Character(vec![string.map(|s| Arc::from(s.as_str()))].into())
         }
         CLOSXP => parse_closure(ctx, cursor, has_tag, ref_table, symbol_table, dedup_table)?,
         ENVSXP => parse_environment(ctx, cursor, ref_table, symbol_table, dedup_table)?,
@@ -4424,7 +4644,12 @@ fn parse_object(
                 resolved = match concrete {
                     RObject::Symbol(name) => RObject::Symbol(name),
                     RObject::Character(names) if !names.is_empty() && names.is_loaded() => {
-                        RObject::Symbol(names[0].clone())
+                        // An NA first element cannot become a symbol name;
+                        // keep the character vector as-is in that case.
+                        match names[0].clone() {
+                            Some(name) => RObject::Symbol(name),
+                            None => RObject::Character(names),
+                        }
                     }
                     other => other,
                 };
@@ -4468,8 +4693,7 @@ fn parse_object(
         NAMESPACESXP => {
             // Namespace - parse and discard, then return early to handle attributes specially
 
-            let namespace_result =
-                parse_namespace(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+            let namespace_result = parse_namespace(ctx, cursor)?;
 
             // For namespaces with attributes, we need to parse and discard them
             if has_attr {
@@ -4485,25 +4709,23 @@ fn parse_object(
             return Ok(namespace_result);
         }
         BCREPREF | BCREPDEF => {
-            // Bytecode representation reference/definition
-            // These are used for circular references in bytecode serialization
-            // Treat as references similar to REFSXP
-            let ref_index_val = flags >> 8;
-
-            match ref_table.get(ref_index_val) {
-                Some(obj) => return Ok(RObject::Shared(obj)),
-                None => {
-                    // If not found in ref table, this might be a definition, return NULL for now
-                    RObject::Null
-                }
-            }
+            // Bytecode representation reference/definition. These only occur
+            // inside bytecode payloads, where parse_bc_lang handles them with
+            // a dedicated reps table (they are written as a bare type int
+            // followed by an index int, not as packed flags). R's ReadItem
+            // has no case for them either, so reaching this arm means the
+            // stream is corrupt or misparsed; erroring beats resolving a
+            // bogus index against the main reference table.
+            return Err(Error::InvalidFormat(format!(
+                "Bytecode representation type {} encountered outside bytecode context",
+                sexp_type
+            )));
         }
-        NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => {
-            // Namespace/base namespace markers in serialization format
-            // Similar to NAMESPACESXP (123) but use format type 249/250
+        NAMESPACESXP_SERIAL => {
+            // Namespace marker in serialization format (type 249); the
+            // namespace name follows as an OutStringVec payload.
 
-            let namespace_result =
-                parse_namespace(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+            let namespace_result = parse_namespace(ctx, cursor)?;
 
             if has_attr {
                 let _attrs = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
@@ -4518,31 +4740,60 @@ fn parse_object(
 
             return Ok(namespace_result);
         }
+        BASENAMESPACE_SXP => {
+            // Base namespace marker (type 250). Unlike NAMESPACESXP it has NO
+            // payload on the wire (R's reader just returns R_BaseNamespace and
+            // does not AddReadRef), so nothing must be consumed here - reading
+            // a phantom OutStringVec would swallow the next object.
+            RObject::Namespace(vec![Arc::from("base")])
+        }
         PACKAGESXP => {
-            // Package environment marker
-            // Similar to namespace handling
-            RObject::Null
+            // Package environment, written as an OutStringVec of its name
+            // (e.g. "package:stats"); R resolves it at load time via
+            // R_FindPackageEnv. The payload must be consumed to keep the
+            // stream aligned, and the entry occupies one reference slot
+            // (AddReadRef in R's reader), so fill the placeholder.
+            // Package names are a derived plain-string surface: an NA entry
+            // is treated as absent (a package name cannot be NA).
+            let package_result = RObject::PackageEnv(
+                parse_string_vec(ctx, cursor)?
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+            );
+
+            if has_attr {
+                let _attrs = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+            }
+
+            if let Some(idx) = ref_index {
+                ref_table.update(idx, package_result);
+                return Ok(RObject::Shared(ref_table.get(idx).expect("Just updated")));
+            }
+
+            return Ok(package_result);
         }
         MISSINGARG_SXP => {
             // Missing argument marker (default value placeholder in formals)
             RObject::MissingArg
         }
         GENERICREFSXP | CLASSREFSXP => {
-            // Generic function or class reference
-            // These reference metadata in the serialization stream
-            let ref_index_val = flags >> 8;
-
-            match ref_table.get(ref_index_val) {
-                Some(obj) => return Ok(RObject::Shared(obj)),
-                None => RObject::Null,
-            }
+            // Generic function / class references. R's own reader errors on
+            // these unconditionally ("this version of R cannot read class
+            // references"), so no valid stream contains them; erroring beats
+            // resolving flags >> 8 against the main reference table, which
+            // returned an arbitrary wrong object.
+            return Err(Error::InvalidFormat(format!(
+                "Generic function / class reference type {} cannot be read (R rejects these too)",
+                sexp_type
+            )));
         }
         PERSISTSXP => {
             // Persistent object written by a serialization ref hook, e.g.
             // "env::N" strings in R lazy-load databases such as help/<pkg>.rdb.
             // The payload must be consumed to keep the stream aligned; the
             // strings are surfaced as a character vector.
-            RObject::Character(parse_persistsxp_strings(ctx, cursor)?.into())
+            RObject::Character(parse_string_vec(ctx, cursor)?.into())
         }
         ATTRLISTSXP | ATTRLANGSXP => {
             // Attribute list/language alternate encoding
@@ -4743,7 +4994,7 @@ fn parse_object(
         symbol_table.add(obj.clone());
         if std::env::var("RDS_DEBUG_SYM").is_ok() {
             if let RObject::Character(names) = &obj {
-                if let Some(name) = names.first() {
+                if let Some(Some(name)) = names.first() {
                     debug_log!("[SYMBOL_ADD] {}", name);
                 }
             }
@@ -5134,7 +5385,13 @@ fn parse_object_streaming<V: RdsVisitor>(
         )?,
         S4SXP => StreamControl::Continue,
         NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => {
-            let namespace_obj = parse_namespace(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+            // BASENAMESPACE_SXP has no payload on the wire; the other two are
+            // followed by an OutStringVec holding the namespace name.
+            let namespace_obj = if sexp_type == BASENAMESPACE_SXP {
+                RObject::Namespace(vec![Arc::from("base")])
+            } else {
+                parse_namespace(ctx, cursor)?
+            };
             if emit_children {
                 if let RObject::Namespace(values) = namespace_obj {
                     visitor
@@ -5156,14 +5413,39 @@ fn parse_object_streaming<V: RdsVisitor>(
             path,
             progress,
         )?,
-        WEAKREFSXP | EXTPTRSXP | PACKAGESXP | MISSINGARG_SXP | GLOBALENV_SXP | BASEENV_SXP
-        | EMPTYENV_SXP | UNBOUNDVALUE_SXP => StreamControl::Continue,
-        PERSISTSXP => {
-            // Consume the ref-hook string payload to keep the stream aligned.
-            parse_persistsxp_strings(ctx, cursor)?;
+        WEAKREFSXP | EXTPTRSXP | MISSINGARG_SXP | GLOBALENV_SXP | BASEENV_SXP | EMPTYENV_SXP
+        | UNBOUNDVALUE_SXP => StreamControl::Continue,
+        PACKAGESXP => {
+            // Consume the package-name payload to keep the stream aligned.
+            parse_string_vec(ctx, cursor)?;
             StreamControl::Continue
         }
-        GENERICREFSXP | CLASSREFSXP | 244 => StreamControl::Continue,
+        PERSISTSXP => {
+            // Consume the ref-hook string payload to keep the stream aligned.
+            parse_string_vec(ctx, cursor)?;
+            StreamControl::Continue
+        }
+        GENERICREFSXP | CLASSREFSXP => {
+            // R's reader errors on these unconditionally; a stream containing
+            // them is unreadable, so fail fast instead of silently
+            // continuing past unconsumed payload.
+            return Err(StreamingError::Parse(Error::InvalidFormat(format!(
+                "Generic function / class reference type {} cannot be read (R rejects these too)",
+                sexp_type
+            ))));
+        }
+        BCREPREF | BCREPDEF => {
+            // Bytecode rep markers are only valid inside a BCODESXP constant
+            // pool, and that payload is now consumed in full by the sync
+            // decoder (parse_bytecode_streaming), so one can never be reached
+            // as a standalone streaming object. Encountering one here means a
+            // corrupt or misparsed stream; fail fast, matching R (which also
+            // rejects these outside bytecode).
+            return Err(StreamingError::Parse(Error::InvalidFormat(format!(
+                "Bytecode representation type {} encountered outside bytecode context",
+                sexp_type
+            ))));
+        }
         _ if sexp_type > 25 && sexp_type < 238 => StreamControl::Continue,
         _ => return Err(StreamingError::Parse(Error::UnknownSexpType(sexp_type))),
     };
@@ -5263,6 +5545,7 @@ fn emit_parsed_object_streaming<V: RdsVisitor>(
             | RObject::Language { .. }
             | RObject::Expression(_)
             | RObject::Namespace(_)
+            | RObject::PackageEnv(_)
             | RObject::GlobalEnv
             | RObject::BaseEnv
             | RObject::EmptyEnv
@@ -5424,6 +5707,7 @@ fn object_type_name(obj: &RObject) -> &'static str {
         RObject::S3Object(_) => "S3Object",
         RObject::S4Object(_) => "S4Object",
         RObject::Namespace(_) => "Namespace",
+        RObject::PackageEnv(_) => "PackageEnv",
         RObject::GlobalEnv => "GlobalEnv",
         RObject::BaseEnv => "BaseEnv",
         RObject::EmptyEnv => "EmptyEnv",
@@ -5523,16 +5807,17 @@ where
         let ref_index = flags >> 8;
         // TAG REFSXP indices point into the single reference table; the symbol
         // table is only a defensive fallback for misaligned streams.
-        let tag_obj = if let Some(obj) = ref_table.get(ref_index) {
-            obj.read()
-                .map_err(|_| {
-                    StreamingError::Parse(Error::Unsupported(
-                        "shared object lock poisoned".to_string(),
-                    ))
-                })?
-                .clone()
+        // Only the tag NAME is needed here; extract it under the read guard
+        // instead of deep-cloning the referent.
+        let tag_name = if let Some(obj) = ref_table.get(ref_index) {
+            let inner = obj.read().map_err(|_| {
+                StreamingError::Parse(Error::Unsupported(
+                    "shared object lock poisoned".to_string(),
+                ))
+            })?;
+            extract_tag_name(&inner)
         } else if let Some(sym) = symbol_table.get(ref_index) {
-            sym.clone()
+            extract_tag_name(sym)
         } else {
             return Err(StreamingError::Parse(Error::InvalidFormat(format!(
                 "Invalid TAG REFSXP index {} (symbol table size={}, ref table size={})",
@@ -5541,7 +5826,7 @@ where
                 ref_table.next_index - 1
             ))));
         };
-        return Ok(extract_tag_name(tag_obj));
+        return Ok(tag_name);
     }
 
     if sexp_type == SYMSXP {
@@ -5567,29 +5852,30 @@ where
 
         let name = if name_type_from_0_7 == REFSXP {
             let ref_index = name_flags >> 8;
-            let tag_obj = ref_table
-                .get(ref_index)
+            let referent = ref_table.get(ref_index).ok_or_else(|| {
+                StreamingError::Parse(Error::InvalidFormat(format!(
+                    "Invalid symbol REFSXP index {}",
+                    ref_index
+                )))
+            })?;
+            let inner = referent.read().map_err(|_| {
+                StreamingError::Parse(Error::Unsupported(
+                    "shared object lock poisoned".to_string(),
+                ))
+            })?;
+            // Extract under the read guard instead of deep-cloning the
+            // referent just to pull a name out of it.
+            extract_tag_name(&inner).unwrap_or_else(|| Arc::from("NA"))
+        } else if name_type_from_8_15 == CHARSXP || name_type_from_0_7 == CHARSXP {
+            parse_charsxp_content_async(ctx, cursor, name_flags)
+                .await
+                .map_err(StreamingError::Parse)?
+                .map(|s| Arc::from(s.as_str()))
                 .ok_or_else(|| {
-                    StreamingError::Parse(Error::InvalidFormat(format!(
-                        "Invalid symbol REFSXP index {}",
-                        ref_index
-                    )))
-                })?
-                .read()
-                .map_err(|_| {
-                    StreamingError::Parse(Error::Unsupported(
-                        "shared object lock poisoned".to_string(),
+                    StreamingError::Parse(Error::InvalidFormat(
+                        "NA_character_ in symbol name position".to_string(),
                     ))
                 })?
-                .clone();
-            extract_tag_name(tag_obj).unwrap_or_else(|| Arc::from("NA"))
-        } else if name_type_from_8_15 == CHARSXP || name_type_from_0_7 == CHARSXP {
-            Arc::from(
-                parse_charsxp_content_async(ctx, cursor, name_flags)
-                    .await
-                    .map_err(StreamingError::Parse)?
-                    .as_str(),
-            )
         } else {
             return Err(StreamingError::Parse(Error::InvalidFormat(format!(
                 "Unexpected SYMSXP name type {} (flags: 0x{:08x})",
@@ -5614,8 +5900,8 @@ where
         }
 
         let sym = RObject::Symbol(name.clone());
-        symbol_table.add(sym.clone());
-        return Ok(extract_tag_name(sym));
+        symbol_table.add(sym);
+        return Ok(Some(name));
     }
 
     if sexp_type == CHARSXP {
@@ -5643,8 +5929,8 @@ where
             )))
             .await?;
         }
-        let obj = RObject::Character(vec![Arc::from(name.as_str())].into());
-        return Ok(extract_tag_name(obj));
+        let obj = RObject::Character(vec![name.as_deref().map(Arc::from)].into());
+        return Ok(extract_tag_name(&obj));
     }
 
     let _ = std::pin::Pin::from(Box::new(parse_object_streaming_async(
@@ -6108,14 +6394,15 @@ fn parse_symbol_streaming<V: RdsVisitor>(
 ) -> StreamingResult<StreamControl, V::Error> {
     let name_obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
     let symbol_obj = match name_obj {
-        RObject::Character(names) if names.len() == 1 => {
-            let name = &names[0];
-            if name.as_ref() == "\x01NULL\x01" {
-                RObject::Symbol(names.into_vec().into_iter().next().unwrap())
-            } else {
-                RObject::Symbol(name.clone())
+        RObject::Character(names) if names.len() == 1 => match &names[0] {
+            Some(name) => RObject::Symbol(name.clone()),
+            // NA_character_ is not a legal symbol name in R.
+            None => {
+                return Err(StreamingError::Parse(Error::InvalidFormat(
+                    "NA_character_ in symbol name position".to_string(),
+                )))
             }
-        }
+        },
         other => other,
     };
     symbol_table.add(symbol_obj.clone());
@@ -6319,13 +6606,10 @@ fn parse_pairlist_element_streaming<V: RdsVisitor>(
             // same as any other REFSXP. The symbol table is only a defensive
             // fallback for misaligned streams.
             if let Some(obj) = ref_table.get(ref_index) {
-                obj.read()
-                    .map_err(|_| {
-                        StreamingError::Parse(Error::Unsupported(
-                            "shared object lock poisoned".to_string(),
-                        ))
-                    })?
-                    .clone()
+                // Only the tag name is needed here; a shared handle avoids
+                // deep-cloning the referent (extract_tag_name reads through
+                // Shared).
+                RObject::Shared(obj)
             } else if let Some(sym) = symbol_table.get(ref_index) {
                 sym.clone()
             } else {
@@ -6340,7 +6624,7 @@ fn parse_pairlist_element_streaming<V: RdsVisitor>(
             cursor.set_position(pos);
             parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?
         };
-        extract_tag_name(tag_obj.clone())
+        extract_tag_name(&tag_obj)
     } else {
         None
     };
@@ -6894,112 +7178,47 @@ fn parse_promise_streaming<V: RdsVisitor>(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Consume a BCODESXP (bytecode) payload in the streaming metadata walk.
+///
+/// The bytecode wire format is `reps_len` (u32) + `code` (an object) + a
+/// count-prefixed, type-code-dispatched constant pool with a shared reps
+/// table (`ReadBC`/`ReadBC1`/`ReadBCLang` in R's serialize.c). It is *not*
+/// three flag-prefixed objects, so it cannot be walked with generic
+/// `parse_object_streaming` calls. Rather than maintain a second, walking copy
+/// of that recursive decoder, we delegate byte consumption to the already-
+/// correct sync `parse_bytecode` (the authoritative reader that roundtrips
+/// real R bytecode) and discard the object it builds. This guarantees the
+/// cursor advances by exactly the payload's length, so every object *after*
+/// the bytecode in the stream stays aligned.
+///
+/// The bytecode itself is reported to the visitor as an unsupported structure
+/// (the `on_object_start(path, "Bytecode")` in the caller already drives the
+/// warning), so nothing inside the payload is emitted here — this also fixes
+/// the previous traversal, which leaked bytecode internals (e.g. the opcode
+/// integer vector) into the reported vectors.
+///
+/// Note on references: the sync decoder registers any ref-trackable objects
+/// inside the payload (symbols, environments, namespaces) into `ref_table`
+/// but not into the streaming `ref_paths` map. A later `REFSXP` that points
+/// back into the bytecode payload therefore resolves to an empty path rather
+/// than a wrong one — degraded path reporting for a rare case, never a desync.
+/// This mirrors `parse_altrep_streaming`, which delegates its bounded internal
+/// payload to the sync parser the same way.
 fn parse_bytecode_streaming<V: RdsVisitor>(
     ctx: &mut ParserContext,
     cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
-    ref_paths: &mut StreamingRefTable,
-    emit: bool,
-    visitor: &mut V,
-    path: &mut crate::ObjectPath,
-    progress: &mut StreamingProgressState<'_>,
+    _ref_paths: &mut StreamingRefTable,
+    _emit: bool,
+    _visitor: &mut V,
+    _path: &mut crate::ObjectPath,
+    _progress: &mut StreamingProgressState<'_>,
 ) -> StreamingResult<StreamControl, V::Error> {
-    if emit {
-        path.push(Arc::from("code"));
-        if matches!(
-            parse_object_streaming(
-                ctx,
-                cursor,
-                ref_table,
-                symbol_table,
-                dedup_table,
-                ref_paths,
-                progress,
-                visitor,
-                path,
-                true,
-            )?,
-            StreamControl::Stop
-        ) {
-            path.pop();
-            return Ok(StreamControl::Stop);
-        }
-        path.pop();
-        path.push(Arc::from("constants"));
-        if matches!(
-            parse_object_streaming(
-                ctx,
-                cursor,
-                ref_table,
-                symbol_table,
-                dedup_table,
-                ref_paths,
-                progress,
-                visitor,
-                path,
-                true,
-            )?,
-            StreamControl::Stop
-        ) {
-            path.pop();
-            return Ok(StreamControl::Stop);
-        }
-        path.pop();
-        path.push(Arc::from("expr"));
-        let control = parse_object_streaming(
-            ctx,
-            cursor,
-            ref_table,
-            symbol_table,
-            dedup_table,
-            ref_paths,
-            progress,
-            visitor,
-            path,
-            true,
-        )?;
-        path.pop();
-        return Ok(control);
-    }
-
-    let _ = parse_object_streaming(
-        ctx,
-        cursor,
-        ref_table,
-        symbol_table,
-        dedup_table,
-        ref_paths,
-        progress,
-        visitor,
-        path,
-        false,
-    )?;
-    let _ = parse_object_streaming(
-        ctx,
-        cursor,
-        ref_table,
-        symbol_table,
-        dedup_table,
-        ref_paths,
-        progress,
-        visitor,
-        path,
-        false,
-    )?;
-    parse_object_streaming(
-        ctx,
-        cursor,
-        ref_table,
-        symbol_table,
-        dedup_table,
-        ref_paths,
-        progress,
-        visitor,
-        path,
-        false,
-    )
+    parse_bytecode(ctx, cursor, ref_table, symbol_table, dedup_table)
+        .map_err(StreamingError::Parse)?;
+    Ok(StreamControl::Continue)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7363,9 +7582,10 @@ fn parse_character_vector_full(
         );
     }
 
-    let mut vec = Vec::with_capacity(length);
-    // Local string cache for REFSXP within this character vector
-    let mut string_cache: Vec<Arc<str>> = Vec::new();
+    let mut vec: Vec<Option<Arc<str>>> = Vec::with_capacity(length);
+    // Local string cache for REFSXP within this character vector.
+    // Entries are Option: an NA element occupies a cache slot too.
+    let mut string_cache: Vec<Option<Arc<str>>> = Vec::new();
 
     for _ in 0..length {
         // Parse the flags to check the type
@@ -7394,7 +7614,7 @@ fn parse_character_vector_full(
             // The name can also be a REFSXP, so handle that case
             match parse_charsxp(ctx, cursor) {
                 Ok(name_string) => {
-                    let arc_str: Arc<str> = Arc::from(name_string.as_str());
+                    let arc_str: Option<Arc<str>> = name_string.map(|s| Arc::from(s.as_str()));
                     string_cache.push(arc_str.clone());
                     vec.push(arc_str);
                 }
@@ -7409,8 +7629,8 @@ fn parse_character_vector_full(
                             } else {
                                 // Reference out of range - might be global ref or error
                                 // Use placeholder for now
-                                let arc_str: Arc<str> =
-                                    Arc::from(format!("<ref_{}>", ref_index).as_str());
+                                let arc_str: Option<Arc<str>> =
+                                    Some(Arc::from(format!("<ref_{}>", ref_index).as_str()));
                                 string_cache.push(arc_str.clone());
                                 vec.push(arc_str);
                             }
@@ -7433,7 +7653,7 @@ fn parse_character_vector_full(
             // Nested character vector - this is unusual and suggests a different structure
             // For now, skip it entirely by using a placeholder
             // TODO: Investigate if this should be handled differently
-            let arc_str: Arc<str> = Arc::from("<nested_strsxp>");
+            let arc_str: Option<Arc<str>> = Some(Arc::from("<nested_strsxp>"));
             string_cache.push(arc_str.clone());
             vec.push(arc_str);
 
@@ -7444,10 +7664,10 @@ fn parse_character_vector_full(
             // Check if it's a CHARSXP (most common case)
             let type_from_8_15 = (flags >> 8) & 0xFF;
             if type_from_0_7 == CHARSXP || type_from_8_15 == CHARSXP {
-                // Reset position and parse as CHARSXP
+                // Reset position and parse as CHARSXP (None = NA_character_)
                 cursor.set_position(pos);
                 let string = parse_charsxp(ctx, cursor)?;
-                let arc_str: Arc<str> = Arc::from(string.as_str());
+                let arc_str: Option<Arc<str>> = string.map(|s| Arc::from(s.as_str()));
 
                 // Add to local string cache for future REFSXP references
                 string_cache.push(arc_str.clone());
@@ -7475,13 +7695,15 @@ fn parse_character_vector_full(
                     RObject::Real(v) => format!("<real_vec_len_{}>", v.len()),
                     RObject::Logical(v) if v.len() == 1 => format!("{:?}", v[0]),
                     RObject::Logical(v) => format!("<logical_vec_len_{}>", v.len()),
-                    RObject::Character(v) if v.len() == 1 => v[0].to_string(),
+                    RObject::Character(v) if v.len() == 1 => {
+                        v[0].as_deref().unwrap_or("<NA>").to_string()
+                    }
                     RObject::Character(v) => format!("<char_vec_len_{}>", v.len()),
                     RObject::Null => "NULL".to_string(),
                     _ => format!("<object_type_{}>", type_from_0_7),
                 };
 
-                let arc_str: Arc<str> = Arc::from(string_repr.as_str());
+                let arc_str: Option<Arc<str>> = Some(Arc::from(string_repr.as_str()));
                 string_cache.push(arc_str.clone());
                 vec.push(arc_str);
             }
@@ -7616,18 +7838,15 @@ fn parse_symbol(
 
     // Extract the name
     match name_obj {
-        RObject::Character(names) if names.len() == 1 => {
-            let name = &names[0];
-            // Check for the special NULL marker used by R for OptionalCharacter slots
-            if name.as_ref() == "\x01NULL\x01" {
-                Ok(RObject::Symbol(
-                    names.into_vec().into_iter().next().unwrap(),
-                ))
-            } else {
-                // Regular symbol
-                Ok(RObject::Symbol(name.clone()))
-            }
-        }
+        RObject::Character(names) if names.len() == 1 => match &names[0] {
+            // Covers both regular names and the special "\x01NULL\x01" marker
+            // used by R for OptionalCharacter slots.
+            Some(name) => Ok(RObject::Symbol(name.clone())),
+            // NA_character_ is not a legal symbol name in R.
+            None => Err(Error::InvalidFormat(
+                "NA_character_ in symbol name position".to_string(),
+            )),
+        },
         RObject::Character(names) => Ok(RObject::Character(names)),
         _ => {
             // If we got something unexpected, just return it
@@ -7987,7 +8206,7 @@ fn build_language_from_bc(car: RObject, cdr: RObject) -> RObject {
 }
 
 fn build_pairlist_from_bc(tag_obj: RObject, car: RObject, cdr: RObject) -> RObject {
-    let tag_name = extract_tag_name(tag_obj.clone());
+    let tag_name = extract_tag_name(&tag_obj);
     let tag_storage = match tag_obj {
         RObject::Null => None,
         other => Some(Box::new(other)),
@@ -8093,35 +8312,19 @@ fn parse_environment(
     })
 }
 
-/// Parse a namespace environment (NAMESPACESXP, type 123).
-/// Namespaces are special environments used by R packages.
+/// Parse a namespace environment (NAMESPACESXP / NAMESPACESXP_SERIAL).
+/// Namespaces are special environments used by R packages; the payload is an
+/// OutStringVec holding the namespace name (and spec version).
 /// They trigger automatic package loading when the RDS file is read in R.
-fn parse_namespace(
-    ctx: &mut ParserContext,
-    cursor: &mut RdsCursor<'_>,
-    ref_table: &mut RefTable,
-    symbol_table: &mut SymbolTable,
-    dedup_table: &mut DedupTable,
-) -> Result<RObject> {
-    // Namespaces are serialized using OutStringVec: an unused marker,
-    // a length, then that many CHARSXP entries.
-    let _names_flag = cursor.read_u32::<BigEndian>()?;
-    let length = cursor.read_u32::<BigEndian>()? as usize;
-    guard_allocation(ctx, length, 1, cursor, "namespace names")?;
-
-    let mut names = Vec::with_capacity(length);
-    for _ in 0..length {
-        // Each entry is written via WriteItem on a CHARSXP
-        let obj = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
-        // Extract the string from the parsed object
-        if let RObject::Character(chars) = obj {
-            if let Some(s) = chars.first() {
-                names.push(s.clone());
-            }
-        }
-    }
-
-    Ok(RObject::Namespace(names))
+fn parse_namespace(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<RObject> {
+    // Namespace names are a derived plain-string surface: an NA entry is
+    // treated as absent (a namespace name cannot be NA).
+    Ok(RObject::Namespace(
+        parse_string_vec(ctx, cursor)?
+            .into_iter()
+            .flatten()
+            .collect(),
+    ))
 }
 
 /// Parse a language object (LANGSXP).
@@ -8199,9 +8402,23 @@ fn parse_pairlist_element(
             let ref_index = flags >> 8;
 
             if let Some(obj) = ref_table.get(ref_index) {
-                let obj_val = obj.read().unwrap().clone();
+                let tag_obj = {
+                    let inner = obj.read().unwrap();
+                    match &*inner {
+                        // Symbols are the overwhelmingly common case and stay
+                        // concrete (a cheap clone). S4 objects must also stay
+                        // concrete: parse_attributes pattern-matches
+                        // RObject::S4Object on tag_object directly (the
+                        // __tag_s4_object__ special case).
+                        RObject::Symbol(_) | RObject::S4Object(_) => inner.clone(),
+                        // Anything else (environments, vectors, ...) is
+                        // wrapped as a shared handle instead of deep-cloning
+                        // the referent.
+                        _ => RObject::Shared(Arc::clone(&obj)),
+                    }
+                };
                 if std::env::var("RDS_DEBUG_TAG").is_ok() {
-                    let name = extract_tag_name(obj_val.clone())
+                    let name = extract_tag_name(&tag_obj)
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| "<unknown>".to_string());
                     debug_log!(
@@ -8211,7 +8428,7 @@ fn parse_pairlist_element(
                         name
                     );
                 }
-                obj_val
+                tag_obj
             } else if let Some(sym) = symbol_table.get(ref_index) {
                 // Fallback for streams whose reference indices do not line up
                 // with the reference table (defensive; should not happen for
@@ -8240,7 +8457,7 @@ fn parse_pairlist_element(
         };
 
         // Extract the tag name from the symbol or character object
-        let tag_name = extract_tag_name(tag_obj.clone());
+        let tag_name = extract_tag_name(&tag_obj);
         // Store both the extracted name and the raw object
         (tag_name, Some(Box::new(tag_obj)))
     } else {
@@ -8455,16 +8672,33 @@ fn parse_pairlist(
 ///
 /// Returns `None` if the tag is lazy (not loaded), to prevent panics during
 /// bytecode parsing with large character vectors.
-fn extract_tag_name(tag_obj: RObject) -> Option<Arc<str>> {
-    // Unwrap Shared wrappers first
-    let tag_obj = tag_obj.into_concrete();
-
+fn extract_tag_name(tag_obj: &RObject) -> Option<Arc<str>> {
     match tag_obj {
-        RObject::Symbol(name) => Some(name),
-        // Only extract from loaded character vectors to avoid panics
-        RObject::Character(vec) if !vec.is_empty() && vec.is_loaded() => Some(vec[0].clone()),
-        RObject::Null => None,
-        _ => None, // Includes lazy character vectors - return None gracefully
+        RObject::Shared(shared) => {
+            let guard = shared.read().unwrap();
+            if let RObject::Shared(inner) = &*guard {
+                // Nested Shared: clone only the wrapper (an Arc clone) and
+                // release the guard before recursing, so we never re-acquire
+                // a lock we already hold.
+                let inner = RObject::Shared(Arc::clone(inner));
+                drop(guard);
+                return extract_tag_name(&inner);
+            }
+            extract_tag_name_concrete(&guard)
+        }
+        other => extract_tag_name_concrete(other),
+    }
+}
+
+/// The non-Shared half of `extract_tag_name`.
+fn extract_tag_name_concrete(tag_obj: &RObject) -> Option<Arc<str>> {
+    match tag_obj {
+        RObject::Symbol(name) => Some(name.clone()),
+        // Only extract from loaded character vectors to avoid panics. An NA
+        // first element yields None: the element is simply unnamed (R5).
+        RObject::Character(vec) if !vec.is_empty() && vec.is_loaded() => vec[0].clone(),
+        // Includes Null and lazy character vectors - return None gracefully
+        _ => None,
     }
 }
 
@@ -8642,14 +8876,13 @@ fn extract_altrep_class_name(class_info: &RObject) -> Option<String> {
     // 3. List with class information
     match class_info {
         RObject::Character(vec) if vec.len() >= 2 => {
-            // Return the class name (second element)
-            let class_name = vec[1].to_string();
-            Some(class_name)
+            // Return the class name (second element); an NA entry cannot be
+            // a class name.
+            vec[1].as_deref().map(str::to_string)
         }
         RObject::Character(vec) if vec.len() == 1 => {
             // Sometimes just the class name
-            let class_name = vec[0].to_string();
-            Some(class_name)
+            vec[0].as_deref().map(str::to_string)
         }
         RObject::Symbol(name) => Some(name.to_string()),
         RObject::Pairlist(elements) => {
@@ -8660,8 +8893,8 @@ fn extract_altrep_class_name(class_info: &RObject) -> Option<String> {
             for elem in elements.iter() {
                 // Check if this is a character vector (symbol converted to character)
                 if let RObject::Character(vec) = &elem.value {
-                    if !vec.is_empty() {
-                        let class_name = vec[0].to_string();
+                    if let Some(Some(name)) = vec.first() {
+                        let class_name = name.to_string();
                         // Common ALTREP class names
                         if class_name.contains("wrap_")
                             || class_name.contains("compact_")
@@ -8676,9 +8909,8 @@ fn extract_altrep_class_name(class_info: &RObject) -> Option<String> {
             // If we have at least 2 elements, try the second one (often the class)
             if elements.len() >= 2 {
                 if let RObject::Character(vec) = &elements[1].value {
-                    if !vec.is_empty() {
-                        let class_name = vec[0].to_string();
-                        return Some(class_name);
+                    if let Some(Some(name)) = vec.first() {
+                        return Some(name.to_string());
                     }
                 }
             }
@@ -8687,8 +8919,8 @@ fn extract_altrep_class_name(class_info: &RObject) -> Option<String> {
         RObject::List(elements) if elements.len() >= 2 => {
             // List might contain [package, class]
             if let RObject::Character(vec) = &elements[1] {
-                if !vec.is_empty() {
-                    return Some(vec[0].to_string());
+                if let Some(Some(name)) = vec.first() {
+                    return Some(name.to_string());
                 }
             }
             None
@@ -8812,8 +9044,8 @@ fn convert_compact_intseq(ctx: &mut ParserContext, state: RObject) -> Result<ROb
     Ok(RObject::Integer(vec.into()))
 }
 
-/// Parse a CHARSXP (internal character string).
-fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<String> {
+/// Parse a CHARSXP (internal character string). `None` is `NA_character_`.
+fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<Option<String>> {
     // Read the CHARSXP header
     let flags = cursor.read_u32::<BigEndian>()?;
     let type_from_0_7 = flags & 0xFF;
@@ -8841,9 +9073,10 @@ fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<
         return Ok(string);
     }
 
-    // Handle NULL as NA_character_
+    // Handle NULL as NA_character_ (a defensive path: R itself has exactly
+    // one character missing value, so this maps to None like length -1).
     if type_from_0_7 == NILSXP || type_from_0_7 == NILVALUE_SXP {
-        return Ok(String::from("NA"));
+        return Ok(None);
     }
 
     // Handle REFSXP - this can appear when a symbol name is a reference to a previously seen string
@@ -8873,20 +9106,20 @@ fn parse_charsxp(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Result<
     )))
 }
 
-/// Consume the payload of a PERSISTSXP entry and return its strings.
+/// Consume an `OutStringVec` payload and return its strings.
 ///
-/// Persistent objects are written when `serialize()` is given a ref hook
-/// (`refhook=`); R's lazy-load databases (e.g. `help/<pkg>.rdb`, where srcfile
-/// environments are persisted as "env::N" strings) rely on this. The payload
-/// matches serialize.c's `OutStringVec`: an i32 names placeholder, an i32
+/// R's serialize.c writes this shape for PERSISTSXP (ref-hook strings, e.g.
+/// "env::N" entries in lazy-load databases such as `help/<pkg>.rdb`),
+/// PACKAGESXP (the package environment's name, e.g. "package:stats"), and
+/// NAMESPACESXP (the namespace name): an i32 names placeholder, an i32
 /// length, then `length` CHARSXP items (each with its own flags word). It must
 /// be consumed even when the strings are unused, otherwise the cursor
-/// desynchronizes and every object after the first persisted one is corrupted.
-fn parse_persistsxp_strings(
+/// desynchronizes and every object after the entry is corrupted.
+fn parse_string_vec(
     ctx: &mut ParserContext,
     cursor: &mut RdsCursor<'_>,
-) -> Result<Vec<Arc<str>>> {
-    let _names_placeholder = cursor.read_i32::<BigEndian>()?;
+) -> Result<Vec<Option<Arc<str>>>> {
+    check_string_vec_names_placeholder(cursor.read_i32::<BigEndian>()?)?;
     // The length is written by WriteLENGTH: long vectors are encoded as -1
     // followed by the upper and lower 32-bit halves of the 64-bit length.
     let n = cursor.read_i32::<BigEndian>()?;
@@ -8896,25 +9129,70 @@ fn parse_persistsxp_strings(
         (upper << 32) | lower
     } else if n < 0 {
         return Err(Error::InvalidFormat(format!(
-            "Negative PERSISTSXP string count {}",
+            "Negative string vector count {}",
             n
         )));
     } else {
         n as u64
     };
-    let n = usize::try_from(n).map_err(|_| {
-        Error::InvalidFormat(format!("PERSISTSXP string count {} exceeds usize", n))
-    })?;
+    let n = usize::try_from(n)
+        .map_err(|_| Error::InvalidFormat(format!("String vector count {} exceeds usize", n)))?;
     // Each CHARSXP item occupies at least a 4-byte flags word; validate the
     // count against the remaining stream before allocating.
-    guard_allocation(ctx, n, 4, cursor, "persistsxp strings")?;
-    let mut strings: Vec<Arc<str>> = Vec::with_capacity(n);
+    guard_allocation(ctx, n, 4, cursor, "string vector")?;
+    // Bound the eager reservation: a hostile count must not drive a huge
+    // `Vec::with_capacity` before any item is read (the guard's element size
+    // is the on-wire minimum, not the 16-byte in-memory element). The Vec
+    // grows as real items are consumed.
+    let mut strings: Vec<Option<Arc<str>>> = Vec::with_capacity(bounded_capacity(n));
     for _ in 0..n {
         let item_flags = cursor.read_i32::<BigEndian>()? as u32;
+        check_string_vec_item_flags(item_flags)?;
         let s = parse_charsxp_content(ctx, cursor, item_flags)?;
-        strings.push(Arc::from(s.as_str()));
+        strings.push(s.map(|s| Arc::from(s.as_str())));
     }
     Ok(strings)
+}
+
+/// R's `InStringVec` errors on a non-zero names placeholder ("names in
+/// persistent strings are not supported yet"); a non-zero value means a
+/// corrupt or incompatible stream, so fail fast rather than misparse.
+fn check_string_vec_names_placeholder(placeholder: i32) -> Result<()> {
+    if placeholder != 0 {
+        return Err(Error::InvalidFormat(format!(
+            "Unsupported names marker {} in string vector payload",
+            placeholder
+        )));
+    }
+    Ok(())
+}
+
+/// Validate that a string-vec item's flags word carries the CHARSXP type.
+/// R writes each item via `WriteItem` on a CHARSXP, so the type sits in the
+/// low byte; the compact variant this codebase supports (see
+/// `parse_charsxp_content`) carries it in bits 8-15 with a zero low byte.
+fn check_string_vec_item_flags(item_flags: u32) -> Result<()> {
+    let item_type = if item_flags & 0xFF != 0 {
+        item_flags & 0xFF
+    } else {
+        (item_flags >> 8) & 0xFF
+    };
+    if item_type != CHARSXP {
+        return Err(Error::InvalidFormat(format!(
+            "String vector item has type {} (flags 0x{:08x}), expected CHARSXP",
+            item_type, item_flags
+        )));
+    }
+    // R never writes attributes on OutStringVec CHARSXP items, and
+    // parse_charsxp_content does not consume an attribute object. Reject the
+    // bit so a hostile stream can't desync by promising attributes we'd skip.
+    if item_flags & HAS_ATTR_BIT != 0 {
+        return Err(Error::InvalidFormat(format!(
+            "String vector CHARSXP item unexpectedly carries attributes (flags 0x{:08x})",
+            item_flags
+        )));
+    }
+    Ok(())
 }
 
 /// Parse the content of a CHARSXP (without the header).
@@ -8928,7 +9206,7 @@ fn parse_charsxp_content(
     ctx: &mut ParserContext,
     cursor: &mut RdsCursor<'_>,
     flags: u32,
-) -> Result<String> {
+) -> Result<Option<String>> {
     let pos_before = cursor.position();
     if debug_enabled() {
         debug_log!("[parse_charsxp_content] Starting at pos {}", pos_before);
@@ -8957,7 +9235,7 @@ fn parse_charsxp_content(
 
     if length == -1 {
         // NA_character_
-        return Ok(String::from("NA"));
+        return Ok(None);
     }
 
     if length < 0 {
@@ -8986,7 +9264,7 @@ fn parse_charsxp_content(
         }
     };
 
-    Ok(string)
+    Ok(Some(string))
 }
 
 /// Parse attributes from a pairlist object.
@@ -9157,6 +9435,8 @@ fn parse_attributes(attr_obj: RObject, ctx: &mut ParserContext) -> Result<Attrib
                     if let RObject::Character(names) = names_obj.as_concrete() {
                         let mut attrs = Attributes::new();
                         for (idx, name) in names.iter().enumerate() {
+                            // An NA name yields no attribute key (unnamed).
+                            let Some(name) = name else { continue };
                             if name.is_empty() || idx >= list.len() {
                                 continue;
                             }
@@ -9208,7 +9488,7 @@ fn parse_attributes(attr_obj: RObject, ctx: &mut ParserContext) -> Result<Attrib
             if !s4.class.is_empty() {
                 attrs.insert(
                     Arc::from("class"),
-                    RObject::Character(s4.class.clone().into()),
+                    RObject::Character(crate::types::wrap_some(&s4.class).into()),
                 );
             }
             for (slot_name, slot_value) in &s4.slots {
@@ -9233,7 +9513,7 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
     let class_attr = attributes.get("class")?.as_concrete();
     let is_dataframe = match class_attr {
         RObject::Character(classes) => {
-            classes.is_loaded() && classes.iter().any(|c| c.as_ref() == "data.frame")
+            classes.is_loaded() && classes.iter().any(|c| c.as_deref() == Some("data.frame"))
         }
         _ => false,
     };
@@ -9260,9 +9540,12 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
         return None;
     }
 
-    // Build the columns IndexMap (preserves insertion order from R)
+    // Build the columns IndexMap (preserves insertion order from R).
+    // Columns are keyed by name; a pathological NA column name cannot be a
+    // key, so such a column is skipped (treat-NA-as-absent, R5).
     let mut columns = IndexMap::new();
     for (name, column) in column_names.iter().zip(columns_list.iter()) {
+        let Some(name) = name else { continue };
         columns.insert(name.clone(), column.clone());
     }
 
@@ -9277,12 +9560,14 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
                 if indices.len() == 2 && indices[0] == RObject::NA_INTEGER && indices[1] < 0 {
                     // Compact format: expand to ["1", "2", ..., "n"]
                     let n = -indices[1] as usize;
-                    (1..=n).map(|i| Arc::from(i.to_string().as_str())).collect()
+                    (1..=n)
+                        .map(|i| Some(Arc::from(i.to_string().as_str())))
+                        .collect()
                 } else {
                     // Explicit integer row names: convert to strings
                     indices
                         .iter()
-                        .map(|i| Arc::from(i.to_string().as_str()))
+                        .map(|i| Some(Arc::from(i.to_string().as_str())))
                         .collect()
                 }
             }
@@ -9298,7 +9583,7 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
                         _ => 0,
                     })
                     .unwrap_or(0))
-                    .map(|i| Arc::from(i.to_string().as_str()))
+                    .map(|i| Some(Arc::from(i.to_string().as_str())))
                     .collect()
             }
         }
@@ -9314,7 +9599,9 @@ fn try_convert_to_dataframe(obj: &RObject, attributes: &Attributes) -> Option<RO
                 _ => 0,
             })
             .unwrap_or(0);
-        (1..=n).map(|i| Arc::from(i.to_string().as_str())).collect()
+        (1..=n)
+            .map(|i| Some(Arc::from(i.to_string().as_str())))
+            .collect()
     };
 
     Some(RObject::DataFrame(Box::new(DataFrameData {
@@ -9334,13 +9621,13 @@ fn try_convert_to_factor(obj: &RObject, attributes: &Attributes) -> Option<RObje
     };
 
     // Check if "factor" is in the class list
-    let is_factor = classes.iter().any(|c| c.as_ref() == "factor");
+    let is_factor = classes.iter().any(|c| c.as_deref() == Some("factor"));
     if !is_factor {
         return None;
     }
 
     // Check if it's an ordered factor
-    let ordered = classes.iter().any(|c| c.as_ref() == "ordered");
+    let ordered = classes.iter().any(|c| c.as_deref() == Some("ordered"));
 
     // The base object should be an integer vector (the indices)
     let values = match obj {
@@ -9392,7 +9679,9 @@ fn convert_to_s3_object(obj: RObject, mut attributes: Attributes) -> RObject {
         .and_then(|idx| match attributes.attrs[idx].1.as_concrete() {
             RObject::Character(classes) => {
                 if classes.is_loaded() {
-                    Some(classes.as_vec().clone())
+                    // Class names are a derived plain-string surface: an NA
+                    // entry is treated as absent (skipped).
+                    Some(classes.as_vec().iter().flatten().cloned().collect())
                 } else {
                     None
                 }
@@ -9451,7 +9740,8 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
             match class_obj {
                 RObject::Character(classes) => {
                     if classes.is_loaded() {
-                        (classes.as_vec().clone(), None)
+                        // NA class entries are treated as absent.
+                        (classes.as_vec().iter().flatten().cloned().collect(), None)
                     } else {
                         (vec![], None)
                     }
@@ -9461,10 +9751,11 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
                     attributes: class_attrs,
                 } => {
                     // Unwrap the WithAttributes to get the actual class vector
+                    // (NA class entries are treated as absent).
                     let classes = match object.as_ref() {
                         RObject::Character(classes) => {
                             if classes.is_loaded() {
-                                classes.as_vec().clone()
+                                classes.as_vec().iter().flatten().cloned().collect()
                             } else {
                                 vec![]
                             }
@@ -9474,7 +9765,7 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
                     // Extract the package attribute from the class's attributes
                     let pkg = class_attrs.get("package").and_then(|p| match p {
                         RObject::Character(pkgs) if pkgs.is_loaded() && !pkgs.is_empty() => {
-                            Some(pkgs[0].clone())
+                            pkgs[0].clone()
                         }
                         _ => None,
                     });
@@ -9504,7 +9795,7 @@ fn convert_to_s4_object(mut attributes: Attributes) -> RObject {
     if package.is_none() {
         if let Some(pkg_attr) = attributes.get("package") {
             if let RObject::Character(pkgs) = pkg_attr.as_concrete() {
-                if let Some(first) = pkgs.first() {
+                if let Some(Some(first)) = pkgs.first() {
                     package = Some(first.clone());
                 }
             }

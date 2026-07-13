@@ -3,6 +3,10 @@
 //! ALTREP was introduced in R 3.5.0 for efficient memory representations.
 //! These tests verify that we can parse and materialize ALTREP objects.
 
+// Native-only test file: excluded from wasm32 so `wasm-pack test`
+// (which builds every test target) can compile the workspace.
+#![cfg(not(target_arch = "wasm32"))]
+
 use rds2rust::{read_rds, RObject};
 use std::fs;
 use std::path::Path;
@@ -103,9 +107,9 @@ fn test_altrep_in_list() {
     // Check the list has correct names
     if let Some(RObject::Character(names)) = attrs.get("names") {
         assert_eq!(names.len(), 3);
-        assert_eq!(names[0].as_ref(), "seq");
-        assert_eq!(names[1].as_ref(), "data");
-        assert_eq!(names[2].as_ref(), "another_seq");
+        assert_eq!(names[0].as_deref(), Some("seq"));
+        assert_eq!(names[1].as_deref(), Some("data"));
+        assert_eq!(names[2].as_deref(), Some("another_seq"));
     } else {
         panic!("Expected 'names' attribute");
     }

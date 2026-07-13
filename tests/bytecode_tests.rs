@@ -3,6 +3,10 @@
 //! Bytecode represents compiled R functions for performance optimization.
 //! These tests verify that we can parse bytecode objects and preserve their structure.
 
+// Native-only test file: excluded from wasm32 so `wasm-pack test`
+// (which builds every test target) can compile the workspace.
+#![cfg(not(target_arch = "wasm32"))]
+
 use rds2rust::{read_rds, RObject};
 use std::fs;
 use std::path::Path;
@@ -104,9 +108,9 @@ fn test_bytecode_in_list() {
     if let Some(attrs) = attrs_opt {
         if let Some(RObject::Character(names)) = attrs.get("names") {
             assert_eq!(names.len(), 3);
-            assert_eq!(names[0].as_ref(), "name");
-            assert_eq!(names[1].as_ref(), "func");
-            assert_eq!(names[2].as_ref(), "data");
+            assert_eq!(names[0].as_deref(), Some("name"));
+            assert_eq!(names[1].as_deref(), Some("func"));
+            assert_eq!(names[2].as_deref(), Some("data"));
         }
     }
 
@@ -118,7 +122,7 @@ fn test_bytecode_in_list() {
         match &elements[0] {
             RObject::Character(vec) => {
                 assert_eq!(vec.len(), 1);
-                assert_eq!(vec[0].as_ref(), "my_function");
+                assert_eq!(vec[0].as_deref(), Some("my_function"));
             }
             _ => panic!("Expected first element to be Character vector"),
         }
@@ -193,6 +197,91 @@ fn test_uncompiled_func() {
         }
         _ => panic!("Expected Closure, got {:?}", std::mem::discriminant(&obj)),
     }
+}
+
+#[test]
+fn test_bytecode_reps() {
+    // A compiled function whose bytecode constant pool uses BCREPDEF/BCREPREF
+    // (R shares repeated/recursive language objects via rep markers). Confirms
+    // the sync decoder resolves the reps table without error.
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("bytecode_reps.rds");
+    let obj = read_rds(&data)
+        .expect("Failed to parse rep-using compiled function")
+        .object;
+
+    assert!(
+        matches!(obj, RObject::Closure { .. }),
+        "expected Closure, got {:?}",
+        std::mem::discriminant(&obj)
+    );
+}
+
+#[test]
+fn test_bytecode_then_trailing() {
+    // list(compiled = <rep-using compiled fn>, trailing_marker = <int len 5>).
+    // The eager oracle for the streaming byte-alignment test: the trailing
+    // integer vector after the bytecode payload must parse with the right
+    // length.
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("bytecode_then_trailing.rds");
+    let obj = read_rds(&data)
+        .expect("Failed to parse bytecode-then-trailing list")
+        .object;
+
+    let list = match obj {
+        RObject::WithAttributes { object, .. } => object,
+        RObject::List(_) => Box::new(obj),
+        other => panic!("Expected List, got {:?}", std::mem::discriminant(&other)),
+    };
+
+    if let RObject::List(elements) = list.as_ref() {
+        assert_eq!(elements.len(), 2);
+        assert!(
+            matches!(&elements[0], RObject::Closure { .. }),
+            "first element should be the compiled function"
+        );
+        match &elements[1] {
+            RObject::Integer(vec) => assert_eq!(vec.len(), 5),
+            other => panic!(
+                "trailing marker should be a length-5 integer vector, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    } else {
+        panic!("Expected List");
+    }
+}
+
+#[test]
+fn test_truncated_bytecode_errors_cleanly() {
+    // A bytecode payload truncated mid-stream must surface a clean parse error
+    // rather than panicking, reading out of bounds, or silently succeeding.
+    // This guards the delegated sync decoder's EOF / guard_allocation handling
+    // that both read_rds and inspect_metadata_streaming now rely on.
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let full = read_test_file("bytecode_func.rds");
+    // Chop off the tail so the bytecode payload is incomplete. Cutting the last
+    // quarter reliably lands inside the compiled function's bytecode body.
+    let truncated = &full[..full.len() * 3 / 4];
+
+    let result = read_rds(truncated);
+    assert!(
+        result.is_err(),
+        "expected a parse error for truncated bytecode, got Ok"
+    );
 }
 
 #[test]

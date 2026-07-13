@@ -5,6 +5,10 @@
 //! must be consumed during parsing, otherwise the cursor desynchronizes and
 //! every object after the first persisted one is corrupted.
 
+// Native-only test file: excluded from wasm32 so `wasm-pack test`
+// (which builds every test target) can compile the workspace.
+#![cfg(not(target_arch = "wasm32"))]
+
 use rds2rust::{
     read_rds, traverse_rds_streaming, ObjectPath, ParseConfig, RObject, RdsVisitor, VisitAction,
 };
@@ -43,7 +47,7 @@ fn attr_of<'a>(obj: &'a RObject, name: &str) -> Option<&'a RObject> {
 
 fn character_values(obj: &RObject) -> Vec<String> {
     match unwrap_value(obj) {
-        RObject::Character(values) => values.as_vec().iter().map(|s| s.to_string()).collect(),
+        RObject::Character(values) => values.to_strings_with_na("<NA>"),
         other => panic!("expected character vector, got {:?}", other),
     }
 }

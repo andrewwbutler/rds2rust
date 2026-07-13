@@ -3,6 +3,10 @@
 //! These tests verify that users can construct RObject::WithAttributes
 //! programmatically using the exported Attributes struct.
 
+// Native-only test file: excluded from wasm32 so `wasm-pack test`
+// (which builds every test target) can compile the workspace.
+#![cfg(not(target_arch = "wasm32"))]
+
 use rds2rust::{read_rds, write_rds, Attributes, RObject};
 use std::sync::Arc;
 
@@ -21,7 +25,12 @@ fn test_construct_named_list() {
 
     // Create names attribute
     let names = RObject::Character(
-        vec![Arc::from("first"), Arc::from("second"), Arc::from("third")].into(),
+        vec![
+            Some(Arc::from("first")),
+            Some(Arc::from("second")),
+            Some(Arc::from("third")),
+        ]
+        .into(),
     );
 
     // Construct attributes using the public API
@@ -52,9 +61,9 @@ fn test_construct_named_list() {
             match names_attr.unwrap() {
                 RObject::Character(ref names_vec) => {
                     assert_eq!(names_vec.len(), 3);
-                    assert_eq!(names_vec[0].as_ref(), "first");
-                    assert_eq!(names_vec[1].as_ref(), "second");
-                    assert_eq!(names_vec[2].as_ref(), "third");
+                    assert_eq!(names_vec[0].as_deref(), Some("first"));
+                    assert_eq!(names_vec[1].as_deref(), Some("second"));
+                    assert_eq!(names_vec[2].as_deref(), Some("third"));
                 }
                 _ => panic!("Expected Character vector for names"),
             }
@@ -68,10 +77,11 @@ fn test_named_list_roundtrip() {
     // Create a named list
     let list = RObject::List(vec![
         RObject::Integer(vec![10, 20].into()),
-        RObject::Character(vec![Arc::from("hello"), Arc::from("world")].into()),
+        RObject::Character(vec![Some(Arc::from("hello")), Some(Arc::from("world"))].into()),
     ]);
 
-    let names = RObject::Character(vec![Arc::from("numbers"), Arc::from("words")].into());
+    let names =
+        RObject::Character(vec![Some(Arc::from("numbers")), Some(Arc::from("words"))].into());
 
     let mut attrs = Attributes::new();
     attrs.insert(Arc::from("names"), names);
@@ -101,7 +111,14 @@ fn test_construct_named_integer_vector() {
     let vec = RObject::Integer(vec![100, 200, 300].into());
 
     // Create names
-    let names = RObject::Character(vec![Arc::from("a"), Arc::from("b"), Arc::from("c")].into());
+    let names = RObject::Character(
+        vec![
+            Some(Arc::from("a")),
+            Some(Arc::from("b")),
+            Some(Arc::from("c")),
+        ]
+        .into(),
+    );
 
     let mut attrs = Attributes::new();
     attrs.insert(Arc::from("names"), names);
@@ -131,7 +148,14 @@ fn test_construct_named_integer_vector() {
 #[test]
 fn test_named_vector_roundtrip() {
     let vec = RObject::Real(vec![1.5, 2.5, 3.5].into());
-    let names = RObject::Character(vec![Arc::from("x"), Arc::from("y"), Arc::from("z")].into());
+    let names = RObject::Character(
+        vec![
+            Some(Arc::from("x")),
+            Some(Arc::from("y")),
+            Some(Arc::from("z")),
+        ]
+        .into(),
+    );
 
     let mut attrs = Attributes::new();
     attrs.insert(Arc::from("names"), names);
@@ -163,12 +187,12 @@ fn test_object_with_multiple_attributes() {
         Arc::from("names"),
         RObject::Character(
             vec![
-                Arc::from("a"),
-                Arc::from("b"),
-                Arc::from("c"),
-                Arc::from("d"),
-                Arc::from("e"),
-                Arc::from("f"),
+                Some(Arc::from("a")),
+                Some(Arc::from("b")),
+                Some(Arc::from("c")),
+                Some(Arc::from("d")),
+                Some(Arc::from("e")),
+                Some(Arc::from("f")),
             ]
             .into(),
         ),
@@ -180,7 +204,7 @@ fn test_object_with_multiple_attributes() {
     // Add a custom attribute
     attrs.insert(
         Arc::from("description"),
-        RObject::Character(vec![Arc::from("test matrix")].into()),
+        RObject::Character(vec![Some(Arc::from("test matrix"))].into()),
     );
 
     let obj = RObject::WithAttributes {
@@ -212,10 +236,10 @@ fn test_multiple_attributes_roundtrip() {
         Arc::from("names"),
         RObject::Character(
             vec![
-                Arc::from("w"),
-                Arc::from("x"),
-                Arc::from("y"),
-                Arc::from("z"),
+                Some(Arc::from("w")),
+                Some(Arc::from("x")),
+                Some(Arc::from("y")),
+                Some(Arc::from("z")),
             ]
             .into(),
         ),
@@ -223,7 +247,7 @@ fn test_multiple_attributes_roundtrip() {
     attrs.insert(Arc::from("version"), RObject::Integer(vec![1].into()));
     attrs.insert(
         Arc::from("author"),
-        RObject::Character(vec![Arc::from("test")].into()),
+        RObject::Character(vec![Some(Arc::from("test"))].into()),
     );
 
     let obj = RObject::WithAttributes {
@@ -249,10 +273,10 @@ fn test_multiple_attributes_roundtrip() {
                     assert_eq!(
                         v,
                         &vec![
-                            Arc::from("w"),
-                            Arc::from("x"),
-                            Arc::from("y"),
-                            Arc::from("z")
+                            Some(Arc::from("w")),
+                            Some(Arc::from("x")),
+                            Some(Arc::from("y")),
+                            Some(Arc::from("z"))
                         ]
                     );
                 }
@@ -263,7 +287,7 @@ fn test_multiple_attributes_roundtrip() {
                 _ => panic!("Expected Integer for version"),
             }
             match attributes.get("author").unwrap() {
-                RObject::Character(ref v) => assert_eq!(v, &vec![Arc::from("test")]),
+                RObject::Character(ref v) => assert_eq!(v, &vec![Some(Arc::from("test"))]),
                 _ => panic!("Expected Character for author"),
             }
         }
@@ -289,7 +313,7 @@ fn test_attributes_insert_and_get() {
     attrs.insert(Arc::from("key1"), RObject::Integer(vec![1].into()));
     attrs.insert(
         Arc::from("key2"),
-        RObject::Character(vec![Arc::from("value")].into()),
+        RObject::Character(vec![Some(Arc::from("value"))].into()),
     );
 
     assert!(!attrs.is_empty());
@@ -374,7 +398,7 @@ fn test_nested_with_attributes() {
         let mut attrs = Attributes::new();
         attrs.insert(
             Arc::from("names"),
-            RObject::Character(vec![Arc::from("x"), Arc::from("y")].into()),
+            RObject::Character(vec![Some(Arc::from("x")), Some(Arc::from("y"))].into()),
         );
         RObject::WithAttributes {
             object: Box::new(vec),
@@ -388,7 +412,7 @@ fn test_nested_with_attributes() {
     let mut list_attrs = Attributes::new();
     list_attrs.insert(
         Arc::from("names"),
-        RObject::Character(vec![Arc::from("item1"), Arc::from("item2")].into()),
+        RObject::Character(vec![Some(Arc::from("item1")), Some(Arc::from("item2"))].into()),
     );
 
     let named_list = RObject::WithAttributes {

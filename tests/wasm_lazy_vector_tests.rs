@@ -10,8 +10,6 @@ mod wasm_tests {
     };
     use wasm_bindgen_test::*;
 
-    wasm_bindgen_test_configure!(run_in_browser);
-
     struct TestAsyncInput {
         data: Vec<u8>,
     }
@@ -152,13 +150,13 @@ mod wasm_tests {
     #[wasm_bindgen_test]
     async fn read_lazy_character_range_async_reads_slice() {
         let mut data = Vec::new();
-        data.extend_from_slice(&(CHARSXP as u32).to_be_bytes());
+        data.extend_from_slice(&CHARSXP.to_be_bytes());
         data.extend_from_slice(&(1i32).to_be_bytes());
         data.extend_from_slice(b"a");
-        data.extend_from_slice(&(CHARSXP as u32).to_be_bytes());
+        data.extend_from_slice(&CHARSXP.to_be_bytes());
         data.extend_from_slice(&(3i32).to_be_bytes());
         data.extend_from_slice(b"bbb");
-        let ref_flags = (2u32 << 8) | (REFSXP as u32);
+        let ref_flags = (2u32 << 8) | REFSXP;
         data.extend_from_slice(&ref_flags.to_be_bytes());
 
         let input = TestAsyncInput::new(data);
@@ -170,6 +168,6 @@ mod wasm_tests {
         let out = read_lazy_character_range_async(&input, span, 1, 2)
             .await
             .unwrap();
-        assert_eq!(out, vec![Arc::from("bbb"), Arc::from("bbb")]);
+        assert_eq!(out, vec![Some(Arc::from("bbb")), Some(Arc::from("bbb"))]);
     }
 }

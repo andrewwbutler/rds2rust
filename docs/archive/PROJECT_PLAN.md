@@ -1,22 +1,26 @@
-# rds2rust Project Plan
+# rds2rust Project Plan (historical archive)
+
+> **Archived document — historical snapshot from the initial port (through
+> Phase 14).** This is kept for the design rationale it records (see *Key
+> Technical Achievements* and *Key Design Decisions* below), not as a current
+> status page. Progress counts, test totals, type signatures, and the feature
+> list on this page reflect the state at the time it was written and are now
+> out of date. For current status use:
+>
+> - Current features & limitations → [README](../../README.md)
+> - What changed and when → [CHANGELOG](../../CHANGELOG.md)
+> - Wire-format reference → [RDS_FORMAT.md](../RDS_FORMAT.md)
+> - Active/completed work → `docs/plans/`, `docs/solutions/`
 
 ## Overview
 
 Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to Rust, enabling reading and writing of R's RDS binary format without requiring an R runtime.
 
-## Current Status
+## Status at time of writing (Phase 14 snapshot — see banner)
 
-**Project Progress**: 14 of 16 planned phases completed (87.5%)
+**Project Progress**: 14 of 16 originally planned phases completed
 
-**Test Coverage**: 137 tests passing across all test suites
-- 3 unit tests
-- 72 integration tests (48 + 24 promise/special/builtin)
-- 12 reference tracking tests
-- 5 reference roundtrip tests
-- 40 roundtrip tests
-- 5 closure/environment tests
-
-**Key Features Implemented**:
+**Key Features Implemented (as of this snapshot)**:
 - ✅ All basic R types (NULL, vectors, matrices, data frames)
 - ✅ All object-oriented types (S3, S4, factors)
 - ✅ All language types (expressions, formulas, closures, environments)
@@ -39,11 +43,11 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - `xz2` - for xz compression
 
 2. **Module Structure Created**
-   - [src/lib.rs](src/lib.rs) - Public API
-   - [src/types.rs](src/types.rs) - R object type definitions
-   - [src/error.rs](src/error.rs) - Error types
-   - [src/parser.rs](src/parser.rs) - RDS parsing implementation
-   - [src/writer.rs](src/writer.rs) - RDS writing (stub)
+   - [src/lib.rs](../../src/lib.rs) - Public API
+   - [src/types.rs](../../src/types.rs) - R object type definitions
+   - [src/error.rs](../../src/error.rs) - Error types
+   - [src/parser.rs](../../src/parser.rs) - RDS parsing implementation
+   - [src/writer.rs](../../src/writer.rs) - RDS writing (stub)
 
 3. **Type System Defined**
    - `RObject` enum with variants:
@@ -71,20 +75,20 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
 
 4. **Test Infrastructure**
    - Feature-specific test files following consistent pattern:
-     - [tests/basic_types_tests.rs](tests/basic_types_tests.rs) - NULL, vectors, complex
-     - [tests/list_tests.rs](tests/list_tests.rs) - Lists and pairlists
-     - [tests/attribute_tests.rs](tests/attribute_tests.rs) - Named vectors and matrices
-     - [tests/dataframe_tests.rs](tests/dataframe_tests.rs) - Data frames
-     - [tests/factor_tests.rs](tests/factor_tests.rs) - Factors
-     - [tests/s3_tests.rs](tests/s3_tests.rs) - S3 objects
-     - [tests/s4_tests.rs](tests/s4_tests.rs) - S4 objects
-     - [tests/language_tests.rs](tests/language_tests.rs) - Language objects
-     - [tests/expression_tests.rs](tests/expression_tests.rs) - Expression vectors
-     - [tests/formula_tests.rs](tests/formula_tests.rs) - Formulas
-     - [tests/closure_tests.rs](tests/closure_tests.rs) - Closures and environments
-     - [tests/promise_tests.rs](tests/promise_tests.rs) - Promises, special and builtin functions
-     - [tests/ref_tracking_tests.rs](tests/ref_tracking_tests.rs) - Reference tracking
-   - R script to generate test data: [tests/generate_test_data.R](tests/generate_test_data.R)
+     - [tests/basic_types_tests.rs](../../tests/basic_types_tests.rs) - NULL, vectors, complex
+     - [tests/list_tests.rs](../../tests/list_tests.rs) - Lists and pairlists
+     - [tests/attribute_tests.rs](../../tests/attribute_tests.rs) - Named vectors and matrices
+     - [tests/dataframe_tests.rs](../../tests/dataframe_tests.rs) - Data frames
+     - [tests/factor_tests.rs](../../tests/factor_tests.rs) - Factors
+     - [tests/s3_tests.rs](../../tests/s3_tests.rs) - S3 objects
+     - [tests/s4_tests.rs](../../tests/s4_tests.rs) - S4 objects
+     - [tests/language_tests.rs](../../tests/language_tests.rs) - Language objects
+     - [tests/expression_tests.rs](../../tests/expression_tests.rs) - Expression vectors
+     - [tests/formula_tests.rs](../../tests/formula_tests.rs) - Formulas
+     - [tests/closure_tests.rs](../../tests/closure_tests.rs) - Closures and environments
+     - [tests/promise_tests.rs](../../tests/promise_tests.rs) - Promises, special and builtin functions
+     - [tests/ref_tracking_tests.rs](../../tests/ref_tracking_tests.rs) - Reference tracking
+   - R script to generate test data: [tests/generate_test_data.R](../../tests/generate_test_data.R)
    - **137 passing tests** (3 unit + 72 integration + 12 reference tracking + 5 reference roundtrip + 40 roundtrip + 5 closure) covering:
      - NULL, integers, reals, logicals, characters
      - Empty vectors and vectors with NA values
@@ -109,8 +113,8 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - **Complete roundtrip coverage**: All types verified with read -> write -> read
 
 5. **Documentation**
-   - [RDS_FORMAT.md](RDS_FORMAT.md) - Detailed RDS format specification
-   - [tests/README.md](tests/README.md) - How to generate test files
+   - [RDS_FORMAT.md](../RDS_FORMAT.md) - Detailed RDS format specification
+   - [tests/README.md](../../tests/README.md) - How to generate test files
    - Comprehensive format documentation
 
 ### ✅ Phase 2: Basic Type Parsing (COMPLETED)
@@ -359,7 +363,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Fixed CLOSXP TAG encoding with extra NILVALUE marker handling
 
 4. ✅ **Test Infrastructure Standardization**
-   - Centralized all test data generation in [tests/generate_test_data.R](tests/generate_test_data.R)
+   - Centralized all test data generation in [tests/generate_test_data.R](../../tests/generate_test_data.R)
    - Standardized test pattern with `test_data_exists()` and `read_test_file()` helpers
    - All tests now use `tests/data/` directory consistently
    - Added closure and environment test data generation
@@ -406,7 +410,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Added BUILTINSXP (8) for builtin functions
 
 6. ✅ **Test Infrastructure**
-   - Created [tests/promise_tests.rs](tests/promise_tests.rs) following established pattern
+   - Created [tests/promise_tests.rs](../../tests/promise_tests.rs) following established pattern
    - All 24 tests passing (2 promise + 10 special + 12 builtin)
    - Complete roundtrip coverage for all new types
 
@@ -429,7 +433,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - `S3ObjectData`: `class: Vec<Arc<str>>`
      - `S4ObjectData`: `class: Vec<Arc<str>>`, `slots: HashMap<Arc<str>, RObject>`
      - `Attributes`: `attrs: SmallVec<[(Arc<str>, Box<RObject>); 2]>`
-   - **Files Modified**: [src/types.rs](src/types.rs), [src/parser.rs](src/parser.rs), [src/writer.rs](src/writer.rs), all 13 test files
+   - **Files Modified**: [src/types.rs](../../src/types.rs), [src/parser.rs](../../src/parser.rs), [src/writer.rs](../../src/writer.rs), all 13 test files
 
 #### 2. ✅ **Boxing Large Enum Variants**
    - **Problem**: `RObject` enum size was large due to containing big structs inline, causing excessive stack usage
@@ -441,7 +445,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - `RObject::S3Object(Box<S3ObjectData>)` - was inline struct
      - `RObject::S4Object(Box<S4ObjectData>)` - was inline struct
    - **Benefit**: Better cache locality, reduced stack pressure, smaller enum discriminant overhead
-   - **Files Modified**: [src/types.rs](src/types.rs), [src/parser.rs](src/parser.rs), [src/writer.rs](src/writer.rs), all 13 test files
+   - **Files Modified**: [src/types.rs](../../src/types.rs), [src/parser.rs](../../src/parser.rs), [src/writer.rs](../../src/writer.rs), all 13 test files
 
 #### 3. ✅ **Compact Attributes with SmallVec**
    - **Problem**: `Attributes` used `HashMap<String, RObject>` causing heap allocation even for 0-2 attributes (90%+ of cases)
@@ -453,7 +457,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
      - Custom `insert()` and `get()` methods for attribute access
      - Used `Box<RObject>` in attribute values to break recursive type cycle
    - **Benefit**: Massive reduction in heap allocations for common case (most objects have 0-2 attributes)
-   - **Files Modified**: [Cargo.toml](Cargo.toml), [src/types.rs](src/types.rs), [src/parser.rs](src/parser.rs), [src/writer.rs](src/writer.rs)
+   - **Files Modified**: [Cargo.toml](Cargo.toml), [src/types.rs](../../src/types.rs), [src/parser.rs](../../src/parser.rs), [src/writer.rs](../../src/writer.rs)
 
 #### 4. ✅ **Critical Bug Fixes During Implementation**
    - **Recursive Type Cycle**: Fixed infinite size error between `RObject` ↔ `Attributes` by using `Box<RObject>` in attribute values
@@ -464,19 +468,19 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
 #### 5. ✅ **Test Coverage**
    - **All 137 tests passing** after complete refactoring
    - Updated test files:
-     - [tests/basic_types_tests.rs](tests/basic_types_tests.rs) - String comparisons with `.as_ref()`
-     - [tests/attribute_tests.rs](tests/attribute_tests.rs) - String comparisons with `.as_ref()`
-     - [tests/dataframe_tests.rs](tests/dataframe_tests.rs) - Box pattern matching, `Arc::from()` for keys
-     - [tests/factor_tests.rs](tests/factor_tests.rs) - Box pattern matching
-     - [tests/s3_tests.rs](tests/s3_tests.rs) - Box pattern matching
-     - [tests/s4_tests.rs](tests/s4_tests.rs) - Box pattern matching
-     - [tests/formula_tests.rs](tests/formula_tests.rs) - S3Object box patterns
-     - [tests/list_tests.rs](tests/list_tests.rs) - `Arc::from()` for strings
-     - [tests/promise_tests.rs](tests/promise_tests.rs) - String comparisons with `.as_ref()`
-     - [tests/language_tests.rs](tests/language_tests.rs) - Updated for Arc<str>
-     - [tests/expression_tests.rs](tests/expression_tests.rs) - Updated for Arc<str>
-     - [tests/closure_tests.rs](tests/closure_tests.rs) - Updated for Arc<str>
-     - [tests/ref_tracking_tests.rs](tests/ref_tracking_tests.rs) - Updated for Arc<str>
+     - [tests/basic_types_tests.rs](../../tests/basic_types_tests.rs) - String comparisons with `.as_ref()`
+     - [tests/attribute_tests.rs](../../tests/attribute_tests.rs) - String comparisons with `.as_ref()`
+     - [tests/dataframe_tests.rs](../../tests/dataframe_tests.rs) - Box pattern matching, `Arc::from()` for keys
+     - [tests/factor_tests.rs](../../tests/factor_tests.rs) - Box pattern matching
+     - [tests/s3_tests.rs](../../tests/s3_tests.rs) - Box pattern matching
+     - [tests/s4_tests.rs](../../tests/s4_tests.rs) - Box pattern matching
+     - [tests/formula_tests.rs](../../tests/formula_tests.rs) - S3Object box patterns
+     - [tests/list_tests.rs](../../tests/list_tests.rs) - `Arc::from()` for strings
+     - [tests/promise_tests.rs](../../tests/promise_tests.rs) - String comparisons with `.as_ref()`
+     - [tests/language_tests.rs](../../tests/language_tests.rs) - Updated for Arc<str>
+     - [tests/expression_tests.rs](../../tests/expression_tests.rs) - Updated for Arc<str>
+     - [tests/closure_tests.rs](../../tests/closure_tests.rs) - Updated for Arc<str>
+     - [tests/ref_tracking_tests.rs](../../tests/ref_tracking_tests.rs) - Updated for Arc<str>
 
 #### 6. ✅ **Memory Impact Summary**
    - **String deduplication**: Repeated strings (class names, attribute keys, etc.) shared via Arc
@@ -517,7 +521,7 @@ Port the functionality of rds2cpp (C++ library for reading/writing RDS files) to
    - Zero API changes - fully transparent to users
 
 #### 4. ✅ **Technical Implementation**
-   - **Files Modified**: [src/parser.rs](src/parser.rs)
+   - **Files Modified**: [src/parser.rs](../../src/parser.rs)
    - **Functions Updated**:
      - `parse_rds()` - Creates and initializes DedupTable
      - `parse_object()` - Performs deduplication check before returning objects
@@ -784,13 +788,13 @@ cargo test
 - Original C++ library: https://github.com/LTLA/rds2cpp
 - R Internals: https://cran.r-project.org/doc/manuals/r-release/R-ints.html
 - R serialization: `src/main/serialize.c` in R source
-- Format documentation: [RDS_FORMAT.md](RDS_FORMAT.md)
+- Format documentation: [RDS_FORMAT.md](../RDS_FORMAT.md)
 
 ## Testing Strategy
 
-- **Unit tests**: In each module ([src/parser.rs](src/parser.rs), etc.)
+- **Unit tests**: In each module ([src/parser.rs](../../src/parser.rs), etc.)
 - **Integration tests**: Feature-specific test files (basic_types_tests.rs, list_tests.rs, etc.)
-- **Test data**: Generated from R using [tests/generate_test_data.R](tests/generate_test_data.R)
+- **Test data**: Generated from R using [tests/generate_test_data.R](../../tests/generate_test_data.R)
 - **Verification**: Compare against R's `readRDS()` output
 - **Roundtrip tests**: read -> write -> read comparison for all types
 - **Consistent pattern**: Each test file includes `test_data_exists()` and `read_test_file()` helpers

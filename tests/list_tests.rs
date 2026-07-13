@@ -1,5 +1,9 @@
 //! Integration and roundtrip tests for List and Pairlist types.
 
+// Native-only test file: excluded from wasm32 so `wasm-pack test`
+// (which builds every test target) can compile the workspace.
+#![cfg(not(target_arch = "wasm32"))]
+
 use rds2rust::{read_rds, write_rds, RObject};
 use std::fs;
 use std::path::Path;
@@ -93,7 +97,7 @@ fn test_list_empty() {
 fn test_list_roundtrip() {
     let obj = RObject::List(vec![
         RObject::Integer(vec![1, 2, 3].into()),
-        RObject::Character(vec![Arc::from("test")].into()),
+        RObject::Character(vec![Some(Arc::from("test"))].into()),
         RObject::Real(vec![4.5].into()),
     ]);
     let serialized = write_rds(&obj).expect("Failed to write list");

@@ -1,5 +1,9 @@
 //! Integration and roundtrip tests for Factor types.
 
+// Native-only test file: excluded from wasm32 so `wasm-pack test`
+// (which builds every test target) can compile the workspace.
+#![cfg(not(target_arch = "wasm32"))]
+
 use rds2rust::{read_rds, write_rds, Attributes, FactorData, RObject};
 use std::fs;
 use std::path::Path;
@@ -41,9 +45,9 @@ fn test_factor_simple() {
 
             // Check levels
             assert_eq!(levels.len(), 3);
-            assert_eq!(levels[0].as_ref(), "high");
-            assert_eq!(levels[1].as_ref(), "low");
-            assert_eq!(levels[2].as_ref(), "medium");
+            assert_eq!(levels[0].as_deref(), Some("high"));
+            assert_eq!(levels[1].as_deref(), Some("low"));
+            assert_eq!(levels[2].as_deref(), Some("medium"));
 
             // Check values (1-based indices into levels)
             assert_eq!(values.len(), 5);
@@ -83,9 +87,9 @@ fn test_factor_ordered() {
 
             // Check levels (in order)
             assert_eq!(levels.len(), 3);
-            assert_eq!(levels[0].as_ref(), "low");
-            assert_eq!(levels[1].as_ref(), "medium");
-            assert_eq!(levels[2].as_ref(), "high");
+            assert_eq!(levels[0].as_deref(), Some("low"));
+            assert_eq!(levels[1].as_deref(), Some("medium"));
+            assert_eq!(levels[2].as_deref(), Some("high"));
 
             // Check values (1-based indices into levels)
             assert_eq!(values.len(), 4);
@@ -148,14 +152,14 @@ fn test_factor_ordered_roundtrip() {
 fn test_factor_with_names_roundtrip() {
     let factor = FactorData {
         values: vec![1, 2, 2, 1],
-        levels: vec![Arc::from("alpha"), Arc::from("beta")],
+        levels: vec![Some(Arc::from("alpha")), Some(Arc::from("beta"))],
         ordered: false,
     };
     let expected_names = vec![
-        Arc::from("cell_a"),
-        Arc::from("cell_b"),
-        Arc::from("cell_c"),
-        Arc::from("cell_d"),
+        Some(Arc::from("cell_a")),
+        Some(Arc::from("cell_b")),
+        Some(Arc::from("cell_c")),
+        Some(Arc::from("cell_d")),
     ];
 
     let mut attrs = Attributes::new();

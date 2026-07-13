@@ -133,13 +133,20 @@ impl RefTable {
 
     /// Check if a namespace has been written before, returning its reference index if so.
     /// Otherwise, return None (caller decides whether/how to allocate).
-    fn check_namespace(&mut self, names: &[Arc<str>]) -> Option<u32> {
-        let key = names
+    fn check_namespace(&mut self, kind: &str, names: &[Arc<str>]) -> Option<u32> {
+        let key = Self::namespace_key(kind, names);
+        self.namespace_refs.get(&key).copied()
+    }
+
+    /// Dedup key for namespace-like objects; `kind` keeps namespaces and
+    /// package environments in separate key spaces.
+    fn namespace_key(kind: &str, names: &[Arc<str>]) -> String {
+        let joined = names
             .iter()
             .map(|s| s.as_ref())
             .collect::<Vec<_>>()
             .join("::");
-        self.namespace_refs.get(&key).copied()
+        format!("{}::{}", kind, joined)
     }
 
     /// Check if a symbol has been written before, returning its symbol index if so.
@@ -370,7 +377,7 @@ fn write_symbol_with_tracking<W: Write>(
 
     // First time writing this symbol - write SYMSXP
     write_flags(writer, SYMSXP, false, false, false)?;
-    write_charsxp(writer, name.as_ref())?;
+    write_charsxp(writer, Some(name.as_ref()))?;
 
     // Atomically register in both index spaces - NO manual next_index manipulation!
     let indices = register_symbol_atomic(name.clone(), shared_ptr, ref_table, symbol_tracker);
@@ -435,7 +442,10 @@ fn ref_key(obj: &RObject) -> Option<usize> {
             let guard = inner.read().unwrap();
             if matches!(
                 &*guard,
-                RObject::Symbol(_) | RObject::Environment { .. } | RObject::Namespace(_)
+                RObject::Symbol(_)
+                    | RObject::Environment { .. }
+                    | RObject::Namespace(_)
+                    | RObject::PackageEnv(_)
             ) {
                 Some(Arc::as_ptr(inner) as usize)
             } else {
@@ -443,7 +453,9 @@ fn ref_key(obj: &RObject) -> Option<usize> {
             }
         }
         RObject::Symbol(_) => None,
-        RObject::Environment { .. } | RObject::Namespace(_) => Some(obj as *const RObject as usize),
+        RObject::Environment { .. } | RObject::Namespace(_) | RObject::PackageEnv(_) => {
+            Some(obj as *const RObject as usize)
+        }
         _ => None,
     }
 }
@@ -588,7 +600,10 @@ fn write_object_inner<W: Write>(
             let guard = inner.read().unwrap();
             let inner_is_ref = matches!(
                 &*guard,
-                RObject::Symbol(_) | RObject::Environment { .. } | RObject::Namespace(_)
+                RObject::Symbol(_)
+                    | RObject::Environment { .. }
+                    | RObject::Namespace(_)
+                    | RObject::PackageEnv(_)
             );
             drop(guard);
             if !inner_is_ref || !allow_ref_tracking {
@@ -780,7 +795,10 @@ fn write_object_inner<W: Write>(
             let guard = inner.read().unwrap();
             let inner_is_ref = matches!(
                 &*guard,
-                RObject::Symbol(_) | RObject::Environment { .. } | RObject::Namespace(_)
+                RObject::Symbol(_)
+                    | RObject::Environment { .. }
+                    | RObject::Namespace(_)
+                    | RObject::PackageEnv(_)
             );
             drop(guard);
             if inner_is_ref {
@@ -948,6 +966,7 @@ fn write_object_inner<W: Write>(
             symbol_context,
         ),
         RObject::Namespace(names) => write_namespace(writer, names, ref_table, current_ref_idx),
+        RObject::PackageEnv(names) => write_package_env(writer, names, ref_table, current_ref_idx),
         RObject::GlobalEnv => write_global_env(writer),
         RObject::BaseEnv => write_base_env(writer),
         RObject::EmptyEnv => write_empty_env(writer),
@@ -1016,8 +1035,37 @@ fn write_namespace<W: Write>(
     ref_table: &mut RefTable,
     reserved_idx: Option<u32>,
 ) -> Result<()> {
-    // Check if this namespace was already written
-    if let Some(ref_idx) = ref_table.check_namespace(names) {
+    write_string_vec_env(
+        writer,
+        names,
+        NAMESPACESXP_SERIAL,
+        "ns",
+        ref_table,
+        reserved_idx,
+    )
+}
+
+/// Write a package environment (PACKAGESXP): same OutStringVec wire shape as
+/// a namespace, but R resolves the name via R_FindPackageEnv on load.
+fn write_package_env<W: Write>(
+    writer: &mut W,
+    names: &[Arc<str>],
+    ref_table: &mut RefTable,
+    reserved_idx: Option<u32>,
+) -> Result<()> {
+    write_string_vec_env(writer, names, PACKAGESXP, "pkg", ref_table, reserved_idx)
+}
+
+fn write_string_vec_env<W: Write>(
+    writer: &mut W,
+    names: &[Arc<str>],
+    wire_type: u32,
+    kind: &str,
+    ref_table: &mut RefTable,
+    reserved_idx: Option<u32>,
+) -> Result<()> {
+    // Check if this namespace/package env was already written
+    if let Some(ref_idx) = ref_table.check_namespace(kind, names) {
         // Write a reference to the previous occurrence
         write_refsxp(writer, ref_idx)?;
         return Ok(());
@@ -1028,38 +1076,28 @@ fn write_namespace<W: Write>(
     // Align the reference index with any reserved object slot (from ref tracking).
     let _idx = if let Some(idx) = reserved_idx {
         // Ensure the namespace_refs map records the existing index without bumping next_index again.
-        ref_table.namespace_refs.insert(
-            names
-                .iter()
-                .map(|s| s.as_ref())
-                .collect::<Vec<_>>()
-                .join("::"),
-            idx,
-        );
+        ref_table
+            .namespace_refs
+            .insert(RefTable::namespace_key(kind, names), idx);
         idx
     } else {
         // No reserved index; allocate a new one.
         let idx = ref_table.next_index;
         ref_table.next_index += 1;
-        ref_table.namespace_refs.insert(
-            names
-                .iter()
-                .map(|s| s.as_ref())
-                .collect::<Vec<_>>()
-                .join("::"),
-            idx,
-        );
+        ref_table
+            .namespace_refs
+            .insert(RefTable::namespace_key(kind, names), idx);
         idx
     };
 
-    write_flags(writer, NAMESPACESXP_SERIAL, false, false, false)?;
+    write_flags(writer, wire_type, false, false, false)?;
 
     // Write as OutStringVec format: flags, length, then CHARSXP entries
     writer.write_u32::<BigEndian>(0)?; // unused flags
     writer.write_u32::<BigEndian>(names.len() as u32)?;
 
     for name in names {
-        write_charsxp(writer, name.as_ref())?;
+        write_charsxp(writer, Some(name.as_ref()))?;
     }
 
     Ok(())
@@ -1148,17 +1186,25 @@ fn write_logical_vector<W: Write>(writer: &mut W, vec: &[Logical]) -> Result<()>
 }
 
 /// Write a character vector.
-fn write_character_vector<W: Write>(writer: &mut W, vec: &[Arc<str>]) -> Result<()> {
+fn write_character_vector<W: Write>(writer: &mut W, vec: &[Option<Arc<str>>]) -> Result<()> {
     write_flags(writer, STRSXP, false, false, false)?;
     writer.write_u32::<BigEndian>(vec.len() as u32)?;
     for s in vec {
-        write_charsxp(writer, s.as_ref())?;
+        write_charsxp(writer, s.as_deref())?;
     }
     Ok(())
 }
 
 /// Write a CHARSXP (internal string).
-fn write_charsxp<W: Write>(writer: &mut W, s: &str) -> Result<()> {
+fn write_charsxp<W: Write>(writer: &mut W, s: Option<&str>) -> Result<()> {
+    let Some(s) = s else {
+        // NA_character_: R writes a bare CHARSXP flags word (no encoding
+        // level bits) followed by length -1 and no bytes. Verified against
+        // R's own output for serialize(c("NA", NA_character_)).
+        writer.write_u32::<BigEndian>(CHARSXP)?;
+        writer.write_i32::<BigEndian>(-1)?;
+        return Ok(());
+    };
     let bytes = s.as_bytes();
     // Check if the string is ASCII
     let is_ascii = bytes.iter().all(|&b| b < 128);
@@ -1260,15 +1306,17 @@ fn write_language<W: Write>(
             symbol_tracker,
         )?;
     } else {
-        // If it's a single-element Character, write it as a symbol (function name)
+        // If it's a single-element non-NA Character, write it as a symbol
+        // (function name); an NA cannot be a symbol name.
         match function {
-            RObject::Character(vec) if vec.len() == 1 => {
+            RObject::Character(vec) if vec.len() == 1 && vec[0].is_some() => {
+                let name = vec[0].as_deref().expect("guarded is_some");
                 if std::env::var("RDS_DEBUG_SYMBOL").is_ok() {
-                    debug_log!("[LANGUAGE] Writing function as symbol: '{}'", vec[0]);
+                    debug_log!("[LANGUAGE] Writing function as symbol: '{}'", name);
                 }
                 write_symbol_with_tracking(
                     writer,
-                    Arc::from(vec[0].as_ref()),
+                    Arc::from(name),
                     None, // Plain string, not Shared
                     SymbolContext::NonTagPreferSymbol,
                     ref_table,
@@ -1344,10 +1392,10 @@ fn write_language_with_attrs<W: Write>(
         )?;
     } else {
         match function {
-            RObject::Character(vec) if vec.len() == 1 => {
+            RObject::Character(vec) if vec.len() == 1 && vec[0].is_some() => {
                 write_symbol_with_tracking(
                     writer,
-                    Arc::from(vec[0].as_ref()),
+                    Arc::from(vec[0].as_deref().expect("guarded is_some")),
                     None,
                     SymbolContext::NonTagPreferSymbol,
                     ref_table,
@@ -1505,10 +1553,10 @@ fn write_pairlist_internal<W: Write>(
                 )?;
             } else {
                 match &element.value {
-                    RObject::Character(vec) if vec.len() == 1 => {
+                    RObject::Character(vec) if vec.len() == 1 && vec[0].is_some() => {
                         write_symbol_with_tracking(
                             writer,
-                            Arc::from(vec[0].as_ref()),
+                            Arc::from(vec[0].as_deref().expect("guarded is_some")),
                             None, // Plain string, not Shared
                             SymbolContext::NonTagPreferSymbol,
                             ref_table,
@@ -1640,7 +1688,7 @@ fn write_symbol_with_ref<W: Write>(
     } else {
         // Write the symbol for the first time
         write_flags(writer, SYMSXP, false, false, false)?;
-        write_charsxp(writer, name)?;
+        write_charsxp(writer, Some(name))?;
     }
     Ok(())
 }
@@ -1963,7 +2011,7 @@ fn write_bytecode_body<W: Write>(
 fn write_dataframe<W: Write>(
     writer: &mut W,
     columns: &IndexMap<Arc<str>, RObject>,
-    row_names: &[Arc<str>],
+    row_names: &[Option<Arc<str>>],
     ref_table: &mut RefTable,
     symbol_tracker: &mut SymbolTracker,
     symbol_context: SymbolContext,
@@ -1985,14 +2033,17 @@ fn write_dataframe<W: Write>(
 
     // Write attributes (names, row.names, class)
     let mut attrs = Attributes::new();
-    attrs.insert(Arc::from("names"), RObject::Character(column_names.into()));
+    attrs.insert(
+        Arc::from("names"),
+        RObject::Character(crate::types::wrap_some(&column_names).into()),
+    );
     attrs.insert(
         Arc::from("row.names"),
         RObject::Character(row_names.to_vec().into()),
     );
     attrs.insert(
         Arc::from("class"),
-        RObject::Character(vec![Arc::from("data.frame")].into()),
+        RObject::Character(vec![Some(Arc::from("data.frame"))].into()),
     );
 
     write_attributes(writer, &attrs, ref_table, symbol_tracker, symbol_context)?;
@@ -2092,7 +2143,7 @@ fn write_s3_object<W: Write>(
     let mut attrs = attributes.clone();
     attrs.insert(
         Arc::from("class"),
-        RObject::Character(class.to_vec().into()),
+        RObject::Character(crate::types::wrap_some(class).into()),
     );
 
     write_object_with_attributes(
@@ -2116,12 +2167,12 @@ fn build_s4_attributes(
 
     // For S4 objects, the class attribute must have a package attribute
     // Use the stored package if available, otherwise fall back to ".GlobalEnv" for user-defined classes
-    let class_obj = RObject::Character(class.to_vec().into());
+    let class_obj = RObject::Character(crate::types::wrap_some(class).into());
     let mut class_attrs = Attributes::new();
     let pkg_value = package.cloned().unwrap_or_else(|| Arc::from(".GlobalEnv"));
     class_attrs.insert(
         Arc::from("package"),
-        RObject::Character(vec![pkg_value].into()),
+        RObject::Character(vec![Some(pkg_value)].into()),
     );
 
     let class_with_package = RObject::WithAttributes {
@@ -2234,7 +2285,7 @@ fn write_object_with_attributes<W: Write>(
             write_flags_with_object(writer, STRSXP, true, false, is_s4_object, is_s3_object)?;
             writer.write_u32::<BigEndian>(vec.len() as u32)?;
             for s in vec {
-                write_charsxp(writer, s)?;
+                write_charsxp(writer, s.as_deref())?;
             }
         }
         RObject::Logical(vec) => {
@@ -2458,7 +2509,7 @@ fn write_attributes<W: Write>(
     // Check if this is a data.frame - they require specific attribute order
     let is_dataframe = attributes.attrs.iter().any(|(k, v)| {
         k.as_ref() == "class"
-            && matches!(**v, RObject::Character(ref vec) if vec.iter().any(|s| s.as_ref() == "data.frame"))
+            && matches!(**v, RObject::Character(ref vec) if vec.iter().any(|s| s.as_deref() == Some("data.frame")))
     });
 
     // Check if this is an S4 object - they should preserve slot order

@@ -98,7 +98,7 @@ pub async fn extract_vector_to_js(
 pub async fn read_lazy_character_vector(
     input: &dyn AsyncRdsInput,
     span: LazyVector,
-) -> Result<Vec<std::sync::Arc<str>>> {
+) -> Result<Vec<Option<std::sync::Arc<str>>>> {
     read_lazy_character_range_async(input, span, 0, span.length).await
 }
 
@@ -108,7 +108,7 @@ pub async fn read_lazy_character_range_async(
     span: LazyVector,
     start: usize,
     count: usize,
-) -> Result<Vec<std::sync::Arc<str>>> {
+) -> Result<Vec<Option<std::sync::Arc<str>>>> {
     if count == 0 {
         return Ok(Vec::new());
     }
@@ -220,10 +220,14 @@ pub async fn extract_vector_chunked(
 }
 
 #[cfg(target_arch = "wasm32")]
-fn strings_to_js(values: &[std::sync::Arc<str>]) -> JsValue {
+fn strings_to_js(values: &[Option<std::sync::Arc<str>>]) -> JsValue {
     let arr = Array::new();
     for value in values {
-        arr.push(&JsValue::from_str(value.as_ref()));
+        match value {
+            Some(value) => arr.push(&JsValue::from_str(value.as_ref())),
+            // NA_character_ surfaces as null on the JS boundary.
+            None => arr.push(&JsValue::NULL),
+        };
     }
     arr.into()
 }
@@ -386,10 +390,10 @@ fn parse_complex_vec(bytes: &[u8], length: usize) -> Result<Vec<Complex>> {
 }
 
 #[cfg(target_arch = "wasm32")]
-fn parse_character_vec(bytes: &[u8], length: usize) -> Result<Vec<std::sync::Arc<str>>> {
+fn parse_character_vec(bytes: &[u8], length: usize) -> Result<Vec<Option<std::sync::Arc<str>>>> {
     let mut cursor = std::io::Cursor::new(bytes);
     let mut values = Vec::with_capacity(length);
-    let mut cache: Vec<std::sync::Arc<str>> = Vec::new();
+    let mut cache: Vec<Option<std::sync::Arc<str>>> = Vec::new();
 
     for _ in 0..length {
         let flags = cursor.read_u32::<BigEndian>()?;
@@ -398,9 +402,14 @@ fn parse_character_vec(bytes: &[u8], length: usize) -> Result<Vec<std::sync::Arc
 
         if type_from_0_7 == REFSXP {
             let ref_index = (flags >> 8) as usize;
-            let value = cache.get(ref_index).ok_or_else(|| {
-                Error::InvalidFormat(format!("invalid REFSXP index {}", ref_index))
-            })?;
+            // Wire REFSXP indices are 1-based (0 is invalid), matching the
+            // native parser and chunk iterators.
+            let value = ref_index
+                .checked_sub(1)
+                .and_then(|i| cache.get(i))
+                .ok_or_else(|| {
+                    Error::InvalidFormat(format!("invalid REFSXP index {}", ref_index))
+                })?;
             values.push(value.clone());
             continue;
         }
@@ -424,7 +433,7 @@ fn parse_character_vec(bytes: &[u8], length: usize) -> Result<Vec<std::sync::Arc
 fn parse_charsxp_content_from_cursor(
     cursor: &mut std::io::Cursor<&[u8]>,
     flags: u32,
-) -> Result<std::sync::Arc<str>> {
+) -> Result<Option<std::sync::Arc<str>>> {
     let compact_length = (flags >> 24) & 0xFF;
     let use_compact = compact_length > 0;
 
@@ -437,7 +446,8 @@ fn parse_charsxp_content_from_cursor(
     };
 
     if length == -1 {
-        return Ok(std::sync::Arc::from("NA"));
+        // NA_character_
+        return Ok(None);
     }
     if length < 0 {
         return Err(Error::InvalidFormat(format!(
@@ -448,11 +458,11 @@ fn parse_charsxp_content_from_cursor(
 
     let mut bytes = vec![0u8; length as usize];
     cursor.read_exact(&mut bytes)?;
-    let string = match String::from_utf8(bytes.clone()) {
+    let string: String = match String::from_utf8(bytes.clone()) {
         Ok(s) => s,
         Err(_) => bytes.iter().map(|&b| b as char).collect(),
     };
-    Ok(std::sync::Arc::from(string))
+    Ok(Some(std::sync::Arc::from(string.as_str())))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -541,7 +551,7 @@ fn emit_complex_chunks(data: &[Complex], chunk_size: usize, callback: &Function)
 
 #[cfg(target_arch = "wasm32")]
 fn emit_string_chunks(
-    data: &[std::sync::Arc<str>],
+    data: &[Option<std::sync::Arc<str>>],
     chunk_size: usize,
     callback: &Function,
 ) -> Result<()> {
@@ -554,13 +564,17 @@ fn emit_string_chunks(
         let mut bytes = 0usize;
         let mut end = offset;
         while end < total {
-            let value = data[end].as_ref();
-            let next = bytes + value.len();
+            let value = data[end].as_deref();
+            let next = bytes + value.map_or(0, str::len);
             if end > offset && next > bytes_per_chunk {
                 break;
             }
             bytes = next;
-            arr.push(&JsValue::from_str(value));
+            match value {
+                Some(value) => arr.push(&JsValue::from_str(value)),
+                // NA_character_ surfaces as null on the JS boundary.
+                None => arr.push(&JsValue::NULL),
+            };
             end += 1;
         }
         let progress = JsValue::from_f64(end as f64 / total as f64);
@@ -688,7 +702,11 @@ async fn stream_character_chunks(
         processed += chunk.len();
         let arr = Array::new();
         for value in &chunk {
-            arr.push(&JsValue::from_str(value.as_ref()));
+            match value {
+                Some(value) => arr.push(&JsValue::from_str(value.as_ref())),
+                // NA_character_ surfaces as null on the JS boundary.
+                None => arr.push(&JsValue::NULL),
+            };
         }
         let progress = JsValue::from_f64(processed as f64 / total as f64);
         callback

@@ -10,6 +10,10 @@
 //! - Multi-level reference tracking
 //! - Various attribute edge cases
 
+// Native-only test file: excluded from wasm32 so `wasm-pack test`
+// (which builds every test target) can compile the workspace.
+#![cfg(not(target_arch = "wasm32"))]
+
 use rds2rust::{read_rds, PairlistElement, RObject};
 use std::fs;
 use std::path::Path;
@@ -42,10 +46,10 @@ fn test_compact_strings() {
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 4);
-            assert_eq!(vec[0].as_ref(), "ExampleObject");
-            assert_eq!(vec[1].as_ref(), "package");
-            assert_eq!(vec[2].as_ref(), "namespace");
-            assert_eq!(vec[3].as_ref(), "environment");
+            assert_eq!(vec[0].as_deref(), Some("ExampleObject"));
+            assert_eq!(vec[1].as_deref(), Some("package"));
+            assert_eq!(vec[2].as_deref(), Some("namespace"));
+            assert_eq!(vec[3].as_deref(), Some("environment"));
         }
         _ => panic!("Expected Character vector"),
     }
@@ -66,7 +70,7 @@ fn test_string_lengths() {
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 1);
-            assert_eq!(vec[0].as_ref(), "x");
+            assert_eq!(vec[0].as_deref(), Some("x"));
         }
         _ => panic!("Expected Character vector"),
     }
@@ -79,7 +83,7 @@ fn test_string_lengths() {
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 1);
-            assert_eq!(vec[0].len(), 500);
+            assert_eq!(vec[0].as_deref().unwrap().len(), 500);
         }
         _ => panic!("Expected Character vector"),
     }
@@ -90,7 +94,7 @@ fn test_string_lengths() {
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 1);
-            assert_eq!(vec[0].len(), 70000);
+            assert_eq!(vec[0].as_deref().unwrap().len(), 70000);
         }
         _ => panic!("Expected Character vector"),
     }
@@ -111,8 +115,8 @@ fn test_string_encodings() {
     match obj {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 1);
-            assert!(vec[0].contains("世界"));
-            assert!(vec[0].contains("🌍"));
+            assert!(vec[0].as_deref().unwrap().contains("世界"));
+            assert!(vec[0].as_deref().unwrap().contains("🌍"));
         }
         _ => panic!("Expected Character vector"),
     }
@@ -126,7 +130,7 @@ fn test_string_encodings() {
         RObject::Character(vec) => {
             assert_eq!(vec.len(), 1);
             // The string should contain "Café" or similar
-            assert!(vec[0].len() >= 3);
+            assert!(vec[0].as_deref().unwrap().len() >= 3);
         }
         _ => panic!("Expected Character vector"),
     }
@@ -161,8 +165,8 @@ fn test_nested_char_vectors() {
                     match &elements[0] {
                         RObject::Character(vec) => {
                             assert_eq!(vec.len(), 2);
-                            assert_eq!(vec[0].as_ref(), "level1_a");
-                            assert_eq!(vec[1].as_ref(), "level1_b");
+                            assert_eq!(vec[0].as_deref(), Some("level1_a"));
+                            assert_eq!(vec[1].as_deref(), Some("level1_b"));
                         }
                         _ => panic!("Expected first element to be Character vector"),
                     }
@@ -446,9 +450,9 @@ fn test_repeated_symbol_names() {
                     RObject::WithAttributes { attributes, .. } => {
                         if let Some(RObject::Character(names)) = attributes.get("names") {
                             assert_eq!(names.len(), 3, "Element {} should have 3 names", i);
-                            assert_eq!(names[0].as_ref(), "x");
-                            assert_eq!(names[1].as_ref(), "y");
-                            assert_eq!(names[2].as_ref(), "z");
+                            assert_eq!(names[0].as_deref(), Some("x"));
+                            assert_eq!(names[1].as_deref(), Some("y"));
+                            assert_eq!(names[2].as_deref(), Some("z"));
                         }
                     }
                     _ => {
@@ -945,10 +949,10 @@ fn test_closure_with_namespace_environment() {
     let closure = RObject::Closure {
         formals: Box::new(RObject::Null),
         body: Box::new(RObject::Language {
-            function: Box::new(RObject::Character(vec![Arc::from("print")].into())),
+            function: Box::new(RObject::Character(vec![Some(Arc::from("print"))].into())),
             args: vec![PairlistElement {
                 tag: None,
-                value: RObject::Character(vec![Arc::from("x")].into()),
+                value: RObject::Character(vec![Some(Arc::from("x"))].into()),
                 tag_object: None,
             }],
         }),

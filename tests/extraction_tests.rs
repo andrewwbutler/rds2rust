@@ -88,7 +88,10 @@ fn read_manifest_and_validate_vector_header() {
 
 #[test]
 fn extract_character_vector_to_raw_file() {
-    let obj = RObject::Character(VectorData::Owned(vec![Arc::from("hi"), Arc::from("there")]));
+    let obj = RObject::Character(VectorData::Owned(vec![
+        Some(Arc::from("hi")),
+        Some(Arc::from("there")),
+    ]));
     let dir = tempdir().expect("tempdir");
 
     let result = extract_vectors_to_raw_files(&obj, &[], &[""], None, dir.path()).expect("extract");

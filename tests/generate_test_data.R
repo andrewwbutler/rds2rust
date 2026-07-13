@@ -401,6 +401,84 @@ serialize(
 )
 close(con)
 
+# Package environments (PACKAGESXP): written as an OutStringVec of the
+# environment's name; R resolves it at load time via R_FindPackageEnv.
+# serialize() warns that the package may not be available when loading,
+# hence suppressWarnings. Unlike PERSISTSXP, a repeated package environment
+# is a REFSXP back reference (HashGet wins before the package path).
+pkg_env <- as.environment("package:stats")
+
+con <- file(file.path(output_dir, "packagesxp_bare.rds"), "wb")
+suppressWarnings(serialize(pkg_env, con))
+close(con)
+
+con <- file(file.path(output_dir, "packagesxp.rds"), "wb")
+suppressWarnings(serialize(list(p = pkg_env, after = "still-aligned"), con))
+close(con)
+
+# The same package env twice plus shared symbols around it: the second
+# occurrence is REFSXP, and the symbol back reference after it only
+# resolves correctly if PACKAGESXP occupies exactly one reference slot.
+con <- file(file.path(output_dir, "packagesxp_refs.rds"), "wb")
+suppressWarnings(serialize(
+  list(
+    p = pkg_env,
+    p2 = pkg_env,
+    s = as.name("pkgsym"),
+    s2 = as.name("pkgsym"),
+    tail = "ref-ok"
+  ),
+  con
+))
+close(con)
+
+# Package env inside an attribute with a trailing attribute, mirroring the
+# persistsxp_attr fixture shape.
+pkg_attr_obj <- structure(
+  list("payload"),
+  pkgenv = pkg_env,
+  tail_attr = "tail"
+)
+con <- file(file.path(output_dir, "packagesxp_attr.rds"), "wb")
+suppressWarnings(serialize(pkg_attr_obj, con))
+close(con)
+
+# Bare namespace (NAMESPACESXP, 249) and base namespace (BASENAMESPACE_SXP,
+# 250, which has NO payload on the wire) alignment fixtures.
+con <- file(file.path(output_dir, "namespacesxp.rds"), "wb")
+serialize(list(ns = getNamespace("stats"), after = "ns-aligned"), con)
+close(con)
+
+con <- file(file.path(output_dir, "basenamespace.rds"), "wb")
+serialize(list(b = getNamespace("base"), after = "base-ok"), con)
+close(con)
+
+# NA_character_ fidelity fixtures: a true missing value must stay
+# distinguishable from the legal string "NA" end-to-end.
+saveRDS(c("NA", NA_character_), file.path(output_dir, "na_character_basic.rds"))
+
+# NA in a names attribute: the element keeps its position, unnamed.
+na_names_list <- list(1L, 2L, 3L)
+names(na_names_list) <- c("a", NA, "b")
+saveRDS(na_names_list, file.path(output_dir, "na_in_names.rds"))
+
+# NA inside a class vector (pathological but representable).
+na_class_obj <- list("payload")
+attr(na_class_obj, "class") <- c("foo", NA, "bar")
+saveRDS(na_class_obj, file.path(output_dir, "na_in_class.rds"))
+
+# Factor with an NA level (exclude = NULL): the level slot must be
+# preserved positionally or every later level lookup corrupts.
+na_level_factor <- factor(c("a", NA, "b"), exclude = NULL)
+saveRDS(na_level_factor, file.path(output_dir, "na_factor_level.rds"))
+
+# Data-frame string column containing both a real "NA" and a missing value.
+na_df <- data.frame(s = c("NA", NA, "x"), stringsAsFactors = FALSE)
+saveRDS(na_df, file.path(output_dir, "na_df_column.rds"))
+
+# Dedup distinctness: c("NA") and c(NA_character_) are different objects.
+saveRDS(list(x = "NA", y = NA_character_), file.path(output_dir, "na_dedup.rds"))
+
 
 # Reference tracking test cases
 # These test REFSXP (reference tracking) functionality
@@ -680,6 +758,30 @@ saveRDS(func_list, file.path(output_dir, "bytecode_in_list.rds"))
 # Regular (uncompiled) function for comparison
 uncompiled_func <- simple_func
 saveRDS(uncompiled_func, file.path(output_dir, "uncompiled_func.rds"))
+
+# Bytecode whose constant pool uses BCREPDEF/BCREPREF. R's compiler shares
+# repeated/recursive language objects in the constant pool via rep markers, so
+# a function with nested identical call structures forces those markers. This
+# exercises the reps table in both the sync decoder and the streaming decoder.
+rep_func <- function(x) {
+    if (x[[1]] > 0) {
+        g(h(x[[1]]), h(x[[1]]))
+    } else {
+        g(h(x[[1]]), h(x[[1]]))
+    }
+}
+compiled_rep_func <- cmpfun(rep_func)
+saveRDS(compiled_rep_func, file.path(output_dir, "bytecode_reps.rds"))
+
+# A bytecode object followed by a trailing sibling in the same stream, to
+# prove the streaming walk stays byte-aligned across the whole payload: if the
+# bytecode decoder over- or under-consumed, the trailing marker vector would
+# be missed or misread.
+bytecode_then_trailing <- list(
+    compiled = compiled_rep_func,
+    trailing_marker = c(101L, 102L, 103L, 104L, 105L)
+)
+saveRDS(bytecode_then_trailing, file.path(output_dir, "bytecode_then_trailing.rds"))
 
 # ==============================================================================
 # Advanced serialization format tests

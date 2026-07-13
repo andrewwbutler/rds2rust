@@ -1,5 +1,9 @@
 //! Integration and roundtrip tests for Language objects (unevaluated R expressions/calls).
 
+// Native-only test file: excluded from wasm32 so `wasm-pack test`
+// (which builds every test target) can compile the workspace.
+#![cfg(not(target_arch = "wasm32"))]
+
 use rds2rust::{read_rds, write_rds, PairlistElement, RObject};
 use std::fs;
 use std::path::Path;
@@ -165,10 +169,10 @@ fn test_lang_nested_roundtrip() {
 fn test_language_construction_roundtrip() {
     // Construct a Language object: print("hello")
     let lang = RObject::Language {
-        function: Box::new(RObject::Character(vec![Arc::from("print")].into())),
+        function: Box::new(RObject::Character(vec![Some(Arc::from("print"))].into())),
         args: vec![PairlistElement {
             tag: None,
-            value: RObject::Character(vec![Arc::from("hello")].into()),
+            value: RObject::Character(vec![Some(Arc::from("hello"))].into()),
             tag_object: None,
         }],
     };
@@ -191,14 +195,14 @@ fn test_language_construction_roundtrip() {
                 // Function should be the symbol "print" (allow legacy Character singletons)
                 match function.as_ref() {
                     RObject::Symbol(name) if name.as_ref() == "print" => {}
-                    RObject::Character(v) if v.len() == 1 && v[0].as_ref() == "print" => {}
+                    RObject::Character(v) if v.len() == 1 && v[0].as_deref() == Some("print") => {}
                     other => panic!("Expected print symbol, got {:?}", other),
                 }
                 // Should have one argument
                 assert_eq!(args.len(), 1, "Should have 1 argument");
                 // Argument should be the string "hello"
                 match &args[0].value {
-                    RObject::Character(v) if v.len() == 1 && v[0].as_ref() == "hello" => {}
+                    RObject::Character(v) if v.len() == 1 && v[0].as_deref() == Some("hello") => {}
                     RObject::Symbol(name) if name.as_ref() == "hello" => {}
                     other => panic!("Expected hello string, got {:?}", other),
                 }

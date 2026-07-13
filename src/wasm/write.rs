@@ -75,8 +75,7 @@ impl Write for CallbackWriter {
             offset += to_copy;
 
             if self.buffer.len() >= self.chunk_size {
-                self.flush_buffer()
-                    .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+                self.flush_buffer().map_err(std::io::Error::other)?;
             }
         }
 
@@ -84,8 +83,7 @@ impl Write for CallbackWriter {
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.flush_buffer()
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
+        self.flush_buffer().map_err(std::io::Error::other)
     }
 }
 
@@ -145,8 +143,7 @@ impl Write for ProgressWriter {
 
         if self.bytes_written >= self.next_report_at {
             self.next_report_at += PROGRESS_INTERVAL_BYTES;
-            self.report_progress()
-                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+            self.report_progress().map_err(std::io::Error::other)?;
         }
 
         Ok(written)
@@ -155,8 +152,7 @@ impl Write for ProgressWriter {
     fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush()?;
         self.bytes_written = self.inner.bytes_written + self.inner.buffer.len();
-        self.report_progress()
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
+        self.report_progress().map_err(std::io::Error::other)
     }
 }
 

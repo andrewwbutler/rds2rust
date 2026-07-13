@@ -1,5 +1,9 @@
 //! Integration and roundtrip tests for S3 objects.
 
+// Native-only test file: excluded from wasm32 so `wasm-pack test`
+// (which builds every test target) can compile the workspace.
+#![cfg(not(target_arch = "wasm32"))]
+
 use rds2rust::{read_rds, write_rds, RObject};
 use std::fs;
 use std::path::Path;
@@ -125,7 +129,7 @@ fn test_s3_vector() {
             match attributes.get("description") {
                 Some(RObject::Character(desc)) => {
                     assert_eq!(desc.len(), 1);
-                    assert_eq!(desc[0].as_ref(), "A custom vector class");
+                    assert_eq!(desc[0].as_deref(), Some("A custom vector class"));
                 }
                 _ => panic!("Expected description attribute"),
             }

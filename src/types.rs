@@ -173,6 +173,67 @@ impl<T> FromIterator<T> for VectorData<T> {
     }
 }
 
+/// Wrap plain strings in `Some` for character-vector construction (the
+/// no-NA case), shared by the writer and converter paths.
+pub(crate) fn wrap_some<T: Clone>(items: &[T]) -> Vec<Option<T>> {
+    items.iter().cloned().map(Some).collect()
+}
+
+/// Convenience helpers for character vectors (`VectorData<Option<Arc<str>>>`,
+/// where `None` is `NA_character_`).
+impl VectorData<Option<Arc<str>>> {
+    /// Build a character vector from plain strings (no NAs) in a single call.
+    pub fn from_strs<I, S>(strs: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        VectorData::Owned(
+            strs.into_iter()
+                .map(|s| Some(Arc::from(s.as_ref())))
+                .collect(),
+        )
+    }
+
+    /// Element access as `Option<&str>`: `None` for NA.
+    ///
+    /// # Panics
+    /// Panics on lazy data or out-of-bounds index, matching `as_vec()`.
+    pub fn get_str(&self, index: usize) -> Option<&str> {
+        self.as_vec()[index].as_deref()
+    }
+
+    /// True if the element at `index` is `NA_character_`.
+    ///
+    /// # Panics
+    /// Panics on lazy data or out-of-bounds index, matching `as_vec()`.
+    pub fn is_na(&self, index: usize) -> bool {
+        self.as_vec()[index].is_none()
+    }
+
+    /// Iterate elements as `Option<&str>` (`None` for NA).
+    ///
+    /// # Panics
+    /// Panics on lazy data, matching `as_vec()`.
+    pub fn iter_strs(&self) -> impl Iterator<Item = Option<&str>> {
+        self.as_vec().iter().map(|s| s.as_deref())
+    }
+
+    /// Explicit escape hatch: render every element to an owned `String`,
+    /// substituting `na` for missing values. `to_strings_with_na("NA")`
+    /// reproduces the pre-0.2.0 behavior in one visible, greppable call;
+    /// `to_strings_with_na("<NA>")` matches R's own printing.
+    ///
+    /// # Panics
+    /// Panics on lazy data, matching `as_vec()`.
+    pub fn to_strings_with_na(&self, na: &str) -> Vec<String> {
+        self.as_vec()
+            .iter()
+            .map(|s| s.as_deref().unwrap_or(na).to_string())
+            .collect()
+    }
+}
+
 impl<'a, T: 'a + Clone> IntoIterator for &'a VectorData<T> {
     type Item = &'a T;
     type IntoIter = std::slice::Iter<'a, T>;
@@ -229,8 +290,10 @@ pub enum RObject {
     /// Logical vector (can be fully loaded or lazy)
     Logical(VectorData<Logical>),
 
-    /// Character vector (using Arc<str> for string interning, can be fully loaded or lazy)
-    Character(VectorData<Arc<str>>),
+    /// Character vector (using Arc<str> for string interning, can be fully loaded or lazy).
+    /// Elements are `Option<Arc<str>>`: `None` represents R's `NA_character_`,
+    /// keeping a missing value distinguishable from the legal string "NA".
+    Character(VectorData<Option<Arc<str>>>),
 
     /// Symbol (SYMSXP) - a named symbol
     /// Used for R's internal symbol table and special markers
@@ -322,6 +385,11 @@ pub enum RObject {
     /// Namespace reference (triggers automatic package loading in R)
     /// Contains namespace name components (e.g., ["Matrix"] or ["base"])
     Namespace(Vec<Arc<str>>),
+
+    /// Package environment reference (e.g. ["package:stats"]).
+    /// Serialized as PACKAGESXP; R resolves the name via R_FindPackageEnv
+    /// when the file is loaded.
+    PackageEnv(Vec<Arc<str>>),
 
     /// Global environment reference
     /// This is a singleton in R that persists across the session
@@ -519,6 +587,7 @@ impl RObject {
                 // Namespace is Vec<Arc<str>>, no nested RObjects
                 Namespace(ns)
             }
+            PackageEnv(names) => PackageEnv(names),
             // All other variants don't contain nested RObjects
             other => other,
         }
@@ -551,6 +620,7 @@ impl RObject {
             S3Object(_) => "S3Object",
             S4Object(_) => "S4Object",
             Namespace(_) => "Namespace",
+            PackageEnv(_) => "PackageEnv",
             GlobalEnv => "GlobalEnv",
             BaseEnv => "BaseEnv",
             EmptyEnv => "EmptyEnv",
@@ -676,8 +746,9 @@ impl RObject {
                     && expr.is_fully_loaded_impl(visited)
             }
 
-            // Namespace - just a Vec<Arc<str>>, always loaded
+            // Namespace/package env - just a Vec<Arc<str>>, always loaded
             Namespace(_ns) => true,
+            PackageEnv(_) => true,
 
             // WithAttributes wrapper
             WithAttributes { object, .. } => object.is_fully_loaded_impl(visited),
@@ -994,8 +1065,9 @@ impl RObject {
                 expr.collect_lazy_spans_impl(&expr_path, spans, visited);
             }
 
-            // Namespace - just a Vec<Arc<str>>, no lazy data
+            // Namespace/package env - just a Vec<Arc<str>>, no lazy data
             Namespace(_ns) => {}
+            PackageEnv(_) => {}
 
             // WithAttributes wrapper
             WithAttributes { object, .. } => {
@@ -1199,6 +1271,7 @@ impl RObject {
 
             Factor(_)
             | Namespace(_)
+            | PackageEnv(_)
             | Null
             | Symbol(_)
             | Special { .. }
@@ -1345,6 +1418,7 @@ impl PartialEq for RObject {
             (S3Object(x), S3Object(y)) => x == y,
             (S4Object(x), S4Object(y)) => x == y,
             (Namespace(x), Namespace(y)) => x == y,
+            (PackageEnv(x), PackageEnv(y)) => x == y,
             (GlobalEnv, GlobalEnv) => true,
             (BaseEnv, BaseEnv) => true,
             (EmptyEnv, EmptyEnv) => true,
@@ -1369,15 +1443,21 @@ impl PartialEq for RObject {
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataFrameData {
     pub columns: IndexMap<Arc<str>, RObject>,
-    pub row_names: Vec<Arc<str>>,
+    /// Row names. Positional (row i's name), so an NA row name keeps its
+    /// slot as `None` rather than being dropped.
+    pub row_names: Vec<Option<Arc<str>>>,
 }
 
 /// Factor structure (boxed to reduce RObject enum size)
 #[derive(Debug, Clone, PartialEq)]
 pub struct FactorData {
-    pub values: Vec<i32>,      // Integer indices (1-based, 0 = NA)
-    pub levels: Vec<Arc<str>>, // Level labels (interned)
-    pub ordered: bool,         // Whether it's an ordered factor
+    pub values: Vec<i32>, // Integer indices (1-based, 0 = NA)
+    /// Level labels (interned). A `None` entry is an NA level (rare; produced
+    /// by `factor(..., exclude = NULL)`). Slots must keep their position:
+    /// `values` index into `levels` positionally, so an NA level cannot be
+    /// dropped without corrupting every subsequent level lookup.
+    pub levels: Vec<Option<Arc<str>>>,
+    pub ordered: bool, // Whether it's an ordered factor
 }
 
 /// S3 object structure (boxed to reduce RObject enum size)
@@ -1500,10 +1580,10 @@ impl FactorData {
             RObject::Character(self.levels.clone().into()),
         );
 
-        let class = if self.ordered {
-            vec![Arc::from("ordered"), Arc::from("factor")]
+        let class: Vec<Option<Arc<str>>> = if self.ordered {
+            vec![Some(Arc::from("ordered")), Some(Arc::from("factor"))]
         } else {
-            vec![Arc::from("factor")]
+            vec![Some(Arc::from("factor"))]
         };
         attrs.insert(Arc::from("class"), RObject::Character(class.into()));
 

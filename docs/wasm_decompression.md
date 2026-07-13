@@ -135,4 +135,14 @@ const result = await client.run("decompress", { file }, {
 
 ## Troubleshooting
 
-See `docs/wasm_gzip_troubleshooting.md` for common errors and fixes.
+Common issues:
+
+- **`DecompressionStream is not defined`** — the browser lacks the
+  `DecompressionStream` API (needs Chrome/Edge 89+, Firefox 102+, Safari 16.4+).
+  Pre-decompress with `decompressBlobIfNeeded()` or fall back to an in-memory path.
+- **Unsupported format error on `.rds.xz` / `.rds.bz2`** — xz and bzip2 are not
+  decompressed on `wasm32`; decompress the file before handing it to the WASM
+  helper. (Native builds do read xz.)
+- **Out-of-memory on very large files** — ensure the size-based strategy is
+  active (Blob-backed chunked reads above ~500 MB, streaming above ~10 GB) rather
+  than forcing a full in-memory buffer.
