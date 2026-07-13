@@ -5435,21 +5435,16 @@ fn parse_object_streaming<V: RdsVisitor>(
             ))));
         }
         BCREPREF | BCREPDEF => {
-            if ctx.in_bytecode_context {
-                // The streaming traversal does not decode the bytecode wire
-                // format (bare type ints + rep indices; only the sync
-                // parse_bc_lang handles it properly), so tolerate rep markers
-                // inside bytecode as before - metadata traversal stumbles
-                // through the payload and emits its Unsupported warning.
-                StreamControl::Continue
-            } else {
-                // Outside bytecode these types mean a corrupt or misparsed
-                // stream; fail fast instead of silently continuing.
-                return Err(StreamingError::Parse(Error::InvalidFormat(format!(
-                    "Bytecode representation type {} encountered outside bytecode context",
-                    sexp_type
-                ))));
-            }
+            // Bytecode rep markers are only valid inside a BCODESXP constant
+            // pool, and that payload is now consumed in full by the sync
+            // decoder (parse_bytecode_streaming), so one can never be reached
+            // as a standalone streaming object. Encountering one here means a
+            // corrupt or misparsed stream; fail fast, matching R (which also
+            // rejects these outside bytecode).
+            return Err(StreamingError::Parse(Error::InvalidFormat(format!(
+                "Bytecode representation type {} encountered outside bytecode context",
+                sexp_type
+            ))));
         }
         _ if sexp_type > 25 && sexp_type < 238 => StreamControl::Continue,
         _ => return Err(StreamingError::Parse(Error::UnknownSexpType(sexp_type))),
@@ -7183,146 +7178,47 @@ fn parse_promise_streaming<V: RdsVisitor>(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Consume a BCODESXP (bytecode) payload in the streaming metadata walk.
+///
+/// The bytecode wire format is `reps_len` (u32) + `code` (an object) + a
+/// count-prefixed, type-code-dispatched constant pool with a shared reps
+/// table (`ReadBC`/`ReadBC1`/`ReadBCLang` in R's serialize.c). It is *not*
+/// three flag-prefixed objects, so it cannot be walked with generic
+/// `parse_object_streaming` calls. Rather than maintain a second, walking copy
+/// of that recursive decoder, we delegate byte consumption to the already-
+/// correct sync `parse_bytecode` (the authoritative reader that roundtrips
+/// real R bytecode) and discard the object it builds. This guarantees the
+/// cursor advances by exactly the payload's length, so every object *after*
+/// the bytecode in the stream stays aligned.
+///
+/// The bytecode itself is reported to the visitor as an unsupported structure
+/// (the `on_object_start(path, "Bytecode")` in the caller already drives the
+/// warning), so nothing inside the payload is emitted here — this also fixes
+/// the previous traversal, which leaked bytecode internals (e.g. the opcode
+/// integer vector) into the reported vectors.
+///
+/// Note on references: the sync decoder registers any ref-trackable objects
+/// inside the payload (symbols, environments, namespaces) into `ref_table`
+/// but not into the streaming `ref_paths` map. A later `REFSXP` that points
+/// back into the bytecode payload therefore resolves to an empty path rather
+/// than a wrong one — degraded path reporting for a rare case, never a desync.
+/// This mirrors `parse_altrep_streaming`, which delegates its bounded internal
+/// payload to the sync parser the same way.
 fn parse_bytecode_streaming<V: RdsVisitor>(
     ctx: &mut ParserContext,
     cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
-    ref_paths: &mut StreamingRefTable,
-    emit: bool,
-    visitor: &mut V,
-    path: &mut crate::ObjectPath,
-    progress: &mut StreamingProgressState<'_>,
+    _ref_paths: &mut StreamingRefTable,
+    _emit: bool,
+    _visitor: &mut V,
+    _path: &mut crate::ObjectPath,
+    _progress: &mut StreamingProgressState<'_>,
 ) -> StreamingResult<StreamControl, V::Error> {
-    // Mark bytecode context so the BCREPREF/BCREPDEF arms stay lenient while
-    // stumbling through the (not properly decoded) bytecode payload, but
-    // error outside it.
-    let prev_bytecode_ctx = ctx.in_bytecode_context;
-    ctx.in_bytecode_context = true;
-    let result = parse_bytecode_streaming_inner(
-        ctx,
-        cursor,
-        ref_table,
-        symbol_table,
-        dedup_table,
-        ref_paths,
-        emit,
-        visitor,
-        path,
-        progress,
-    );
-    ctx.in_bytecode_context = prev_bytecode_ctx;
-    result
-}
-
-#[allow(clippy::too_many_arguments)]
-fn parse_bytecode_streaming_inner<V: RdsVisitor>(
-    ctx: &mut ParserContext,
-    cursor: &mut RdsCursor<'_>,
-    ref_table: &mut RefTable,
-    symbol_table: &mut SymbolTable,
-    dedup_table: &mut DedupTable,
-    ref_paths: &mut StreamingRefTable,
-    emit: bool,
-    visitor: &mut V,
-    path: &mut crate::ObjectPath,
-    progress: &mut StreamingProgressState<'_>,
-) -> StreamingResult<StreamControl, V::Error> {
-    if emit {
-        path.push(Arc::from("code"));
-        if matches!(
-            parse_object_streaming(
-                ctx,
-                cursor,
-                ref_table,
-                symbol_table,
-                dedup_table,
-                ref_paths,
-                progress,
-                visitor,
-                path,
-                true,
-            )?,
-            StreamControl::Stop
-        ) {
-            path.pop();
-            return Ok(StreamControl::Stop);
-        }
-        path.pop();
-        path.push(Arc::from("constants"));
-        if matches!(
-            parse_object_streaming(
-                ctx,
-                cursor,
-                ref_table,
-                symbol_table,
-                dedup_table,
-                ref_paths,
-                progress,
-                visitor,
-                path,
-                true,
-            )?,
-            StreamControl::Stop
-        ) {
-            path.pop();
-            return Ok(StreamControl::Stop);
-        }
-        path.pop();
-        path.push(Arc::from("expr"));
-        let control = parse_object_streaming(
-            ctx,
-            cursor,
-            ref_table,
-            symbol_table,
-            dedup_table,
-            ref_paths,
-            progress,
-            visitor,
-            path,
-            true,
-        )?;
-        path.pop();
-        return Ok(control);
-    }
-
-    let _ = parse_object_streaming(
-        ctx,
-        cursor,
-        ref_table,
-        symbol_table,
-        dedup_table,
-        ref_paths,
-        progress,
-        visitor,
-        path,
-        false,
-    )?;
-    let _ = parse_object_streaming(
-        ctx,
-        cursor,
-        ref_table,
-        symbol_table,
-        dedup_table,
-        ref_paths,
-        progress,
-        visitor,
-        path,
-        false,
-    )?;
-    parse_object_streaming(
-        ctx,
-        cursor,
-        ref_table,
-        symbol_table,
-        dedup_table,
-        ref_paths,
-        progress,
-        visitor,
-        path,
-        false,
-    )
+    parse_bytecode(ctx, cursor, ref_table, symbol_table, dedup_table)
+        .map_err(StreamingError::Parse)?;
+    Ok(StreamControl::Continue)
 }
 
 #[allow(clippy::too_many_arguments)]

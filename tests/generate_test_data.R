@@ -759,6 +759,30 @@ saveRDS(func_list, file.path(output_dir, "bytecode_in_list.rds"))
 uncompiled_func <- simple_func
 saveRDS(uncompiled_func, file.path(output_dir, "uncompiled_func.rds"))
 
+# Bytecode whose constant pool uses BCREPDEF/BCREPREF. R's compiler shares
+# repeated/recursive language objects in the constant pool via rep markers, so
+# a function with nested identical call structures forces those markers. This
+# exercises the reps table in both the sync decoder and the streaming decoder.
+rep_func <- function(x) {
+    if (x[[1]] > 0) {
+        g(h(x[[1]]), h(x[[1]]))
+    } else {
+        g(h(x[[1]]), h(x[[1]]))
+    }
+}
+compiled_rep_func <- cmpfun(rep_func)
+saveRDS(compiled_rep_func, file.path(output_dir, "bytecode_reps.rds"))
+
+# A bytecode object followed by a trailing sibling in the same stream, to
+# prove the streaming walk stays byte-aligned across the whole payload: if the
+# bytecode decoder over- or under-consumed, the trailing marker vector would
+# be missed or misread.
+bytecode_then_trailing <- list(
+    compiled = compiled_rep_func,
+    trailing_marker = c(101L, 102L, 103L, 104L, 105L)
+)
+saveRDS(bytecode_then_trailing, file.path(output_dir, "bytecode_then_trailing.rds"))
+
 # ==============================================================================
 # Advanced serialization format tests
 # ==============================================================================

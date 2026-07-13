@@ -120,6 +120,15 @@ The version in `Cargo.toml` has not been bumped yet.
   long-vector-marker handling and negative-count rejection.
 - The wasm sequential parse and skip paths now consume PERSISTSXP /
   PACKAGESXP / NAMESPACESXP payloads instead of desyncing.
+- Streaming metadata inspection (`inspect_metadata_streaming`) now decodes the
+  bytecode (BCODESXP) wire format correctly instead of walking it as three
+  generic objects. The previous traversal relied on a lenient continue-arm and
+  byte-skipping; it leaked bytecode internals (the opcode integer vector) into
+  the reported vectors and could miss real siblings. Bytecode is still reported
+  as an unsupported structure (unchanged warning contract), but the payload is
+  now consumed exactly, so objects after a bytecode payload stay aligned and a
+  standalone bytecode rep marker (`BCREPREF`/`BCREPDEF`) is now rejected in all
+  contexts.
 
 ### Changed
 

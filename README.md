@@ -21,7 +21,7 @@ As such, this initial implementation was created almost entirely with a combinat
 - **Pure Rust implementation** - No R runtime required
 - **Broad RDS format support** - Reads and writes core R object types
 - **Memory efficient** - Optimized with string interning, compact attributes, and object deduplication
-- **Automatic compression** - Transparent gzip compression/decompression
+- **Automatic compression** - Transparent gzip compression/decompression; xz decompression on read (native targets)
 - **Type safe** - Strong Rust types for all R objects
 - **Zero-copy where possible** - Efficient parsing and serialization
 - **Thread-aware** - Use `into_concrete_deep()` before sharing parsed objects across threads
@@ -606,7 +606,7 @@ let obj2 = Arc::clone(&obj);
 ## Limitations
 
 - **Write support**: All R types can be written except for some complex environment configurations
-- **Compression formats**: Currently supports gzip; bzip2/xz support planned
+- **Compression formats**: Reads gzip and xz (xz on native targets only, not `wasm32`); writes gzip. bzip2 is not supported.
 - **ALTREP**: Reads ALTREP objects but writes them as regular vectors
 - **External pointers**: Not supported (rarely used in serialized data)
 
@@ -633,8 +633,8 @@ Licensed under:
 
 ## Resources
 
-- [RDS Format Documentation](RDS_FORMAT.md)
-- [Project Plan](PROJECT_PLAN.md)
+- [RDS Format Documentation](docs/RDS_FORMAT.md)
+- [Project Plan (historical archive)](docs/archive/PROJECT_PLAN.md)
 - [Test Generation Guide](tests/README.md)
 - [WASM Decompression Guide](docs/wasm_decompression.md)
 - [R Internals Manual](https://cran.r-project.org/doc/manuals/r-release/R-ints.html)
