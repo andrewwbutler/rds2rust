@@ -200,6 +200,68 @@ fn test_uncompiled_func() {
 }
 
 #[test]
+fn test_bytecode_reps() {
+    // A compiled function whose bytecode constant pool uses BCREPDEF/BCREPREF
+    // (R shares repeated/recursive language objects via rep markers). Confirms
+    // the sync decoder resolves the reps table without error.
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("bytecode_reps.rds");
+    let obj = read_rds(&data)
+        .expect("Failed to parse rep-using compiled function")
+        .object;
+
+    assert!(
+        matches!(obj, RObject::Closure { .. }),
+        "expected Closure, got {:?}",
+        std::mem::discriminant(&obj)
+    );
+}
+
+#[test]
+fn test_bytecode_then_trailing() {
+    // list(compiled = <rep-using compiled fn>, trailing_marker = <int len 5>).
+    // The eager oracle for the streaming byte-alignment test: the trailing
+    // integer vector after the bytecode payload must parse with the right
+    // length.
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let data = read_test_file("bytecode_then_trailing.rds");
+    let obj = read_rds(&data)
+        .expect("Failed to parse bytecode-then-trailing list")
+        .object;
+
+    let list = match obj {
+        RObject::WithAttributes { object, .. } => object,
+        RObject::List(_) => Box::new(obj),
+        other => panic!("Expected List, got {:?}", std::mem::discriminant(&other)),
+    };
+
+    if let RObject::List(elements) = list.as_ref() {
+        assert_eq!(elements.len(), 2);
+        assert!(
+            matches!(&elements[0], RObject::Closure { .. }),
+            "first element should be the compiled function"
+        );
+        match &elements[1] {
+            RObject::Integer(vec) => assert_eq!(vec.len(), 5),
+            other => panic!(
+                "trailing marker should be a length-5 integer vector, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    } else {
+        panic!("Expected List");
+    }
+}
+
+#[test]
 fn test_bytecode_roundtrip() {
     // Fixed: Writer now emits NULL for cyclic references instead of REFSXP
     // This prevents parser stack overflow when re-parsing bytecode with circular references

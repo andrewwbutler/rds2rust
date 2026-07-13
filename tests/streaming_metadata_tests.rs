@@ -239,6 +239,74 @@ fn streaming_rejects_top_level_bytecode_rep_marker() {
     );
 }
 
+/// Reps path: `bytecode_reps.rds` is a compiled function whose constant pool
+/// uses BCREPDEF/BCREPREF (R shares repeated/recursive language objects via
+/// rep markers). This is the case the old lenient continue-arm hand-waved:
+/// the streaming decoder must consume the rep markers exactly. A clean single
+/// Bytecode warning with no desync error proves the reps were consumed
+/// correctly by the (delegated) decoder.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn streaming_handles_rep_using_bytecode() {
+    if !Path::new("tests/data/bytecode_reps.rds").exists() {
+        eprintln!("Skipping test: bytecode_reps.rds not generated");
+        return;
+    }
+
+    let source = read_source("bytecode_reps.rds");
+    let info = inspect_metadata_streaming(&source, ParseConfig::default())
+        .expect("metadata streaming failed on rep-using bytecode");
+
+    assert_eq!(info.version, Some(3));
+    assert_eq!(
+        count_bytecode_warnings(&info),
+        1,
+        "expected exactly one Bytecode warning for the rep-using compiled function"
+    );
+}
+
+/// Byte-alignment across a rep-using payload: `bytecode_then_trailing.rds` is
+/// `list(compiled = <rep-using compiled fn>, trailing_marker = <int len 5>)`.
+/// The trailing integer vector is serialized *after* the bytecode payload, so
+/// its continued visibility at `[1]` is direct proof the streaming decoder
+/// consumed exactly the bytecode bytes — the core evidence the old stumbling
+/// traversal is gone.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn streaming_stays_aligned_after_bytecode_payload() {
+    if !Path::new("tests/data/bytecode_then_trailing.rds").exists() {
+        eprintln!("Skipping test: bytecode_then_trailing.rds not generated");
+        return;
+    }
+
+    let source = read_source("bytecode_then_trailing.rds");
+    let info = inspect_metadata_streaming(&source, ParseConfig::default())
+        .expect("metadata streaming failed on bytecode-then-trailing");
+
+    assert_eq!(count_bytecode_warnings(&info), 1);
+
+    let trailing_marker = info.vectors.iter().find(|v| {
+        matches!(v.kind, rds2rust::VectorKind::Integer)
+            && v.path.segments.len() == 1
+            && v.path.segments[0].as_ref() == "[1]"
+    });
+    let trailing_marker = trailing_marker.unwrap_or_else(|| {
+        panic!(
+            "expected the trailing integer marker at [1] after the bytecode \
+             payload (desync guard); got vectors: {:?}",
+            info.vectors
+                .iter()
+                .map(|v| (&v.path.segments, v.kind, v.length))
+                .collect::<Vec<_>>()
+        )
+    });
+    assert_eq!(
+        trailing_marker.length, 5,
+        "trailing marker should be the length-5 integer vector, proving the \
+         bytecode payload was consumed exactly"
+    );
+}
+
 /// In-memory `RdsInput` for synthetic-stream tests.
 #[cfg(not(target_arch = "wasm32"))]
 struct BytesInput {
