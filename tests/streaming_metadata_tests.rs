@@ -232,10 +232,16 @@ fn streaming_rejects_top_level_bytecode_rep_marker() {
     bytes.extend_from_slice(&BCREPREF.to_be_bytes()); // top-level object flags = BCREPREF
 
     let input = BytesInput { data: bytes };
-    let result = inspect_metadata_streaming(&input, ParseConfig::default());
+    let err = inspect_metadata_streaming(&input, ParseConfig::default())
+        .expect_err("expected a parse error for a top-level bytecode rep marker, got Ok");
+    // Assert the error originates from the tightened BCREPREF/BCREPDEF arm, not
+    // an earlier header/format parse failure — otherwise the test could pass
+    // for the wrong reason if the synthetic header ever drifted.
+    let msg = err.to_string();
     assert!(
-        result.is_err(),
-        "expected a parse error for a top-level bytecode rep marker, got Ok"
+        msg.contains("Bytecode representation type"),
+        "expected the rejection to come from the bytecode-rep-marker arm, got: {}",
+        msg
     );
 }
 

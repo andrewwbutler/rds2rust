@@ -262,6 +262,29 @@ fn test_bytecode_then_trailing() {
 }
 
 #[test]
+fn test_truncated_bytecode_errors_cleanly() {
+    // A bytecode payload truncated mid-stream must surface a clean parse error
+    // rather than panicking, reading out of bounds, or silently succeeding.
+    // This guards the delegated sync decoder's EOF / guard_allocation handling
+    // that both read_rds and inspect_metadata_streaming now rely on.
+    if !test_data_exists() {
+        eprintln!("Skipping test: test data not generated");
+        return;
+    }
+
+    let full = read_test_file("bytecode_func.rds");
+    // Chop off the tail so the bytecode payload is incomplete. Cutting the last
+    // quarter reliably lands inside the compiled function's bytecode body.
+    let truncated = &full[..full.len() * 3 / 4];
+
+    let result = read_rds(truncated);
+    assert!(
+        result.is_err(),
+        "expected a parse error for truncated bytecode, got Ok"
+    );
+}
+
+#[test]
 fn test_bytecode_roundtrip() {
     // Fixed: Writer now emits NULL for cyclic references instead of REFSXP
     // This prevents parser stack overflow when re-parsing bytecode with circular references
