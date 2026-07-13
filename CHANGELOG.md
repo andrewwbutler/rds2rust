@@ -5,12 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-07-13
 
 Covers all changes since 0.1.41: PR [#2](https://github.com/andrewwbutler/rds2rust/pull/2)
 (PERSISTSXP payloads), PR [#3](https://github.com/andrewwbutler/rds2rust/pull/3)
-(reference-table alignment), and the PACKAGESXP/namespace/wasm payload fixes.
-The version in `Cargo.toml` has not been bumped yet.
+(reference-table alignment), the PACKAGESXP/namespace/wasm payload fixes, and
+the streaming bytecode decoder.
 
 ### Breaking / behavior changes for downstream consumers
 

@@ -42,7 +42,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rds2rust = "0.1"
+rds2rust = "0.2"
 ```
 
 ## Quick Start
@@ -612,7 +612,7 @@ let obj2 = Arc::clone(&obj);
 
 ## Development Status
 
-**Current version**: see CHANGELOG.md (0.2.0 in progress)
+**Current version**: 0.2.0 (see CHANGELOG.md)
 
 **Test coverage**: extensive test suite covering core R object types and roundtrips
 
