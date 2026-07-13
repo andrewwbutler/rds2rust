@@ -185,4 +185,75 @@ fn characterize_bytecode_in_list_streaming() {
             .map(|v| (&v.path.segments, v.kind, v.length))
             .collect::<Vec<_>>()
     );
+
+    // Byte-alignment proof: the list is list(name=<chr>, func=<compiled fn>,
+    // data=<real len 3>) with a `names` attribute. Because the bytecode
+    // payload is now consumed exactly, the walk reaches the trailing `data`
+    // element (Real, len 3, at `[2]`) and the list's `names` attribute
+    // (Character, len 3). The old stumbling traversal misread the payload and
+    // never surfaced these — seeing them is direct evidence the decoder
+    // consumed the bytecode bytes and nothing more.
+    let has_trailing_real = info.vectors.iter().any(|v| {
+        matches!(v.kind, rds2rust::VectorKind::Real)
+            && v.length == 3
+            && v.path.segments.len() == 1
+            && v.path.segments[0].as_ref() == "[2]"
+    });
+    assert!(
+        has_trailing_real,
+        "expected the trailing real vector `data` (len 3 at [2]) after the \
+         bytecode payload; got vectors: {:?}",
+        info.vectors
+            .iter()
+            .map(|v| (&v.path.segments, v.kind, v.length))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// Error path: the streaming BCREPREF/BCREPDEF arm is tightened to reject a
+/// bytecode rep marker appearing as a standalone top-level object. Such a
+/// marker is only valid inside a BCODESXP constant pool (now fully consumed by
+/// the sync decoder), so reaching one at the stream root means a corrupt or
+/// misparsed stream — it must error rather than silently continue.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn streaming_rejects_top_level_bytecode_rep_marker() {
+    // Minimal RDS v3 header (XDR "X\n", format version 3, writer/min R
+    // versions, empty native-encoding name), followed by a top-level object
+    // whose flags word is BCREPREF (243). BCREPREF is never a valid top-level
+    // SEXP, so streaming inspection must reject it.
+    const BCREPREF: u32 = 243;
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(&[0x58, 0x0a]); // "X\n" XDR marker
+    bytes.extend_from_slice(&3u32.to_be_bytes()); // serialization format version
+    bytes.extend_from_slice(&[0x00, 0x04, 0x03, 0x03]); // writer R version 4.3.3
+    bytes.extend_from_slice(&[0x00, 0x03, 0x05, 0x00]); // min reader R version 3.5.0
+    bytes.extend_from_slice(&0u32.to_be_bytes()); // native encoding name length 0
+    bytes.extend_from_slice(&BCREPREF.to_be_bytes()); // top-level object flags = BCREPREF
+
+    let input = BytesInput { data: bytes };
+    let result = inspect_metadata_streaming(&input, ParseConfig::default());
+    assert!(
+        result.is_err(),
+        "expected a parse error for a top-level bytecode rep marker, got Ok"
+    );
+}
+
+/// In-memory `RdsInput` for synthetic-stream tests.
+#[cfg(not(target_arch = "wasm32"))]
+struct BytesInput {
+    data: Vec<u8>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl rds2rust::RdsInput for BytesInput {
+    fn read_at(&self, offset: u64, len: usize) -> rds2rust::Result<Vec<u8>> {
+        let start = offset as usize;
+        let end = (start + len).min(self.data.len());
+        Ok(self.data[start..end.max(start)].to_vec())
+    }
+
+    fn len(&self) -> Option<u64> {
+        Some(self.data.len() as u64)
+    }
 }
