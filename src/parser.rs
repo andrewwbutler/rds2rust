@@ -8464,8 +8464,18 @@ fn parse_pairlist_element(
         (None, None)
     };
 
-    // Parse the CAR (the value for this element)
-    let car = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+    // DataFrameData stores row names eagerly. Leaving this attribute lazy
+    // would make dataframe conversion discard explicit identifiers and infer
+    // a (possibly incorrect) row count from the first column instead.
+    // Limit eager parsing to the attribute value, then restore lazy mode for
+    // subsequent values, including the dataframe's potentially large columns.
+    let previous_mode = ctx.mode.clone();
+    if tag.as_deref() == Some("row.names") {
+        ctx.mode = crate::ParseMode::Full;
+    }
+    let car = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table);
+    ctx.mode = previous_mode;
+    let car = car?;
 
     Ok((tag, tag_object, car))
 }
