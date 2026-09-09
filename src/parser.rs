@@ -768,6 +768,14 @@ fn should_cache_for_dedup(obj: &RObject) -> bool {
         RObject::S3Object(_) => false,
         RObject::S4Object(_) => false,
         RObject::List(_) => false,
+        // Composite values can reach cyclic Shared graphs. Dedup equality
+        // must not recurse through them; sharing is already tracked by REFSXP.
+        RObject::Pairlist(_)
+        | RObject::Language { .. }
+        | RObject::Expression(_)
+        | RObject::Promise { .. }
+        | RObject::Bytecode { .. }
+        | RObject::WithAttributes { .. } => false,
         RObject::Environment { .. } => false,
         RObject::Closure { .. } => false,
 
@@ -9880,5 +9888,56 @@ mod tests {
         let header = vec![b'Y', b'\n', 0, 0, 0, 2];
         let mut cursor = RdsCursor::new_slice(header.as_slice());
         assert!(parse_header(&mut cursor).is_err());
+    }
+
+    #[test]
+    fn composite_values_are_not_deduplicated() {
+        use std::sync::RwLock;
+        let shared = Arc::new(RwLock::new(RObject::Null));
+        *shared.write().unwrap() = RObject::Environment {
+            enclosing: Box::new(RObject::Shared(shared.clone())),
+            frame: Box::new(RObject::Null),
+            hashtab: Box::new(RObject::Null),
+        };
+        let value = || RObject::Shared(shared.clone());
+        let composites = vec![
+            RObject::Pairlist(vec![PairlistElement {
+                tag: None,
+                value: value(),
+                tag_object: None,
+            }]),
+            RObject::Language {
+                function: Box::new(value()),
+                args: vec![],
+            },
+            RObject::Expression(vec![value()]),
+            RObject::Promise {
+                value: Box::new(value()),
+                expression: Box::new(RObject::Null),
+                environment: Box::new(RObject::Null),
+            },
+            RObject::Bytecode {
+                code: Box::new(RObject::Null),
+                constants: Box::new(value()),
+                expr: Box::new(RObject::Null),
+            },
+            RObject::WithAttributes {
+                object: Box::new(value()),
+                attributes: Default::default(),
+            },
+        ];
+        for object in composites {
+            let mut table = DedupTable::new();
+            assert!(table.deduplicate(&object).is_none());
+            // Fail before comparing a second cyclic graph: the old behavior
+            // would enter unbounded equality recursion rather than panic safely.
+            assert!(table.cache.is_empty(), "composite entered equality cache");
+        }
+        *shared.write().unwrap() = RObject::Null;
+        let mut table = DedupTable::new();
+        let symbol = RObject::Symbol(Arc::from("retained"));
+        assert!(table.deduplicate(&symbol).is_none());
+        assert!(table.deduplicate(&symbol).is_some());
+        assert_eq!(table.cache.len(), 1);
     }
 }
