@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-09-09
+
+Maintenance release: a data-loss fix for lazily parsed dataframes and an xz
+backend swap. Both changes are backward compatible. Anyone reading dataframes
+with a lazy-metadata config should upgrade — row names were being dropped
+silently.
+
+### Fixed
+
+- **Dataframes parsed in lazy mode no longer lose their row names**
+  ([#5](https://github.com/andrewwbutler/rds2rust/pull/5)). Previously, any
+  dataframe read with a `ParseMode::LazyMetadata` config came back with
+  `row_names` **empty**: the conversion required a loaded `row.names`
+  attribute, and the fallback path inferred a row count from the first
+  column, which was itself lazy and reported a length of zero. Explicit row
+  identifiers (e.g. cell barcodes or gene IDs) were silently dropped — no
+  error was raised. This affected every config that selects lazy metadata
+  mode, including `lazy_metadata()`, `for_trusted_large_file()`, and
+  `for_constrained_conversion()`.
+
+  `row.names` is now parsed eagerly even in lazy modes, because
+  `DataFrameData` stores row names eagerly. Only that one attribute value is
+  parsed eagerly; lazy mode is restored before the dataframe's
+  (potentially large) columns, so columns still load lazily and the
+  performance characteristics of lazy parsing are otherwise unchanged.
+  All three R row-name encodings are covered: character, explicit integer,
+  and the compact `[NA_integer_, -n]` form.
+
+  Consumers that worked around missing or synthesized row names on lazily
+  parsed dataframes should re-test.
+
+  Note: because row names are always materialized now, memory use scales
+  with row count even in lazy modes (roughly 3 MB of string data for a
+  200,000-row frame with character row names). `for_inspection_only()` does
+  not convert to `DataFrame` and is unaffected.
+
+### Changed
+
+- **xz decompression now uses `liblzma` instead of `xz2`**
+  ([#4](https://github.com/andrewwbutler/rds2rust/pull/4)). `xz2` has been
+  unmaintained since 2022 and pins `lzma-sys` 0.1.20, which vendors the C
+  liblzma 5.2.5. `liblzma` is the maintained fork of the same codebase and
+  vendors **liblzma 5.8.3**, picking up roughly three years of upstream
+  fixes to code that parses untrusted input. The dependency is declared with
+  `default-features = false` so the default `bindgen` feature is skipped and
+  no libclang is required at build time. The public API is unchanged, and
+  xz remains native-only (excluded from wasm32 builds).
+
+### Added
+
+- xz reader coverage that no longer depends on generated fixtures
+  ([#4](https://github.com/andrewwbutler/rds2rust/pull/4)). The existing
+  `test_xz_reader` silently skips when `tests/data` has not been generated,
+  so xz decoding was effectively untested on such checkouts. The new test
+  builds its xz stream in-process and also asserts that a truncated stream
+  is rejected rather than silently mis-parsed.
+
 ## [0.2.0] - 2026-07-13
 
 Covers all changes since 0.1.41: PR [#2](https://github.com/andrewwbutler/rds2rust/pull/2)

@@ -612,7 +612,7 @@ let obj2 = Arc::clone(&obj);
 
 ## Development Status
 
-**Current version**: 0.2.0 (see CHANGELOG.md)
+**Current version**: 0.2.1 (see CHANGELOG.md)
 
 **Test coverage**: extensive test suite covering core R object types and roundtrips
 
