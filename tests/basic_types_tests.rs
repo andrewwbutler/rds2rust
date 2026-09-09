@@ -1001,3 +1001,16 @@ fn test_xz_reader() {
         .object;
     assert_eq!(obj_xz, obj_gzip);
 }
+
+#[test]
+fn test_xz_reader_without_generated_fixtures() {
+    let expected = RObject::Integer(vec![1, 2, 3].into());
+    let gzip = write_rds(&expected).expect("serialize test object");
+    let mut decoded = flate2::read::GzDecoder::new(gzip.as_slice());
+    let mut encoder = liblzma::write::XzEncoder::new(Vec::new(), 6);
+    std::io::copy(&mut decoded, &mut encoder).expect("recompress as xz");
+    let xz = encoder.finish().expect("finish xz stream");
+
+    assert_eq!(read_rds(&xz).expect("read xz").object, expected);
+    assert!(read_rds(&xz[..xz.len() / 2]).is_err());
+}

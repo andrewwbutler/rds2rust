@@ -12,11 +12,11 @@ use crate::types::{
 use byteorder::{BigEndian, ReadBytesExt};
 use flate2::read::GzDecoder;
 use indexmap::IndexMap;
+#[cfg(not(target_arch = "wasm32"))]
+use liblzma::read::XzDecoder;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, RwLock};
-#[cfg(not(target_arch = "wasm32"))]
-use xz2::read::XzDecoder;
 
 use crate::extraction::VectorKind;
 use crate::types::VectorData;
@@ -916,7 +916,6 @@ fn parse_rds_internal(data: &[u8], ctx: &mut ParserContext) -> Result<RObject> {
     } else if is_xz {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            // Decompress xz using the xz2 crate
             let mut decoder = XzDecoder::new(data);
             let mut decompressed = Vec::new();
             decoder.read_to_end(&mut decompressed)?;
