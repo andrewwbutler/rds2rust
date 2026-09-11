@@ -1531,7 +1531,7 @@ impl Attributes {
         // Check if key already exists and update it
         for (k, v) in self.attrs.iter_mut() {
             if k.as_ref() == key.as_ref() {
-                *v = Box::new(value);
+                **v = value;
                 return;
             }
         }
