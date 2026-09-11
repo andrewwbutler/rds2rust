@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Limit parser nesting in native and WebAssembly readers, including bytecode
+  and streaming paths. The default is 64 nested parser calls; the maximum
+  configurable value is 128. `ParseConfig` gains `max_nesting_depth` and its
+  builder method. Struct literals that list every field must add the field.
+- Check the element storage of materialized collections in every parse mode
+  and cap initial vector reservations. Native lazy primitive vectors skip
+  their validated payload without allocating a temporary payload buffer.
+
+### Added
+
+- Small-object tests for nesting and allocation limits, plus a bounded
+  writer-round-trip fuzz target.
+
 ## [0.2.1] - 2026-09-09
 
 Maintenance release: a data-loss fix for lazily parsed dataframes and an xz
