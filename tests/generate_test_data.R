@@ -1116,3 +1116,12 @@ cat("Total files:", length(list.files(output_dir, pattern = "\\.rds$")), "\n")
 # xz compressed RDS
 saveRDS(mtcars, file.path(output_dir, "xz_compressed.rds"), compress = "xz")
 saveRDS(mtcars, file.path(output_dir, "gzip_compressed.rds"), compress = "gzip")
+
+# Note: not every fixture lives here. Files that must be committed to the repo
+# (rather than regenerated locally) live in tests/fixtures/, because this
+# output_dir is gitignored. See tests/fixtures/cyclic-pairlists.rda, whose
+# generating R code is documented at the top of tests/dedup_cycles.rs:
+#   a <- new.env(parent = emptyenv()); a$self <- a
+#   b <- new.env(parent = emptyenv()); b$self <- b
+#   x <- pairlist(a); y <- pairlist(b)
+#   save(x, y, file = "cyclic-pairlists.rda", version = 2, compress = FALSE)

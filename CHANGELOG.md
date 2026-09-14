@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-09-14
+
+Maintenance release: a single crash fix for cyclic object graphs. Backward
+compatible, with no API changes. Anyone parsing files that contain
+self-referential environments should upgrade — the previous behavior was a
+process abort, not a catchable error.
+
+### Fixed
+
+- **Self-referential environments no longer abort the process during
+  deduplication**
+  ([#6](https://github.com/andrewwbutler/rds2rust/pull/6)). Reading a file
+  containing a cyclic object graph — for example an environment stored in
+  itself, `a <- new.env(); a$self <- a` — overflowed the stack and aborted
+  with `SIGABRT`. Because the failure was a stack overflow rather than a
+  returned `Err`, it could not be caught by callers, taking down the whole
+  process in CLI and WebAssembly consumers alike. Both the full and lazy
+  readers were affected, as was streaming with skipped children, and file
+  size was irrelevant: a 397-byte workspace with two such environments was
+  enough to trigger it.
+
+  The parser stores R's REFSXP back-references as
+  `RObject::Shared(Arc<RwLock<RObject>>)` rather than deep-cloning, so a
+  self-referential environment is a genuine cycle in the object graph.
+  `RObject`'s `PartialEq` follows `Shared` by cloning the payload and
+  recursing, with no cycle detection, and its `Arc::ptr_eq` fast path only
+  applies when both sides wrap the same `Arc` — which is not the case for
+  two separately serialized but structurally equal environments. The
+  deduplication table then compared candidate objects with `==`, so a
+  cached composite that reached a cycle sent equality into unbounded
+  recursion.
+
+  `should_cache_for_dedup` now excludes `Pairlist`, `Language`,
+  `Expression`, `Promise`, `Bytecode`, and `WithAttributes`, so composite
+  values never enter the dedup cache and equality is never handed a graph
+  that can contain a cycle. This completes an exclusion list that already
+  covered `List`, `Environment`, `Closure`, `DataFrame`, `S3Object`, and
+  `S4Object`. Sharing is still tracked by REFSXP and `Shared`, so
+  deduplicating these variants was redundant.
+
+  Note that this is recursion in *equality*, not in input nesting, so it is
+  independent of how deeply a file nests; a nesting limit would not have
+  prevented it. Deeply nested inputs remain able to exhaust the stack — that
+  is tracked separately.
+
+  Deduplication effectiveness is unaffected. Across the full fixture corpus
+  the six newly excluded variants accounted for 511 cached comparisons and
+  zero cache hits, so removing them eliminates wasted deep comparisons at no
+  cost in memory sharing.
+
 ## [0.2.1] - 2026-09-09
 
 Maintenance release: a data-loss fix for lazily parsed dataframes and an xz
