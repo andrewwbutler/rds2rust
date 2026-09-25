@@ -1,6 +1,22 @@
 #![cfg(not(target_arch = "wasm32"))]
 //! Resource boundaries using small objects written by this library.
+use flate2::read::GzDecoder;
 use rds2rust::{read_rds_with_config, write_rds, ParseConfig, ParseMode, RObject};
+use std::io::Read;
+
+/// `write_rds` always gzip-compresses its output. Truncating the compressed
+/// bytes directly only proves gzip detects truncated input (GzDecoder fails
+/// with a raw IO EOF before any parser guard runs) -- it does not exercise
+/// guard_allocation's own remaining-bytes check. To reach that check, undo
+/// the compression first and truncate the raw (uncompressed) RDS bytes, so
+/// the truncated data is fed to the parser directly (read_rds_with_config
+/// treats input without the gzip magic bytes as uncompressed).
+fn decompress(bytes: &[u8]) -> Vec<u8> {
+    let mut decoder = GzDecoder::new(bytes);
+    let mut raw = Vec::new();
+    decoder.read_to_end(&mut raw).unwrap();
+    raw
+}
 
 fn nested_list() -> RObject {
     RObject::List(vec![RObject::List(vec![RObject::List(vec![
@@ -156,11 +172,43 @@ fn lazy_vector_declared_length_beyond_remaining_bytes_is_still_rejected() {
     // still fail, independent of max_vector_length. Exempting max_vector_length
     // for lazy spans must not turn a truncated/corrupt file into a silent
     // success.
+    //
+    // This truncates the *decompressed* RDS bytes and feeds them back in
+    // uncompressed (rather than truncating write_rds's gzip output), so the
+    // cut lands past the vector's declared length instead of being caught
+    // by gzip's own truncation detection first, and so the assertion below
+    // is checking guard_allocation's "exceeds remaining" message specifically,
+    // not just "parsing failed for some reason".
     let bytes = write_rds(&RObject::Integer(vec![1; 8].into())).unwrap();
-    let mut truncated = bytes.clone();
-    truncated.truncate(bytes.len() - 1); // payload one byte short of the declared length
+    let raw = decompress(&bytes);
+    let mut truncated = raw.clone();
+    truncated.truncate(raw.len() - 20); // cut well past the 8*4=32 byte payload
     let config = ParseConfig::default()
         .with_mode(ParseMode::LazyMetadata)
         .with_lazy_threshold(0);
-    assert!(read_rds_with_config(&truncated, config).is_err());
+    let error = read_rds_with_config(&truncated, config).unwrap_err();
+    assert!(error.to_string().contains("exceeds remaining"), "{error}");
+}
+
+#[test]
+fn lazy_vector_declared_length_just_beyond_remaining_bytes_is_still_rejected() {
+    // A shallower cut that still leaves the vector's own length field intact
+    // hits an earlier byte-availability check before guard_allocation's own
+    // message; verify that this shallower case is rejected too, so the
+    // margin between "some earlier check catches it" and "guard_allocation
+    // catches it" (both real protections) is documented rather than
+    // silently relying on only testing the deep-cut case above.
+    let bytes = write_rds(&RObject::Integer(vec![1; 8].into())).unwrap();
+    let raw = decompress(&bytes);
+    let mut truncated = raw.clone();
+    truncated.truncate(raw.len() - 1); // one byte short of the full payload
+    let config = ParseConfig::default()
+        .with_mode(ParseMode::LazyMetadata)
+        .with_lazy_threshold(0);
+    let error = read_rds_with_config(&truncated, config).unwrap_err();
+    assert!(
+        error.to_string().contains("exceeds remaining")
+            || error.to_string().contains("Unexpected EOF"),
+        "{error}"
+    );
 }

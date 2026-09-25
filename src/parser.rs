@@ -497,9 +497,30 @@ fn guard_allocation_common(
     let allow_lazy = matches!(ctx.mode, crate::ParseMode::LazyMetadata)
         && length > ctx.effective_lazy_threshold()
         && !ctx.force_materialize_vector;
+
+    // A lazy span never allocates length*elem_size bytes, so the byte cap is
+    // exempt for it regardless of parse mode; that part is a pure memory-
+    // safety concern and holds even in streaming mode.
+    //
+    // max_vector_length is different: keep it a hard floor whenever
+    // streaming_parse_mode is set, as defense in depth. In today's call
+    // graph, LazyMetadata mode (needed for allow_lazy) and
+    // async_parse_mode=true (which makes the native-cursor lazy-skip branch
+    // in parse_integer_vector and its siblings a complete no-op) never
+    // co-occur: LazyMetadata routes through the self-validating
+    // AsyncCursor::skip_bytes path instead (see
+    // parse_object_sequential_value_async / try_parse_large_vector_streaming_async),
+    // and guard_allocation's remaining-bytes check still runs whenever
+    // streaming_parse_mode is set without async_parse_mode (the sync
+    // fallback loop). If a future call site ever combined
+    // streaming_parse_mode + async_parse_mode + LazyMetadata the way
+    // parse_object_async does for non-lazy modes, nothing else would catch
+    // a hostile declared length there, so this exemption stays narrowed
+    // rather than relying on that combination staying absent.
+    let allow_lazy_length = allow_lazy && !ctx.streaming_parse_mode;
     let max_vector_length = ctx.max_vector_length;
 
-    if !allow_lazy && length > max_vector_length {
+    if !allow_lazy_length && length > max_vector_length {
         return Err(Error::InvalidFormat(format!(
             "Length {} exceeds safe limit {} while parsing {}",
             length, max_vector_length, context
