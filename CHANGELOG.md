@@ -5,6 +5,94 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-09-25
+
+Adds a configurable parser nesting-depth limit, closing the stack-exhaustion
+gap that 0.2.2's cyclic-object fix explicitly left open ("deeply nested
+inputs remain able to exhaust the stack — that is tracked separately").
+Also extends the existing materialized-allocation cap to every parse mode
+and collection type it previously missed. Based on PR
+[#7](https://github.com/andrewwbutler/rds2rust/pull/7)
+(`sims1253:fix/parser-resource-limits`), reworked to fix a `lazy_metadata()`
+regression, an `unlimited()` inconsistency, and a defense-in-depth gap the
+original POC introduced; see that PR for the original author's framing.
+
+### Breaking / behavior changes for downstream consumers
+
+- **New `ParseConfig.max_nesting_depth: usize` field** (default 64, hard
+  ceiling 128). Struct literals that construct `ParseConfig` exhaustively
+  (rather than via `Default`/`..Default::default()`/the builder methods)
+  must add this field. Set it with `.with_max_nesting_depth(n)`; values
+  above 128 are silently treated as 128 at parse time, not rejected.
+- **Deeply nested input now fails fast instead of risking a stack
+  overflow.** Any object, bytecode, or streaming parser call more than 64
+  levels deep (configurable) now returns `InvalidFormat("Parser nesting
+  limit N exceeded")` instead of recursing further. Legitimate files that
+  happen to nest deeper than 64 levels (uncommon, but possible for deeply
+  recursive R lists/expressions) need an explicit
+  `.with_max_nesting_depth(128)` — the walk from 0.1.x/0.2.x had no limit
+  at all.
+- **`ParseConfig::unlimited()` no longer means unlimited nesting.** It now
+  sets `max_nesting_depth` to the 128 hard ceiling (previously the 64
+  default) — still a real cap, since the parser cannot offer unbounded
+  stack depth regardless of how trusted the input is. Callers who relied on
+  `unlimited()` implying no nesting restriction at all should call
+  `.with_max_nesting_depth(128)` explicitly and treat that as the
+  documented behavior.
+- **Materialized-collection element storage is now checked in every parse
+  mode**, including spans that must load eagerly in `LazyMetadata` mode
+  (smaller than the lazy threshold). Lists, string metadata, expression
+  vectors, and bytecode tables were previously only checked in `Full` mode;
+  a file with an oversized materialized collection that previously parsed
+  under `LazyMetadata` may now correctly fail with
+  `"Materialized allocation of N bytes exceeds limits"`. A span that stays
+  lazy is unaffected — it never materializes, so it is exempt from this
+  check (its declared length is still validated against the file's actual
+  remaining bytes elsewhere).
+
+### Fixed
+
+- `ParseConfig::lazy_metadata()` / `read_rds_lazy()` no longer reject
+  vectors above the default 50-million-element `max_vector_length` cap
+  purely because of their declared length, as long as they stay lazy and
+  are never materialized. This had regressed the mode's own documented use
+  cases (fast file inspection, handling files larger than available RAM) in
+  the ported PR; the length check now respects the same lazy exemption as
+  the allocation-byte check. The declared length is still checked against
+  the file's actual remaining bytes, so a corrupt or hostile header is
+  still rejected.
+- Narrowed the `max_vector_length` exemption above so it does not apply
+  when `streaming_parse_mode` is set (wasm streaming reader): in that mode
+  the usual remaining-bytes backstop is itself skipped, so
+  `max_vector_length` needs to stay a hard floor there as the only
+  remaining bound on a hostile declared length. Not a live regression in
+  the current call graph (traced and confirmed unreachable today), fixed
+  as defense in depth against a future call site recreating the gap.
+- Removed four redundant `guard_materialized` calls in the async
+  integer/real/logical/complex vector branches (each was called twice in a
+  row with identical arguments; the equivalent raw-vector branch already
+  had only one call).
+
+### Added
+
+- Bounded initial vector-capacity reservations for materialized
+  collections, so a hostile declared element count cannot drive an
+  oversized `Vec::with_capacity` before any item is read. Native lazy
+  primitive vectors skip their validated payload without allocating a
+  temporary buffer.
+- Small-object tests for nesting and allocation limits (11 cases in
+  `tests/parser_resource_limits.rs`), a unit test asserting the parser's
+  internal nesting-depth counter always returns to zero after a parse
+  succeeds or fails, and a bounded writer-round-trip fuzz target that
+  nests up to ~140 levels, straddling the 64 default and 128 hard-cap
+  boundaries.
+
+### Validation
+
+- `cargo test` (403 cases) and `wasm-pack test --node` pass on native and
+  `wasm32-unknown-unknown`; `cargo clippy --all-targets` and `cargo fmt
+  --check` are clean on both targets.
+
 ## [0.2.2] - 2026-09-14
 
 Maintenance release: a single crash fix for cyclic object graphs. Backward

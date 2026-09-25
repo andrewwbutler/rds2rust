@@ -213,8 +213,16 @@ impl ObjectPath {
 pub struct ParseConfig {
     /// Maximum number of elements allowed in a vector (default: 50,000,000)
     pub max_vector_length: usize,
-    /// Maximum bytes that can be allocated for a single vector (default: 128 MB)
+    /// Maximum estimated element storage for one materialized vector (default: 128 MB).
+    /// This is not a total heap budget.
     pub max_allocation_bytes: usize,
+    /// Maximum nested parser calls (default: 64). Applies in every parse mode.
+    /// The parser applies a 128 hard ceiling at parse time: a value above 128
+    /// stored here is silently treated as 128, not rejected up front. Zero
+    /// rejects every object. A structure nested deeper than the effective
+    /// limit fails with a "Parser nesting limit ... exceeded" error naming
+    /// the effective (post-ceiling) value, not the value that was configured.
+    pub max_nesting_depth: usize,
     /// Parsing mode (default: Full)
     pub mode: ParseMode,
     /// In lazy mode, vectors smaller than this are always loaded (default: 10 elements)
@@ -263,6 +271,7 @@ impl Default for ParseConfig {
         Self {
             max_vector_length: 50_000_000,
             max_allocation_bytes: 128 * 1024 * 1024, // 128 MB
+            max_nesting_depth: 64,
             mode: ParseMode::default(),
             lazy_threshold: 10, // Load vectors with <= 10 elements even in lazy mode
             bytecode_lazy_threshold: 1000, // Load bytecode constants with <= 1000 elements
@@ -292,6 +301,15 @@ impl ParseConfig {
     /// Set the maximum allocation bytes.
     pub fn with_max_allocation_bytes(mut self, max: usize) -> Self {
         self.max_allocation_bytes = max;
+        self
+    }
+
+    /// Set the nesting limit. This stores `max` as given; the parser applies
+    /// the 128 hard ceiling when the config is used to parse, so a value
+    /// above 128 set here is silently treated as 128 at parse time rather
+    /// than rejected up front.
+    pub fn with_max_nesting_depth(mut self, max: usize) -> Self {
+        self.max_nesting_depth = max;
         self
     }
 
@@ -347,8 +365,8 @@ impl ParseConfig {
     ///
     /// # Note
     ///
-    /// Safety guardrails (`max_vector_length`, `max_allocation_bytes`) are
-    /// still enforced to protect against corrupt headers.
+    /// Vector length and nesting limits still apply. Materialized metadata
+    /// also uses the allocation limit; primitive vectors kept lazy do not.
     pub fn lazy_metadata() -> Self {
         Self {
             mode: ParseMode::LazyMetadata,
@@ -365,6 +383,7 @@ impl ParseConfig {
         Self {
             max_vector_length: 500_000_000,
             max_allocation_bytes: Self::clamp_to_usize(2_u64 * 1024 * 1024 * 1024), // 2 GB
+            max_nesting_depth: 64,
             mode: ParseMode::default(),
             lazy_threshold: 100,
             bytecode_lazy_threshold: 1000,
@@ -378,10 +397,14 @@ impl ParseConfig {
     /// Create a config with unlimited size (use with caution).
     ///
     /// Only use this when you trust the input files and have sufficient memory.
+    /// Nesting depth is not unlimited: it is set to the parser's hard cap of
+    /// 128, since stack depth must stay bounded regardless of how much the
+    /// input is trusted.
     pub fn unlimited() -> Self {
         Self {
             max_vector_length: usize::MAX,
             max_allocation_bytes: usize::MAX,
+            max_nesting_depth: 128,
             mode: ParseMode::default(),
             lazy_threshold: 100,
             bytecode_lazy_threshold: 1000,
@@ -399,6 +422,7 @@ impl ParseConfig {
         Self {
             max_vector_length: 1_000_000_000,
             max_allocation_bytes: Self::clamp_to_usize(4_u64 * 1024 * 1024 * 1024), // 4 GB
+            max_nesting_depth: 64,
             mode: ParseMode::LazyMetadata,
             lazy_threshold: 100,
             bytecode_lazy_threshold: 10_000,
@@ -430,6 +454,7 @@ impl ParseConfig {
         Self {
             max_vector_length: 1_000_000_000,
             max_allocation_bytes: Self::clamp_to_usize(4_u64 * 1024 * 1024 * 1024), // 4 GB
+            max_nesting_depth: 64,
             mode: ParseMode::LazyMetadata,
             lazy_threshold: 100,
             bytecode_lazy_threshold: 1000,
@@ -712,10 +737,8 @@ fn unwrap_shared_recursive(obj: RObject) -> RObject {
 /// Helper to recursively unwrap Shared objects in attributes
 fn unwrap_attributes(mut attrs: Attributes) -> Attributes {
     for (_, value) in attrs.attrs.iter_mut() {
-        *value = Box::new(unwrap_shared_recursive(*std::mem::replace(
-            value,
-            Box::new(RObject::Null),
-        )));
+        let object = std::mem::replace(value.as_mut(), RObject::Null);
+        **value = unwrap_shared_recursive(object);
     }
     attrs
 }
