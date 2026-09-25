@@ -217,7 +217,11 @@ pub struct ParseConfig {
     /// This is not a total heap budget.
     pub max_allocation_bytes: usize,
     /// Maximum nested parser calls (default: 64). Applies in every parse mode.
-    /// Values above 128 are capped at 128; zero rejects every object.
+    /// The parser applies a 128 hard ceiling at parse time: a value above 128
+    /// stored here is silently treated as 128, not rejected up front. Zero
+    /// rejects every object. A structure nested deeper than the effective
+    /// limit fails with a "Parser nesting limit ... exceeded" error naming
+    /// the effective (post-ceiling) value, not the value that was configured.
     pub max_nesting_depth: usize,
     /// Parsing mode (default: Full)
     pub mode: ParseMode,
@@ -300,7 +304,10 @@ impl ParseConfig {
         self
     }
 
-    /// Set the nesting limit. The parser caps this value at 128.
+    /// Set the nesting limit. This stores `max` as given; the parser applies
+    /// the 128 hard ceiling when the config is used to parse, so a value
+    /// above 128 set here is silently treated as 128 at parse time rather
+    /// than rejected up front.
     pub fn with_max_nesting_depth(mut self, max: usize) -> Self {
         self.max_nesting_depth = max;
         self
@@ -390,12 +397,14 @@ impl ParseConfig {
     /// Create a config with unlimited size (use with caution).
     ///
     /// Only use this when you trust the input files and have sufficient memory.
-    /// The default nesting limit still applies.
+    /// Nesting depth is not unlimited: it is set to the parser's hard cap of
+    /// 128, since stack depth must stay bounded regardless of how much the
+    /// input is trusted.
     pub fn unlimited() -> Self {
         Self {
             max_vector_length: usize::MAX,
             max_allocation_bytes: usize::MAX,
-            max_nesting_depth: 64,
+            max_nesting_depth: 128,
             mode: ParseMode::default(),
             lazy_threshold: 100,
             bytecode_lazy_threshold: 1000,

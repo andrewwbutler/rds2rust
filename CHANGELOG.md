@@ -11,16 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Limit parser nesting in native and WebAssembly readers, including bytecode
   and streaming paths. The default is 64 nested parser calls; the maximum
-  configurable value is 128. `ParseConfig` gains `max_nesting_depth` and its
-  builder method. Struct literals that list every field must add the field.
+  configurable value is 128 (`unlimited()` now uses this hard ceiling rather
+  than the 64 default, since a truly unbounded stack depth is not something
+  the parser can offer regardless of how trusted the input is). `ParseConfig`
+  gains `max_nesting_depth` and its builder method. Struct literals that list
+  every field must add the field.
 - Check the element storage of materialized collections in every parse mode
   and cap initial vector reservations. Native lazy primitive vectors skip
-  their validated payload without allocating a temporary payload buffer.
+  their validated payload without allocating a temporary payload buffer. A
+  vector that stays lazy is exempt from `max_vector_length` (as well as the
+  allocation-byte cap), since it is never materialized; its declared length
+  is still checked against the file's actual remaining bytes, so this does
+  not weaken protection against corrupt or hostile headers. This keeps
+  `ParseConfig::lazy_metadata()`'s documented use cases (fast file
+  inspection, handling files larger than available RAM) working for vectors
+  above the default 50-million-element cap.
 
 ### Added
 
 - Small-object tests for nesting and allocation limits, plus a bounded
-  writer-round-trip fuzz target.
+  writer-round-trip fuzz target that exercises nesting depths straddling the
+  64 default and 128 hard-cap boundaries.
 
 ## [0.2.2] - 2026-09-14
 

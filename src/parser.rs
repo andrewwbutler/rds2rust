@@ -428,6 +428,18 @@ fn bounded_capacity(n: usize) -> usize {
     n.min(MAX_EAGER_CAPACITY)
 }
 
+/// True when `length`/`bytes` exceed the configured vector-length or allocation-byte caps.
+/// Shared by `guard_materialized` (always enforced) and `guard_allocation_common`
+/// (enforced unless the span is allowed to stay lazy), so the comparison lives in one place.
+fn exceeds_limits(
+    length: usize,
+    bytes: usize,
+    max_vector_length: usize,
+    max_allocation_bytes: usize,
+) -> bool {
+    length > max_vector_length || bytes > max_allocation_bytes
+}
+
 /// Check storage that will be materialized, even while parsing lazy metadata.
 fn guard_materialized<T>(ctx: &ParserContext, length: usize, context: &str) -> Result<()> {
     let bytes = length
@@ -435,7 +447,12 @@ fn guard_materialized<T>(ctx: &ParserContext, length: usize, context: &str) -> R
         .ok_or_else(|| {
             Error::InvalidFormat(format!("Allocation size overflow while parsing {context}"))
         })?;
-    if length > ctx.max_vector_length || bytes > ctx.max_allocation_bytes {
+    if exceeds_limits(
+        length,
+        bytes,
+        ctx.max_vector_length,
+        ctx.max_allocation_bytes,
+    ) {
         return Err(Error::InvalidFormat(format!(
             "Materialized allocation of {bytes} bytes exceeds limits while parsing {context}"
         )));
@@ -482,7 +499,7 @@ fn guard_allocation_common(
         && !ctx.force_materialize_vector;
     let max_vector_length = ctx.max_vector_length;
 
-    if length > max_vector_length {
+    if !allow_lazy && length > max_vector_length {
         return Err(Error::InvalidFormat(format!(
             "Length {} exceeds safe limit {} while parsing {}",
             length, max_vector_length, context
@@ -2715,7 +2732,6 @@ async fn parse_object_sequential_value_async_inner<C: AsyncCursor>(
             } else {
                 guard_materialized::<i32>(ctx, length, "primitive vector")?;
                 let bytes = read_bytes_async(cursor, byte_len).await?;
-                guard_materialized::<i32>(ctx, length, "primitive vector")?;
                 let mut values = Vec::with_capacity(bounded_capacity(length));
                 for chunk in bytes.chunks_exact(4) {
                     let mut reader = std::io::Cursor::new(chunk);
@@ -2741,7 +2757,6 @@ async fn parse_object_sequential_value_async_inner<C: AsyncCursor>(
             } else {
                 guard_materialized::<f64>(ctx, length, "primitive vector")?;
                 let bytes = read_bytes_async(cursor, byte_len).await?;
-                guard_materialized::<f64>(ctx, length, "primitive vector")?;
                 let mut values = Vec::with_capacity(bounded_capacity(length));
                 for chunk in bytes.chunks_exact(8) {
                     let mut reader = std::io::Cursor::new(chunk);
@@ -2767,7 +2782,6 @@ async fn parse_object_sequential_value_async_inner<C: AsyncCursor>(
             } else {
                 guard_materialized::<i32>(ctx, length, "primitive vector")?;
                 let bytes = read_bytes_async(cursor, byte_len).await?;
-                guard_materialized::<i32>(ctx, length, "primitive vector")?;
                 let mut values = Vec::with_capacity(bounded_capacity(length));
                 for chunk in bytes.chunks_exact(4) {
                     let mut reader = std::io::Cursor::new(chunk);
@@ -2825,7 +2839,6 @@ async fn parse_object_sequential_value_async_inner<C: AsyncCursor>(
             } else {
                 guard_materialized::<Complex>(ctx, length, "primitive vector")?;
                 let bytes = read_bytes_async(cursor, byte_len).await?;
-                guard_materialized::<Complex>(ctx, length, "primitive vector")?;
                 let mut values = Vec::with_capacity(bounded_capacity(length));
                 for chunk in bytes.chunks_exact(16) {
                     let mut reader = std::io::Cursor::new(chunk);
@@ -10099,6 +10112,42 @@ mod tests {
         let header = vec![b'Y', b'\n', 0, 0, 0, 2];
         let mut cursor = RdsCursor::new_slice(header.as_slice());
         assert!(parse_header(&mut cursor).is_err());
+    }
+
+    /// `enter_nesting()` is paired with a manual `nesting_depth -= 1` at every
+    /// recursive call site rather than an RAII guard (the guard would need to
+    /// hold `&mut ParserContext` while `ctx` is also re-passed by `&mut` into
+    /// the wrapped call, which the borrow checker rejects). This test is the
+    /// substitute safety net: it fails loudly if a future call site forgets
+    /// the decrement, on success or on error, for both a flat and a nested
+    /// object.
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    fn nesting_depth_returns_to_zero_after_parse_success_and_failure() {
+        let flat = crate::write_rds(&RObject::Integer(vec![1, 2, 3].into())).unwrap();
+        let nested = crate::write_rds(&RObject::List(vec![RObject::List(vec![RObject::List(
+            vec![RObject::Null],
+        )])]))
+        .unwrap();
+
+        for data in [flat.as_slice(), nested.as_slice()] {
+            let mut ctx = ParserContext::from_config(crate::ParseConfig::default());
+            let _ = parse_rds_internal(data, &mut ctx);
+            assert_eq!(
+                ctx.nesting_depth, 0,
+                "nesting_depth leaked after a successful parse"
+            );
+
+            let mut ctx =
+                ParserContext::from_config(crate::ParseConfig::default().with_max_nesting_depth(1));
+            let result = parse_rds_internal(data, &mut ctx);
+            if result.is_err() {
+                assert_eq!(
+                    ctx.nesting_depth, 0,
+                    "nesting_depth leaked after a nesting-limit error"
+                );
+            }
+        }
     }
 
     #[test]

@@ -50,14 +50,19 @@ rds2rust = "0.2"
 `ParseConfig` limits each vector to 50 million elements and 128 MiB of
 materialized element storage by default. Lists, expression vectors, string
 metadata, and bytecode tables count their in-memory element width. These
-checks also apply when those collections must be loaded in lazy mode.
+checks also apply when those collections must be loaded eagerly in lazy
+mode (e.g. because they are smaller than the lazy threshold). A span that
+stays lazy is exempt from `max_vector_length`, since it is never
+materialized; its declared length is still checked against the file's
+actual remaining bytes, so a corrupt or hostile header is still rejected.
 Primitive vectors that remain lazy do not need a materialized buffer.
 
 Nested parser calls have a separate limit of 64. Set it with
-`with_max_nesting_depth`; values above 128 are capped, and zero rejects every
-object. The count includes object, bytecode, and streaming parser calls, so
-it is not an exact count of R list levels. `unlimited()` raises size limits
-but retains the nesting limit.
+`with_max_nesting_depth`; values above 128 are silently treated as 128 at
+parse time, and zero rejects every object. The count includes object,
+bytecode, and streaming parser calls, so it is not an exact count of R list
+levels. `unlimited()` raises size limits but retains a nesting limit,
+capped at the hard ceiling of 128.
 
 | Limit | Scope |
 | --- | --- |

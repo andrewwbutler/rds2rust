@@ -121,12 +121,46 @@ fn small_primitive_vectors_loaded_in_lazy_mode_respect_the_budget() {
 }
 
 #[test]
-fn lazy_vector_length_is_bounded_even_without_materialization() {
+fn materialized_vector_length_is_still_bounded_in_lazy_mode() {
+    // A vector small enough to stay under the lazy threshold is materialized
+    // even in LazyMetadata mode, so max_vector_length still applies to it.
+    let bytes = write_rds(&RObject::Integer(vec![1; 8].into())).unwrap();
+    let config = ParseConfig::default()
+        .with_mode(ParseMode::LazyMetadata)
+        .with_lazy_threshold(100)
+        .with_max_vector_length(6);
+    let error = read_rds_with_config(&bytes, config).unwrap_err();
+    assert!(error.to_string().contains("Length 8 exceeds"), "{error}");
+}
+
+#[test]
+fn lazy_vector_length_is_exempt_from_max_vector_length_when_it_stays_lazy() {
+    // Fast file inspection / files-larger-than-RAM (ParseConfig::lazy_metadata's
+    // documented use cases) must be able to read metadata for vectors that
+    // exceed max_vector_length, as long as they never materialize. The
+    // declared length is still checked against actual remaining bytes
+    // elsewhere, so this does not remove protection against corrupt headers.
     let bytes = write_rds(&RObject::Integer(vec![1; 8].into())).unwrap();
     let config = ParseConfig::default()
         .with_mode(ParseMode::LazyMetadata)
         .with_lazy_threshold(0)
         .with_max_vector_length(6);
-    let error = read_rds_with_config(&bytes, config).unwrap_err();
-    assert!(error.to_string().contains("Length 8 exceeds"), "{error}");
+    let result = read_rds_with_config(&bytes, config).unwrap();
+    assert!(!result.object.is_fully_loaded());
+}
+
+#[test]
+fn lazy_vector_declared_length_beyond_remaining_bytes_is_still_rejected() {
+    // Even when a span is eligible to stay lazy, a declared length that
+    // outruns the actual file contents (a corrupt or hostile header) must
+    // still fail, independent of max_vector_length. Exempting max_vector_length
+    // for lazy spans must not turn a truncated/corrupt file into a silent
+    // success.
+    let bytes = write_rds(&RObject::Integer(vec![1; 8].into())).unwrap();
+    let mut truncated = bytes.clone();
+    truncated.truncate(bytes.len() - 1); // payload one byte short of the declared length
+    let config = ParseConfig::default()
+        .with_mode(ParseMode::LazyMetadata)
+        .with_lazy_threshold(0);
+    assert!(read_rds_with_config(&truncated, config).is_err());
 }
