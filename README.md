@@ -42,7 +42,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rds2rust = "0.2"
+rds2rust = "0.3"
 ```
 
 ## Parser limits
@@ -643,7 +643,7 @@ let obj2 = Arc::clone(&obj);
 
 ## Development Status
 
-**Current version**: 0.2.2 (see CHANGELOG.md)
+**Current version**: 0.3.0 (see CHANGELOG.md)
 
 **Test coverage**: extensive test suite covering core R object types and roundtrips
 
