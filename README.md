@@ -45,6 +45,32 @@ Add this to your `Cargo.toml`:
 rds2rust = "0.2"
 ```
 
+## Parser limits
+
+`ParseConfig` limits each vector to 50 million elements and 128 MiB of
+materialized element storage by default. Lists, expression vectors, string
+metadata, and bytecode tables count their in-memory element width. These
+checks also apply when those collections must be loaded in lazy mode.
+Primitive vectors that remain lazy do not need a materialized buffer.
+
+Nested parser calls have a separate limit of 64. Set it with
+`with_max_nesting_depth`; values above 128 are capped, and zero rejects every
+object. The count includes object, bytecode, and streaming parser calls, so
+it is not an exact count of R list levels. `unlimited()` raises size limits
+but retains the nesting limit.
+
+| Limit | Scope |
+| --- | --- |
+| `max_vector_length` | Elements in one declared vector |
+| `max_allocation_bytes` | Estimated element storage for one materialized collection |
+| `max_nesting_depth` | Active nested parser calls |
+
+These limits are not a total memory budget. String contents, reference
+tracking, decompression, and several collections together can use more
+memory. Initial collection reservations are capped; collections grow as
+items are read. See [the bounded round-trip target](fuzz/README.md) for the
+small-object test setup.
+
 ## Quick Start
 
 ### Reading an RDS file

@@ -217,6 +217,8 @@ const MAX_FORCE_MATERIALIZE_STRING_LEN: usize = 10_000;
 struct ParserContext {
     max_vector_length: usize,
     max_allocation_bytes: usize,
+    max_nesting_depth: usize,
+    nesting_depth: usize,
     mode: crate::ParseMode,
     lazy_threshold: usize,
     bytecode_lazy_threshold: usize,
@@ -267,10 +269,23 @@ struct ParserContextSnapshot {
 }
 
 impl ParserContext {
+    fn enter_nesting(&mut self) -> Result<()> {
+        if self.nesting_depth >= self.max_nesting_depth {
+            return Err(Error::InvalidFormat(format!(
+                "Parser nesting limit {} exceeded",
+                self.max_nesting_depth
+            )));
+        }
+        self.nesting_depth += 1;
+        Ok(())
+    }
+
     fn from_config(config: crate::ParseConfig) -> Self {
         Self {
             max_vector_length: config.max_vector_length,
             max_allocation_bytes: config.max_allocation_bytes,
+            max_nesting_depth: config.max_nesting_depth.min(128),
+            nesting_depth: 0,
             lazy_threshold: config.lazy_threshold,
             bytecode_lazy_threshold: config.bytecode_lazy_threshold,
             mode: config.mode,
@@ -413,6 +428,21 @@ fn bounded_capacity(n: usize) -> usize {
     n.min(MAX_EAGER_CAPACITY)
 }
 
+/// Check storage that will be materialized, even while parsing lazy metadata.
+fn guard_materialized<T>(ctx: &ParserContext, length: usize, context: &str) -> Result<()> {
+    let bytes = length
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| {
+            Error::InvalidFormat(format!("Allocation size overflow while parsing {context}"))
+        })?;
+    if length > ctx.max_vector_length || bytes > ctx.max_allocation_bytes {
+        return Err(Error::InvalidFormat(format!(
+            "Materialized allocation of {bytes} bytes exceeds limits while parsing {context}"
+        )));
+    }
+    Ok(())
+}
+
 fn guard_allocation(
     ctx: &mut ParserContext,
     length: usize,
@@ -450,11 +480,7 @@ fn guard_allocation_common(
     let allow_lazy = matches!(ctx.mode, crate::ParseMode::LazyMetadata)
         && length > ctx.effective_lazy_threshold()
         && !ctx.force_materialize_vector;
-    let max_vector_length = if allow_lazy {
-        usize::MAX
-    } else {
-        ctx.max_vector_length
-    };
+    let max_vector_length = ctx.max_vector_length;
 
     if length > max_vector_length {
         return Err(Error::InvalidFormat(format!(
@@ -1443,6 +1469,42 @@ where
     C: AsyncCursor,
     V: RdsVisitor,
 {
+    ctx.enter_nesting()?;
+    let result = parse_object_streaming_async_inner(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        emit,
+    )
+    .await;
+    ctx.nesting_depth -= 1;
+    result
+}
+
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::too_many_arguments)]
+async fn parse_object_streaming_async_inner<C, V>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    progress: &mut StreamingProgressState<'_>,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    emit: bool,
+) -> StreamingResult<StreamControl, V::Error>
+where
+    C: AsyncCursor,
+    V: RdsVisitor,
+{
     if ctx.stop_streaming {
         return Ok(StreamControl::Stop);
     }
@@ -2348,6 +2410,27 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
 ) -> Result<RObject> {
+    ctx.enter_nesting()?;
+    let result = parse_object_sequential_value_async_inner(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+    )
+    .await;
+    ctx.nesting_depth -= 1;
+    result
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn parse_object_sequential_value_async_inner<C: AsyncCursor>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+) -> Result<RObject> {
     cursor.ensure_available(1).await?;
     let first_byte = cursor.as_sync_slice(1)?[0];
     if first_byte >= 240 {
@@ -2562,7 +2645,8 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
 
             #[cfg(target_arch = "wasm32")]
             log_large_alloc(ctx, "strsxp", length);
-            let mut vec: Vec<Option<Arc<str>>> = Vec::with_capacity(length);
+            guard_materialized::<[Option<Arc<str>>; 2]>(ctx, length, "character vector and cache")?;
+            let mut vec: Vec<Option<Arc<str>>> = Vec::with_capacity(bounded_capacity(length));
             let mut string_cache: Vec<Option<Arc<str>>> = Vec::new();
             for _ in 0..length {
                 let elem_flags = read_u32_async(cursor).await?;
@@ -2629,8 +2713,10 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                     byte_len: byte_len as u64,
                 }))
             } else {
+                guard_materialized::<i32>(ctx, length, "primitive vector")?;
                 let bytes = read_bytes_async(cursor, byte_len).await?;
-                let mut values = Vec::with_capacity(length);
+                guard_materialized::<i32>(ctx, length, "primitive vector")?;
+                let mut values = Vec::with_capacity(bounded_capacity(length));
                 for chunk in bytes.chunks_exact(4) {
                     let mut reader = std::io::Cursor::new(chunk);
                     values.push(reader.read_i32::<BigEndian>()?);
@@ -2653,8 +2739,10 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                     byte_len: byte_len as u64,
                 }))
             } else {
+                guard_materialized::<f64>(ctx, length, "primitive vector")?;
                 let bytes = read_bytes_async(cursor, byte_len).await?;
-                let mut values = Vec::with_capacity(length);
+                guard_materialized::<f64>(ctx, length, "primitive vector")?;
+                let mut values = Vec::with_capacity(bounded_capacity(length));
                 for chunk in bytes.chunks_exact(8) {
                     let mut reader = std::io::Cursor::new(chunk);
                     values.push(reader.read_f64::<BigEndian>()?);
@@ -2677,8 +2765,10 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                     byte_len: byte_len as u64,
                 }))
             } else {
+                guard_materialized::<i32>(ctx, length, "primitive vector")?;
                 let bytes = read_bytes_async(cursor, byte_len).await?;
-                let mut values = Vec::with_capacity(length);
+                guard_materialized::<i32>(ctx, length, "primitive vector")?;
+                let mut values = Vec::with_capacity(bounded_capacity(length));
                 for chunk in bytes.chunks_exact(4) {
                     let mut reader = std::io::Cursor::new(chunk);
                     let value = reader.read_i32::<BigEndian>()?;
@@ -2708,6 +2798,7 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                     byte_len: byte_len as u64,
                 }))
             } else {
+                guard_materialized::<u8>(ctx, length, "primitive vector")?;
                 let bytes = read_bytes_async(cursor, byte_len).await?;
                 RObject::Raw(bytes.into())
             }
@@ -2732,8 +2823,10 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
                     byte_len: byte_len as u64,
                 }))
             } else {
+                guard_materialized::<Complex>(ctx, length, "primitive vector")?;
                 let bytes = read_bytes_async(cursor, byte_len).await?;
-                let mut values = Vec::with_capacity(length);
+                guard_materialized::<Complex>(ctx, length, "primitive vector")?;
+                let mut values = Vec::with_capacity(bounded_capacity(length));
                 for chunk in bytes.chunks_exact(16) {
                     let mut reader = std::io::Cursor::new(chunk);
                     let real = reader.read_f64::<BigEndian>()?;
@@ -2794,7 +2887,8 @@ async fn parse_object_sequential_value_async<C: AsyncCursor>(
             } else {
                 #[cfg(target_arch = "wasm32")]
                 log_large_alloc(ctx, "vecsxp", length);
-                let mut values = Vec::with_capacity(length);
+                guard_materialized::<RObject>(ctx, length, "object vector")?;
+                let mut values = Vec::with_capacity(bounded_capacity(length));
                 for idx in 0..length {
                     let value = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
                         ctx,
@@ -3675,6 +3769,22 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
 ) -> Result<RObject> {
+    ctx.enter_nesting()?;
+    let result =
+        skip_object_sequential_value_async_inner(ctx, cursor, ref_table, symbol_table, dedup_table)
+            .await;
+    ctx.nesting_depth -= 1;
+    result
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn skip_object_sequential_value_async_inner<C: AsyncCursor>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+) -> Result<RObject> {
     cursor.ensure_available(1).await?;
     let first_byte = cursor.as_sync_slice(1)?[0];
     if first_byte >= 240 {
@@ -3882,6 +3992,7 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
                 })));
             }
 
+            guard_materialized::<[Option<Arc<str>>; 2]>(ctx, length, "character vector and cache")?;
             let mut vec: Vec<Option<Arc<str>>> = Vec::with_capacity(bounded_capacity(length));
             let mut string_cache: Vec<Option<Arc<str>>> = Vec::new();
             for _ in 0..length {
@@ -3945,7 +4056,8 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             if ctx.force_materialize_vector && length <= MAX_FORCE_MATERIALIZE_VECTOR_LEN {
                 #[cfg(target_arch = "wasm32")]
                 log_large_alloc(ctx, "intsxp", length);
-                let mut values = Vec::with_capacity(length);
+                guard_materialized::<i32>(ctx, length, "primitive vector")?;
+                let mut values = Vec::with_capacity(bounded_capacity(length));
                 for _ in 0..length {
                     values.push(read_i32_async(cursor).await?);
                 }
@@ -3970,7 +4082,8 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             if ctx.force_materialize_vector && length <= MAX_FORCE_MATERIALIZE_VECTOR_LEN {
                 #[cfg(target_arch = "wasm32")]
                 log_large_alloc(ctx, "realsxp", length);
-                let mut values = Vec::with_capacity(length);
+                guard_materialized::<f64>(ctx, length, "primitive vector")?;
+                let mut values = Vec::with_capacity(bounded_capacity(length));
                 for _ in 0..length {
                     values.push(read_f64_async(cursor).await?);
                 }
@@ -3995,7 +4108,8 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             if ctx.force_materialize_vector && length <= MAX_FORCE_MATERIALIZE_VECTOR_LEN {
                 #[cfg(target_arch = "wasm32")]
                 log_large_alloc(ctx, "lglsxp", length);
-                let mut values = Vec::with_capacity(length);
+                guard_materialized::<i32>(ctx, length, "primitive vector")?;
+                let mut values = Vec::with_capacity(bounded_capacity(length));
                 for _ in 0..length {
                     values.push(read_i32_async(cursor).await?.into());
                 }
@@ -4065,7 +4179,8 @@ async fn skip_object_sequential_value_async<C: AsyncCursor>(
             let mut values = if ctx.lenient_skip_vectors {
                 None
             } else {
-                Some(Vec::with_capacity(length))
+                guard_materialized::<RObject>(ctx, length, "object vector")?;
+                Some(Vec::with_capacity(bounded_capacity(length)))
             };
             for idx in 0..length {
                 let value_start = cursor.position();
@@ -4286,6 +4401,7 @@ async fn parse_string_vec_async<C: AsyncCursor>(
     // Bound the eager reservation (see parse_string_vec): the async path has
     // no remaining-stream backstop, so a hostile count must not drive a huge
     // `Vec::with_capacity` before any item is read.
+    guard_materialized::<Option<Arc<str>>>(ctx, n, "string vector")?;
     let mut strings: Vec<Option<Arc<str>>> = Vec::with_capacity(bounded_capacity(n));
     for _ in 0..n {
         let item_flags = read_u32_async(cursor).await?;
@@ -4422,6 +4538,19 @@ fn parse_header(cursor: &mut RdsCursor<'_>) -> Result<u32> {
 
 /// Parse an R object from the stream.
 fn parse_object(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+) -> Result<RObject> {
+    ctx.enter_nesting()?;
+    let result = parse_object_inner(ctx, cursor, ref_table, symbol_table, dedup_table);
+    ctx.nesting_depth -= 1;
+    result
+}
+
+fn parse_object_inner(
     ctx: &mut ParserContext,
     cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
@@ -5085,6 +5214,36 @@ impl StreamingRefTable {
 
 #[allow(clippy::too_many_arguments)]
 fn parse_object_streaming<V: RdsVisitor>(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    ref_paths: &mut StreamingRefTable,
+    progress: &mut StreamingProgressState<'_>,
+    visitor: &mut V,
+    path: &mut crate::ObjectPath,
+    emit: bool,
+) -> StreamingResult<StreamControl, V::Error> {
+    ctx.enter_nesting()?;
+    let result = parse_object_streaming_inner(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        ref_paths,
+        progress,
+        visitor,
+        path,
+        emit,
+    );
+    ctx.nesting_depth -= 1;
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn parse_object_streaming_inner<V: RdsVisitor>(
     ctx: &mut ParserContext,
     cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
@@ -7355,11 +7514,11 @@ fn parse_integer_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> 
         let elem_size = std::mem::size_of::<i32>();
         let byte_len = (length * elem_size) as u64;
 
-        // In non-WASM mode, skip the data by reading into a buffer
+        // Native cursors can skip validated data without allocating a buffer.
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let mut buf = vec![0u8; length * elem_size];
-            cursor.read_exact(&mut buf)?;
+            ensure_bytes_available(cursor, length * elem_size, "lazy vector skip")?;
+            cursor.seek(SeekFrom::Current((length * elem_size) as i64))?;
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -7377,7 +7536,8 @@ fn parse_integer_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> 
     }
 
     // Full parsing mode
-    let mut vec = Vec::with_capacity(length);
+    guard_materialized::<i32>(ctx, length, "primitive vector")?;
+    let mut vec = Vec::with_capacity(bounded_capacity(length));
     for _ in 0..length {
         let val = read_int_flexible(cursor)?;
         vec.push(val);
@@ -7406,11 +7566,11 @@ fn parse_real_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Res
         let elem_size = std::mem::size_of::<f64>();
         let byte_len = (length * elem_size) as u64;
 
-        // In non-WASM mode, skip the data by reading into a buffer
+        // Native cursors can skip validated data without allocating a buffer.
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let mut buf = vec![0u8; length * elem_size];
-            cursor.read_exact(&mut buf)?;
+            ensure_bytes_available(cursor, length * elem_size, "lazy vector skip")?;
+            cursor.seek(SeekFrom::Current((length * elem_size) as i64))?;
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -7428,7 +7588,8 @@ fn parse_real_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Res
     }
 
     // Full parsing mode
-    let mut vec = Vec::with_capacity(length);
+    guard_materialized::<f64>(ctx, length, "primitive vector")?;
+    let mut vec = Vec::with_capacity(bounded_capacity(length));
     for _ in 0..length {
         let val = cursor.read_f64::<BigEndian>()?;
         vec.push(val);
@@ -7457,11 +7618,11 @@ fn parse_logical_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> 
         let elem_size = std::mem::size_of::<i32>(); // Logicals are stored as i32
         let byte_len = (length * elem_size) as u64;
 
-        // In non-WASM mode, skip the data by reading into a buffer
+        // Native cursors can skip validated data without allocating a buffer.
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let mut buf = vec![0u8; length * elem_size];
-            cursor.read_exact(&mut buf)?;
+            ensure_bytes_available(cursor, length * elem_size, "lazy vector skip")?;
+            cursor.seek(SeekFrom::Current((length * elem_size) as i64))?;
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -7479,7 +7640,8 @@ fn parse_logical_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> 
     }
 
     // Full parsing mode
-    let mut vec = Vec::with_capacity(length);
+    guard_materialized::<i32>(ctx, length, "primitive vector")?;
+    let mut vec = Vec::with_capacity(bounded_capacity(length));
     for _ in 0..length {
         // R seems to write logical values with variable byte length
         // Try to read 4 bytes, but if only 3 are available, pad with 0
@@ -7589,7 +7751,8 @@ fn parse_character_vector_full(
         );
     }
 
-    let mut vec: Vec<Option<Arc<str>>> = Vec::with_capacity(length);
+    guard_materialized::<[Option<Arc<str>>; 2]>(ctx, length, "character vector and cache")?;
+    let mut vec: Vec<Option<Arc<str>>> = Vec::with_capacity(bounded_capacity(length));
     // Local string cache for REFSXP within this character vector.
     // Entries are Option: an NA element occupies a cache slot too.
     let mut string_cache: Vec<Option<Arc<str>>> = Vec::new();
@@ -7733,11 +7896,11 @@ fn parse_raw_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Resu
         let offset = cursor.position();
         let byte_len = length as u64;
 
-        // In non-WASM mode, skip the data by reading into a buffer
+        // Native cursors can skip validated data without allocating a buffer.
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let mut buf = vec![0u8; length];
-            cursor.read_exact(&mut buf)?;
+            ensure_bytes_available(cursor, length, "lazy raw vector skip")?;
+            cursor.seek(SeekFrom::Current(length as i64))?;
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -7755,6 +7918,7 @@ fn parse_raw_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> Resu
     }
 
     // Full parsing mode
+    guard_materialized::<u8>(ctx, length, "primitive vector")?;
     let mut vec = vec![0u8; length];
     cursor.read_exact(&mut vec)?;
 
@@ -7783,11 +7947,11 @@ fn parse_complex_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> 
         let elem_size = std::mem::size_of::<Complex>(); // 2 * f64 = 16 bytes
         let byte_len = (length * elem_size) as u64;
 
-        // In non-WASM mode, skip the data by reading into a buffer
+        // Native cursors can skip validated data without allocating a buffer.
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let mut buf = vec![0u8; length * elem_size];
-            cursor.read_exact(&mut buf)?;
+            ensure_bytes_available(cursor, length * elem_size, "lazy vector skip")?;
+            cursor.seek(SeekFrom::Current((length * elem_size) as i64))?;
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -7805,7 +7969,8 @@ fn parse_complex_vector(ctx: &mut ParserContext, cursor: &mut RdsCursor<'_>) -> 
     }
 
     // Full parsing mode
-    let mut vec = Vec::with_capacity(length);
+    guard_materialized::<Complex>(ctx, length, "primitive vector")?;
+    let mut vec = Vec::with_capacity(bounded_capacity(length));
     for _ in 0..length {
         // Each complex number is two 64-bit floats: real part then imaginary part
         let real = cursor.read_f64::<BigEndian>()?;
@@ -7874,7 +8039,8 @@ fn parse_list(
     let pos_before_length = cursor.position();
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(ctx, length, 1, cursor, "VECSXP/list")?;
-    let mut elements = Vec::with_capacity(length);
+    guard_materialized::<RObject>(ctx, length, "object vector")?;
+    let mut elements = Vec::with_capacity(bounded_capacity(length));
 
     if debug_enabled() {
         let remaining = cursor.len().saturating_sub(cursor.position());
@@ -7963,7 +8129,8 @@ fn parse_expression(
 ) -> Result<RObject> {
     let length = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(ctx, length, 1, cursor, "expression vector")?;
-    let mut elements = Vec::with_capacity(length);
+    guard_materialized::<RObject>(ctx, length, "object vector")?;
+    let mut elements = Vec::with_capacity(bounded_capacity(length));
 
     for _ in 0..length {
         let element = parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
@@ -7989,11 +8156,26 @@ fn parse_bytecode(
         cursor,
         "bytecode reps",
     )?;
+    guard_materialized::<Option<RObject>>(ctx, reps_len, "bytecode references")?;
     let mut reps = vec![None; reps_len];
     parse_bytecode_body(ctx, cursor, ref_table, symbol_table, dedup_table, &mut reps)
 }
 
 fn parse_bytecode_body(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    reps: &mut [Option<RObject>],
+) -> Result<RObject> {
+    ctx.enter_nesting()?;
+    let result = parse_bytecode_body_inner(ctx, cursor, ref_table, symbol_table, dedup_table, reps);
+    ctx.nesting_depth -= 1;
+    result
+}
+
+fn parse_bytecode_body_inner(
     ctx: &mut ParserContext,
     cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
@@ -8021,7 +8203,8 @@ fn parse_bc_constants(
 ) -> Result<Vec<RObject>> {
     let count = cursor.read_u32::<BigEndian>()? as usize;
     guard_allocation(ctx, count, 1, cursor, "bytecode constants")?;
-    let mut constants = Vec::with_capacity(count);
+    guard_materialized::<RObject>(ctx, count, "bytecode constants")?;
+    let mut constants = Vec::with_capacity(bounded_capacity(count));
 
     // Set bytecode flag for parsing constants
     let _prev_bytecode_ctx = ctx.in_bytecode_context;
@@ -8051,6 +8234,29 @@ fn parse_bc_constants(
 }
 
 fn parse_bc_lang(
+    ctx: &mut ParserContext,
+    cursor: &mut RdsCursor<'_>,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    reps: &mut [Option<RObject>],
+    type_code: i32,
+) -> Result<RObject> {
+    ctx.enter_nesting()?;
+    let result = parse_bc_lang_inner(
+        ctx,
+        cursor,
+        ref_table,
+        symbol_table,
+        dedup_table,
+        reps,
+        type_code,
+    );
+    ctx.nesting_depth -= 1;
+    result
+}
+
+fn parse_bc_lang_inner(
     ctx: &mut ParserContext,
     cursor: &mut RdsCursor<'_>,
     ref_table: &mut RefTable,
@@ -8770,6 +8976,7 @@ fn parse_special(
     ensure_bytes_available(cursor, length, "special:name_bytes")?;
 
     // Read the string bytes
+    guard_materialized::<u8>(ctx, length, "character content")?;
     let mut bytes = vec![0u8; length];
     cursor.read_exact(&mut bytes)?;
 
@@ -8804,6 +9011,7 @@ fn parse_builtin(
     ensure_bytes_available(cursor, length, "builtin:name_bytes")?;
 
     // Read the string bytes
+    guard_materialized::<u8>(ctx, length, "character content")?;
     let mut bytes = vec![0u8; length];
     cursor.read_exact(&mut bytes)?;
 
@@ -9053,7 +9261,8 @@ fn convert_compact_intseq(ctx: &mut ParserContext, state: RObject) -> Result<ROb
         std::mem::size_of::<i32>(),
         "compact_intseq",
     )?;
-    let mut vec = Vec::with_capacity(length_usize);
+    guard_materialized::<i32>(ctx, length_usize, "compact integer sequence")?;
+    let mut vec = Vec::with_capacity(bounded_capacity(length_usize));
     for i in 0..length_usize {
         vec.push(first + (i as i32) * stride);
     }
@@ -9161,6 +9370,7 @@ fn parse_string_vec(
     // `Vec::with_capacity` before any item is read (the guard's element size
     // is the on-wire minimum, not the 16-byte in-memory element). The Vec
     // grows as real items are consumed.
+    guard_materialized::<Option<Arc<str>>>(ctx, n, "string vector")?;
     let mut strings: Vec<Option<Arc<str>>> = Vec::with_capacity(bounded_capacity(n));
     for _ in 0..n {
         let item_flags = cursor.read_i32::<BigEndian>()? as u32;
@@ -9266,6 +9476,7 @@ fn parse_charsxp_content(
     guard_allocation(ctx, length, 1, cursor, "charsxp content")?;
 
     // Read the string bytes
+    guard_materialized::<u8>(ctx, length, "character content")?;
     let mut bytes = vec![0u8; length];
     ensure_bytes_available(cursor, length, "charsxp:string_bytes")?;
     cursor.read_exact(&mut bytes)?;
