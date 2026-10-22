@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- External pointers (`EXTPTRSXP`) now consume their serialized protected
+  value and tag, in both the full parser and the streaming traversal.
+  Previously the payload was left in the stream: the pointer's protected
+  value was read as the end of the enclosing pairlist, so every binding saved
+  after an external pointer in an `.rda` workspace was silently dropped.
+
 ## [0.3.0] - 2026-09-25
 
 Adds a configurable parser nesting-depth limit, closing the stack-exhaustion

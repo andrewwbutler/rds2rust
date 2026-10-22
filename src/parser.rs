@@ -4757,12 +4757,14 @@ fn parse_object_inner(
         EXPRSXP => parse_expression(ctx, cursor, ref_table, symbol_table, dedup_table)?,
         BCODESXP => parse_bytecode(ctx, cursor, ref_table, symbol_table, dedup_table)?,
         EXTPTRSXP => {
-            // External pointer - typically cannot be serialized meaningfully
-            // R usually replaces these with NULL on deserialization
-            // Skip the external pointer data and return NULL
+            // External pointer - the address is not serialized, but R writes
+            // the protected value and the tag after the type word. Consume
+            // both to keep the stream aligned, then return NULL.
             if std::env::var("RDS_WARN_EXTPTR").is_ok() || debug_enabled() {
                 debug_log!("Warning: External pointer (EXTPTRSXP) encountered - returning NULL");
             }
+            parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+            parse_object(ctx, cursor, ref_table, symbol_table, dedup_table)?;
             RObject::Null
         }
         WEAKREFSXP => {
@@ -5613,7 +5615,26 @@ fn parse_object_streaming_inner<V: RdsVisitor>(
             path,
             progress,
         )?,
-        WEAKREFSXP | EXTPTRSXP | MISSINGARG_SXP | GLOBALENV_SXP | BASEENV_SXP | EMPTYENV_SXP
+        EXTPTRSXP => {
+            // The protected value and the tag follow the type word; consume
+            // both to keep the stream aligned.
+            for _ in 0..2 {
+                let _ = parse_object_streaming(
+                    ctx,
+                    cursor,
+                    ref_table,
+                    symbol_table,
+                    dedup_table,
+                    ref_paths,
+                    progress,
+                    visitor,
+                    path,
+                    false,
+                )?;
+            }
+            StreamControl::Continue
+        }
+        WEAKREFSXP | MISSINGARG_SXP | GLOBALENV_SXP | BASEENV_SXP | EMPTYENV_SXP
         | UNBOUNDVALUE_SXP => StreamControl::Continue,
         PACKAGESXP => {
             // Consume the package-name payload to keep the stream aligned.
