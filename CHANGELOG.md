@@ -32,6 +32,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reference to the visitor and carried on, so a corrupt stream that the full
   parser refuses could be traversed without error. Valid files are
   unaffected; every fixture in the test corpus traverses exactly as before.
+- `write_rds` now writes data frames and factors (including ordered factors)
+  with R's OBJECT bit. Without it R saw the class attribute but skipped
+  internal-generic dispatch: `nrow()` and `dim()` on a written data frame
+  returned `NULL`, `is.object()` was `FALSE` for both, and neither was
+  `identical()` to the original. Every other classed type was already
+  written correctly.
+- Data frames whose row names are exactly `"1".."n"` are now written with R's
+  compact automatic row names, `c(NA_integer_, -n)`, so R treats them as
+  automatic again. Previously they became explicit character row names.
+  Integer row names that are not `1..n` (for example `c(3L, 1L, 2L)`) still
+  come back from R as character row names with the same values, because
+  `DataFrameData` stores row names only as strings.
 
 ## [0.3.0] - 2026-09-25
 

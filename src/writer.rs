@@ -2022,8 +2022,10 @@ fn write_dataframe<W: Write>(
     let column_names: Vec<Arc<str>> = cols_vec.iter().map(|(name, _)| (*name).clone()).collect();
     let column_values: Vec<&RObject> = cols_vec.iter().map(|(_, obj)| *obj).collect();
 
-    // Write as a list with attributes
-    write_flags(writer, VECSXP, true, false, false)?;
+    // Write as a list with attributes. The class attribute makes it an S3
+    // object, so it needs R's OBJECT bit: without it, internal generics such
+    // as dim() skip dim.data.frame and nrow() returns NULL.
+    write_flags_with_object(writer, VECSXP, true, false, false, true)?;
     writer.write_u32::<BigEndian>(column_values.len() as u32)?;
 
     // Write each column
@@ -2037,10 +2039,7 @@ fn write_dataframe<W: Write>(
         Arc::from("names"),
         RObject::Character(crate::types::wrap_some(&column_names).into()),
     );
-    attrs.insert(
-        Arc::from("row.names"),
-        RObject::Character(row_names.to_vec().into()),
-    );
+    attrs.insert(Arc::from("row.names"), row_names_attribute(row_names));
     attrs.insert(
         Arc::from("class"),
         RObject::Character(vec![Some(Arc::from("data.frame"))].into()),
@@ -2049,6 +2048,25 @@ fn write_dataframe<W: Write>(
     write_attributes(writer, &attrs, ref_table, symbol_tracker, symbol_context)?;
 
     Ok(())
+}
+
+/// The `row.names` attribute R would write for these row names.
+///
+/// R stores automatic row names `1..n` in a compact integer form,
+/// `c(NA_integer_, -n)` (or `integer(0)` when there are no rows), and treats
+/// a character vector as explicit names. The parser expands the compact form
+/// to the strings `"1".."n"`, so those are written back compactly; anything
+/// else is written as character row names.
+fn row_names_attribute(row_names: &[Option<Arc<str>>]) -> RObject {
+    let automatic = row_names
+        .iter()
+        .enumerate()
+        .all(|(i, name)| name.as_deref() == Some((i + 1).to_string().as_str()));
+    match i32::try_from(row_names.len()) {
+        Ok(0) if automatic => RObject::Integer(Vec::new().into()),
+        Ok(n) if automatic => RObject::Integer(vec![RObject::NA_INTEGER, -n].into()),
+        _ => RObject::Character(row_names.to_vec().into()),
+    }
 }
 
 fn merge_factor_attributes(data: &FactorData, attributes: &Attributes) -> Attributes {
@@ -2112,8 +2130,10 @@ fn write_factor_with_attributes<W: Write>(
 
     validate_factor_attributes(&merged_attrs, data.values.len())?;
 
-    // Write the integer vector with attributes
-    write_flags(writer, INTSXP, true, false, false)?;
+    // A factor always carries a class attribute, so it needs R's OBJECT bit:
+    // without it, internal generics such as levels() printing and `[`
+    // dispatch skip the factor methods.
+    write_flags_with_object(writer, INTSXP, true, false, false, true)?;
     writer.write_u32::<BigEndian>(data.values.len() as u32)?;
     for &val in &data.values {
         writer.write_i32::<BigEndian>(val)?;
