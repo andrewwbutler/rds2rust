@@ -639,7 +639,7 @@ let obj2 = Arc::clone(&obj);
 - **Write support**: All R types can be written except for some complex environment configurations
 - **Compression formats**: Reads gzip and xz (xz on native targets only, not `wasm32`); writes gzip. bzip2 is not supported.
 - **ALTREP**: Reads ALTREP objects but writes them as regular vectors
-- **External pointers**: Not supported (rarely used in serialized data)
+- **External pointers**: Read as `NULL`, keeping any attributes such as a class (the address itself is not serialized). Their protected value and tag are consumed so the rest of the stream stays aligned. Every data.table carries one (`.internal.selfref`).
 
 ## Development Status
 
