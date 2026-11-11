@@ -1125,3 +1125,5 @@ saveRDS(mtcars, file.path(output_dir, "gzip_compressed.rds"), compress = "gzip")
 #   b <- new.env(parent = emptyenv()); b$self <- b
 #   x <- pairlist(a); y <- pairlist(b)
 #   save(x, y, file = "cyclic-pairlists.rda", version = 2, compress = FALSE)
+# Likewise tests/fixtures/extptr.rda and tests/fixtures/extptr-datatable.rda
+# (external pointer payloads), documented at the top of tests/extptr_payload.rs.

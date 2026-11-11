@@ -3020,6 +3020,21 @@ async fn parse_object_sequential_value_async_inner<C: AsyncCursor>(
         PERSISTSXP | PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => {
             parse_pseudo_stringvec_async(sexp_type, ctx, cursor).await?
         }
+        EXTPTRSXP => {
+            // The protected value and the tag follow the type word; consume
+            // both to keep the stream aligned, then return NULL.
+            for _ in 0..2 {
+                std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                    ctx,
+                    cursor,
+                    ref_table,
+                    symbol_table,
+                    dedup_table,
+                )))
+                .await?;
+            }
+            RObject::Null
+        }
         _ => RObject::Null,
     };
 
@@ -4286,6 +4301,21 @@ async fn skip_object_sequential_value_async_inner<C: AsyncCursor>(
         S4SXP => RObject::Null,
         PERSISTSXP | PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => {
             parse_pseudo_stringvec_async(sexp_type, ctx, cursor).await?
+        }
+        EXTPTRSXP => {
+            // The protected value and the tag follow the type word; consume
+            // both to keep the stream aligned.
+            for _ in 0..2 {
+                std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
+                    ctx,
+                    cursor,
+                    ref_table,
+                    symbol_table,
+                    dedup_table,
+                )))
+                .await?;
+            }
+            RObject::Null
         }
         _ => RObject::Null,
     };

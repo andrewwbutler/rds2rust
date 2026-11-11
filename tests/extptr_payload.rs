@@ -5,6 +5,14 @@
 //! save(a_first, p, z_last, file = "extptr.rda", version = 2, compress = FALSE)
 //! Skipping the payload used to end the workspace pairlist at the pointer, so
 //! every later binding was silently dropped.
+//!
+//! `extptr-datatable.rda` covers the case users actually hit: every data.table
+//! carries a `.internal.selfref` external pointer attribute whose protected
+//! value is itself an external pointer and whose tag is the column names.
+//! Generated in R (4.3.3, data.table 1.17.8) with:
+//! library(data.table); dt <- data.table(a = 1:3, b = c("x", "y", "z"))
+//! z_last <- 2
+//! save(dt, z_last, file = "extptr-datatable.rda", version = 2, compress = FALSE)
 use rds2rust::{
     read_rds_with_config, traverse_rds_streaming, ObjectPath, ParseConfig, ParseMode, RObject,
     RdsInput, RdsVisitor, VisitAction,
@@ -12,7 +20,7 @@ use rds2rust::{
 
 #[test]
 fn workspace_bindings_after_an_external_pointer_are_kept() {
-    let payload = workspace_payload();
+    let payload = workspace_payload(WORKSPACE);
     for mode in [ParseMode::Full, ParseMode::LazyMetadata] {
         let parsed = read_rds_with_config(payload, ParseConfig::default().with_mode(mode))
             .expect("workspace with an external pointer must parse");
@@ -24,10 +32,29 @@ fn workspace_bindings_after_an_external_pointer_are_kept() {
     }
 }
 
-const WORKSPACE: &[u8] = include_bytes!("fixtures/extptr.rda");
+#[test]
+fn bindings_after_a_data_table_are_kept() {
+    let payload = workspace_payload(DATATABLE_WORKSPACE);
+    for mode in [ParseMode::Full, ParseMode::LazyMetadata] {
+        let parsed = read_rds_with_config(payload, ParseConfig::default().with_mode(mode))
+            .expect("workspace with a data.table must parse");
+        let RObject::Pairlist(elements) = parsed.object.into_concrete() else {
+            panic!("workspace must remain a pairlist");
+        };
+        let names: Vec<_> = elements.iter().map(|e| e.tag.as_deref()).collect();
+        assert_eq!(names, vec![Some("dt"), Some("z_last")]);
+        let RObject::Real(z_last) = elements[1].value.clone().into_concrete() else {
+            panic!("z_last must stay a real vector");
+        };
+        assert_eq!(z_last, [2.0]);
+    }
+}
 
-fn workspace_payload() -> &'static [u8] {
-    WORKSPACE
+const WORKSPACE: &[u8] = include_bytes!("fixtures/extptr.rda");
+const DATATABLE_WORKSPACE: &[u8] = include_bytes!("fixtures/extptr-datatable.rda");
+
+fn workspace_payload(workspace: &'static [u8]) -> &'static [u8] {
+    workspace
         .strip_prefix(b"RDX2\n")
         .expect("R workspace header")
 }
@@ -68,7 +95,7 @@ impl RdsVisitor for TypeCounter {
 
 #[test]
 fn streaming_traversal_consumes_the_external_pointer_payload() {
-    let source = Slice(workspace_payload());
+    let source = Slice(workspace_payload(WORKSPACE));
     let mut visitor = TypeCounter::default();
     traverse_rds_streaming(&source, ParseConfig::default(), &mut visitor)
         .expect("stream with an external pointer must traverse");
@@ -76,4 +103,13 @@ fn streaming_traversal_consumes_the_external_pointer_payload() {
         visitor.reals, 2,
         "both reals around the pointer are visited"
     );
+}
+
+#[test]
+fn streaming_traversal_continues_past_a_data_table() {
+    let source = Slice(workspace_payload(DATATABLE_WORKSPACE));
+    let mut visitor = TypeCounter::default();
+    traverse_rds_streaming(&source, ParseConfig::default(), &mut visitor)
+        .expect("stream with a data.table must traverse");
+    assert_eq!(visitor.reals, 1, "z_last after the data.table is visited");
 }

@@ -10,10 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - External pointers (`EXTPTRSXP`) now consume their serialized protected
-  value and tag, in both the full parser and the streaming traversal.
+  value and tag, in the full parser, the streaming traversal, and the wasm
+  async (`LazyMetadata`) parser, including its lazy skip path.
   Previously the payload was left in the stream: the pointer's protected
   value was read as the end of the enclosing pairlist, so every binding saved
   after an external pointer in an `.rda` workspace was silently dropped.
+  This affected every data.table, which carries an external pointer in its
+  `.internal.selfref` attribute: anything serialized after a data.table
+  (later workspace bindings, later list elements) was lost or read as `NULL`.
 
 ## [0.3.0] - 2026-09-25
 
