@@ -44,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Integer row names that are not `1..n` (for example `c(3L, 1L, 2L)`) still
   come back from R as character row names with the same values, because
   `DataFrameData` stores row names only as strings.
+- **wasm:** streaming a gzip-compressed file with `traverse_rds_blob_streaming`
+  or `traverse_rds_streaming_sequential_async` failed on almost every file.
+  The sequential cursor pre-filled its whole read buffer (16-128 MB) and
+  treated a shorter stream as an error, so any file smaller than the buffer
+  failed before parsing began. A larger file failed instead near its end,
+  where a speculative read ran past the end of a stream whose length a gzip
+  decompressor cannot report. The cursor now records where the stream ends
+  once a read reaches it, and the parser retries a read that overshot with
+  exactly what is left. Uncompressed files, which stream through the
+  random-access path, were not affected.
 
 ## [0.3.0] - 2026-09-25
 

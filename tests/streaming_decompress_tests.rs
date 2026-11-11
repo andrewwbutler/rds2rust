@@ -5,7 +5,10 @@
 #[cfg(target_arch = "wasm32")]
 mod wasm_tests {
     use js_sys::{Array, Uint8Array};
-    use rds2rust::{AsyncSequentialInput, StreamingGzipDecompressor};
+    use rds2rust::{
+        traverse_rds_blob_streaming, AsyncSequentialInput, ObjectPath, ParseConfig, RdsVisitor,
+        StreamingGzipDecompressor, VisitAction,
+    };
     use wasm_bindgen::JsCast;
     use wasm_bindgen_test::*;
     use web_sys::Blob;
@@ -67,6 +70,44 @@ mod wasm_tests {
             .unwrap();
 
         blob_value.dyn_into::<Blob>().unwrap()
+    }
+
+    /// Records the type of every object the traversal reports.
+    #[derive(Default)]
+    struct TypeRecorder(Vec<String>);
+
+    impl RdsVisitor for TypeRecorder {
+        type Error = std::convert::Infallible;
+
+        fn on_object_start(
+            &mut self,
+            _path: &ObjectPath,
+            obj_type: &str,
+        ) -> Result<VisitAction, Self::Error> {
+            self.0.push(obj_type.to_string());
+            Ok(VisitAction::Continue)
+        }
+    }
+
+    // serialize(list(1, "a"), NULL, version = 2)
+    const SMALL_LIST: &[u8] = &[
+        0x58, 0x0a, 0x00, 0x00, 0x00, 0x02, 0x00, 0x04, 0x03, 0x03, 0x00, 0x02, 0x03, 0x00, 0x00,
+        0x00, 0x00, 0x13, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x0e, 0x00, 0x00, 0x00, 0x01,
+        0x3f, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x04, 0x00, 0x09, 0x00, 0x00, 0x00, 0x01, 0x61,
+    ];
+
+    /// A gzip file far smaller than the streaming read buffer must still
+    /// traverse: the blob API streams every gzip file through the sequential
+    /// cursor, whose buffer is 16-128 MB.
+    #[wasm_bindgen_test]
+    async fn test_blob_streaming_traverses_small_gzip_file() {
+        let blob = create_gzip_blob(SMALL_LIST).await;
+        let mut visitor = TypeRecorder::default();
+        traverse_rds_blob_streaming(blob, ParseConfig::default(), &mut visitor)
+            .await
+            .expect("small gzip file must traverse");
+        assert_eq!(visitor.0, ["List", "Real", "Character"]);
     }
 
     #[wasm_bindgen_test]

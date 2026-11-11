@@ -381,6 +381,9 @@ pub struct SequentialCursor<'a, I: AsyncSequentialInput> {
     position: u64,
     buffer_size: usize,
     max_buffer_size: usize,
+    /// Where the stream ends, once a read has hit the end. Sequential inputs
+    /// such as a gzip decompressor do not know their length up front.
+    end: Option<u64>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -400,10 +403,17 @@ impl<'a, I: AsyncSequentialInput> SequentialCursor<'a, I> {
             position: 0,
             buffer_size: config.buffer_size,
             max_buffer_size: config.max_buffer_size,
+            end: None,
         };
 
-        // Pre-fill buffer with initial data
-        cursor.ensure_available(config.buffer_size).await?;
+        // Pre-fill the buffer. A stream shorter than the buffer is not an
+        // error: it just means the whole stream is now buffered and its
+        // length is known.
+        match cursor.ensure_available(config.buffer_size).await {
+            Ok(()) => {}
+            Err(Error::UnexpectedEofDetail { .. }) if cursor.end.is_some() => {}
+            Err(err) => return Err(err),
+        }
         Ok(cursor)
     }
 
@@ -412,9 +422,10 @@ impl<'a, I: AsyncSequentialInput> SequentialCursor<'a, I> {
         self.position
     }
 
-    /// Returns the total size if known (None for sequential streams).
+    /// Returns the total size if known: the input's own size, or else where
+    /// the stream ended once a read has reached it.
     pub fn total_len(&self) -> Option<u64> {
-        self.input.total_size()
+        self.input.total_size().or(self.end)
     }
 
     /// Returns the buffer size configuration.
@@ -430,7 +441,7 @@ impl<'a, I: AsyncSequentialInput> SequentialCursor<'a, I> {
     /// Advance the read position by the specified number of bytes.
     pub fn advance(&mut self, bytes: u64) -> Result<()> {
         let new_pos = self.position.saturating_add(bytes);
-        if let Some(len) = self.input.total_size() {
+        if let Some(len) = self.total_len() {
             if new_pos > len {
                 return Err(Error::UnexpectedEof);
             }
@@ -481,6 +492,7 @@ impl<'a, I: AsyncSequentialInput> SequentialCursor<'a, I> {
 
             if chunk.is_empty() {
                 // Reached end of stream
+                self.end = Some(self.buffer_start_pos + self.buffer.len() as u64);
                 if offset_in_buffer + needed > self.buffer.len() {
                     return Err(Error::UnexpectedEofDetail {
                         position: self.position as usize,
@@ -569,6 +581,7 @@ impl<'a, I: AsyncSequentialInput> SequentialCursor<'a, I> {
             let chunk_size = remaining.min(self.buffer_size);
             let chunk = self.input.read_next(chunk_size).await?;
             if chunk.is_empty() {
+                self.end = Some(self.position);
                 return Err(Error::UnexpectedEofDetail {
                     position: self.position as usize,
                     needed: len,

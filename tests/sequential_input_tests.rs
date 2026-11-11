@@ -75,6 +75,24 @@ mod wasm_tests {
         }
     }
 
+    /// A sequential input that, like a gzip decompressor, does not know its
+    /// length.
+    struct UnsizedInput(MockSequentialInput);
+
+    impl AsyncSequentialInput for UnsizedInput {
+        fn read_next<'a>(&'a mut self, len: usize) -> AsyncReadFuture<'a> {
+            self.0.read_next(len)
+        }
+
+        fn total_size(&self) -> Option<u64> {
+            None
+        }
+
+        fn position(&self) -> u64 {
+            self.0.position()
+        }
+    }
+
     async fn read_u32_generic<C: AsyncCursor>(cursor: &mut C) -> u32 {
         cursor.ensure_available(4).await.unwrap();
         let slice = cursor.as_sync_slice(4).unwrap();
@@ -252,6 +270,45 @@ mod wasm_tests {
         cursor.ensure_available(4).await.unwrap();
         let slice = cursor.as_sync_slice(4).unwrap();
         assert_eq!(slice, &[10, 11, 12, 13]);
+    }
+
+    /// A stream shorter than the pre-fill buffer is not an error: the cursor
+    /// buffers all of it and learns where it ends. Sequential sources such as
+    /// a gzip decompressor do not report a length up front.
+    #[wasm_bindgen_test]
+    async fn test_sequential_cursor_accepts_stream_shorter_than_buffer() {
+        let mut input = UnsizedInput(MockSequentialInput::new(vec![0, 0, 0, 5, 10, 11]));
+        let config = AsyncCursorConfig {
+            buffer_size: 64,
+            max_buffer_size: 128,
+        };
+        let mut cursor = SequentialCursor::with_config(&mut input, config)
+            .await
+            .expect("a short stream must not fail the pre-fill");
+        assert_eq!(cursor.total_len(), Some(6));
+        assert_eq!(read_u32_generic(&mut cursor).await, 5);
+    }
+
+    /// Asking for more than is left fails, but leaves the stream's end known
+    /// so the caller can retry with exactly what remains.
+    #[wasm_bindgen_test]
+    async fn test_sequential_cursor_learns_end_on_overshoot() {
+        let mut input = UnsizedInput(MockSequentialInput::new((0..10).collect()));
+        let config = AsyncCursorConfig {
+            buffer_size: 4,
+            max_buffer_size: 64,
+        };
+        let mut cursor = SequentialCursor::with_config(&mut input, config)
+            .await
+            .unwrap();
+        assert_eq!(cursor.total_len(), None, "end not reached yet");
+        assert!(cursor.ensure_available(20).await.is_err());
+        assert_eq!(cursor.total_len(), Some(10));
+        cursor.ensure_available(10).await.unwrap();
+        assert_eq!(
+            cursor.as_sync_slice(10).unwrap(),
+            &(0..10).collect::<Vec<u8>>()[..]
+        );
     }
 
     #[wasm_bindgen_test]

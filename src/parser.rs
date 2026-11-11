@@ -1605,7 +1605,7 @@ where
         .await
         .map_err(StreamingError::Parse)?;
     let estimate = estimate_parse_size_from_cursor(cursor).unwrap_or(cursor.buffer_size());
-    let max_size = match cursor.total_len() {
+    let mut max_size = match cursor.total_len() {
         Some(total_len) => {
             let remaining = total_len.saturating_sub(cursor.position()) as usize;
             std::cmp::min(cursor.max_buffer_size(), remaining)
@@ -1615,10 +1615,25 @@ where
     let mut size = estimate.clamp(4, max_size.max(4));
 
     loop {
-        cursor
-            .ensure_available(size)
-            .await
-            .map_err(StreamingError::Parse)?;
+        if let Err(err) = cursor.ensure_available(size).await {
+            // A source of unknown length, such as a gzip stream, can end
+            // inside this speculative read. Its end is known now, so retry
+            // with exactly what is left; a request that still does not fit
+            // is a real end of file.
+            let remaining = cursor
+                .total_len()
+                .map(|total_len| total_len.saturating_sub(cursor.position()) as usize);
+            match (&err, remaining) {
+                (Error::UnexpectedEof | Error::UnexpectedEofDetail { .. }, Some(remaining))
+                    if remaining < size =>
+                {
+                    max_size = remaining;
+                    size = remaining;
+                    continue;
+                }
+                _ => return Err(StreamingError::Parse(err)),
+            }
+        }
         let slice = cursor.as_sync_slice(size).map_err(StreamingError::Parse)?;
         let mut sync_cursor = RdsCursor::new_slice(slice);
 
