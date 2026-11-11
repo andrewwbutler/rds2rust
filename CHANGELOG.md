@@ -54,6 +54,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once a read reaches it, and the parser retries a read that overshot with
   exactly what is left. Uncompressed files, which stream through the
   random-access path, were not affected.
+- Builtin and special primitives (`sum`, `c`, `` `if` ``, ...) now read their
+  function name in the streaming traversal and in the wasm async
+  (`LazyMetadata`) parser, including its lazy skip path. Native streaming
+  rejected them as `Unknown SEXP type`. The wasm parser returned `NULL`
+  without reading the name, so the stream fell out of alignment and later
+  values were lost: a list holding `sum`, `` `if` `` and the string
+  `"after"` parsed as three `NULL`s. The full parser already handled them.
 
 ## [0.3.0] - 2026-09-25
 

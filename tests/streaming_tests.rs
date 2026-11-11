@@ -467,3 +467,58 @@ impl RdsVisitor for PairlistOrderVisitor {
         Ok(())
     }
 }
+
+/// Serves an in-memory stream to the streaming traversal.
+struct SliceInput(&'static [u8]);
+
+impl rds2rust::RdsInput for SliceInput {
+    fn read_at(&self, offset: u64, len: usize) -> rds2rust::Result<Vec<u8>> {
+        let start = (offset as usize).min(self.0.len());
+        let end = start.saturating_add(len).min(self.0.len());
+        Ok(self.0[start..end].to_vec())
+    }
+
+    fn len(&self) -> Option<u64> {
+        Some(self.0.len() as u64)
+    }
+}
+
+/// Records the type of every object the traversal reports.
+#[derive(Default)]
+struct TypeRecorder(Vec<String>);
+
+impl RdsVisitor for TypeRecorder {
+    type Error = std::convert::Infallible;
+
+    fn on_object_start(
+        &mut self,
+        _path: &ObjectPath,
+        obj_type: &str,
+    ) -> Result<VisitAction, Self::Error> {
+        self.0.push(obj_type.to_string());
+        Ok(VisitAction::Continue)
+    }
+}
+
+// serialize(list(sum, `if`, "after"), NULL)
+const PRIMITIVE_STREAM: &[u8] = &[
+    0x58, 0x0a, 0x00, 0x00, 0x00, 0x03, 0x00, 0x04, 0x03, 0x03, 0x00, 0x03, 0x05, 0x00, 0x00, 0x00,
+    0x00, 0x05, 0x55, 0x54, 0x46, 0x2d, 0x38, 0x00, 0x00, 0x00, 0x13, 0x00, 0x00, 0x00, 0x03, 0x00,
+    0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x03, 0x73, 0x75, 0x6d, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00,
+    0x00, 0x02, 0x69, 0x66, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x04, 0x00, 0x09,
+    0x00, 0x00, 0x00, 0x05, 0x61, 0x66, 0x74, 0x65, 0x72,
+];
+
+/// Builtin and special primitives carry their function name after the type
+/// word. The streaming walk used to reject them as unknown types.
+#[test]
+fn test_streaming_builtin_and_special_primitives() {
+    let mut visitor = TypeRecorder::default();
+    traverse_rds_streaming(
+        &SliceInput(PRIMITIVE_STREAM),
+        ParseConfig::default(),
+        &mut visitor,
+    )
+    .expect("primitives must traverse");
+    assert_eq!(visitor.0, ["List", "Builtin", "Special", "Character"]);
+}

@@ -3035,6 +3035,12 @@ async fn parse_object_sequential_value_async_inner<C: AsyncCursor>(
         PERSISTSXP | PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => {
             parse_pseudo_stringvec_async(sexp_type, ctx, cursor).await?
         }
+        SPECIALSXP => RObject::Special {
+            name: parse_primitive_name_async(ctx, cursor, "special function").await?,
+        },
+        BUILTINSXP => RObject::Builtin {
+            name: parse_primitive_name_async(ctx, cursor, "builtin function").await?,
+        },
         EXTPTRSXP => {
             // The protected value and the tag follow the type word; consume
             // both to keep the stream aligned, then return NULL.
@@ -4317,6 +4323,12 @@ async fn skip_object_sequential_value_async_inner<C: AsyncCursor>(
         PERSISTSXP | PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => {
             parse_pseudo_stringvec_async(sexp_type, ctx, cursor).await?
         }
+        SPECIALSXP => RObject::Special {
+            name: parse_primitive_name_async(ctx, cursor, "special function").await?,
+        },
+        BUILTINSXP => RObject::Builtin {
+            name: parse_primitive_name_async(ctx, cursor, "builtin function").await?,
+        },
         EXTPTRSXP => {
             // The protected value and the tag follow the type word; consume
             // both to keep the stream aligned.
@@ -4412,6 +4424,29 @@ async fn skip_object_sequential_value_async_inner<C: AsyncCursor>(
 /// Shared handling for the string-vec-bearing pseudo-types in the wasm
 /// sequential parse and skip paths. Kept in one place so the two paths cannot
 /// drift: mis-consuming these payloads desynchronizes the stream.
+/// Read the name payload of a SPECIALSXP or BUILTINSXP: a length, then that
+/// many bytes, with no CHARSXP or SYMSXP wrapper (R's `OutInteger` +
+/// `OutString`). Mirrors the sync `parse_special` / `parse_builtin`.
+#[cfg(target_arch = "wasm32")]
+async fn parse_primitive_name_async<C: AsyncCursor>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    kind: &str,
+) -> Result<Arc<str>> {
+    let length = read_i32_async(cursor).await?;
+    if length < 0 {
+        return Err(Error::InvalidFormat(format!(
+            "Negative length for {} name",
+            kind
+        )));
+    }
+    let length = length as usize;
+    guard_allocation_common(ctx, length, 1, kind)?;
+    guard_materialized::<u8>(ctx, length, "character content")?;
+    let bytes = read_bytes_async(cursor, length).await?;
+    Ok(Arc::from(String::from_utf8(bytes)?.as_str()))
+}
+
 #[cfg(target_arch = "wasm32")]
 async fn parse_pseudo_stringvec_async<C: AsyncCursor>(
     sexp_type: u32,
@@ -5692,6 +5727,16 @@ fn parse_object_streaming_inner<V: RdsVisitor>(
                     false,
                 )?;
             }
+            StreamControl::Continue
+        }
+        SPECIALSXP => {
+            // Consume the function-name payload to keep the stream aligned.
+            parse_special(ctx, cursor, ref_table, symbol_table, dedup_table)?;
+            StreamControl::Continue
+        }
+        BUILTINSXP => {
+            // Consume the function-name payload to keep the stream aligned.
+            parse_builtin(ctx, cursor, ref_table, symbol_table, dedup_table)?;
             StreamControl::Continue
         }
         WEAKREFSXP | MISSINGARG_SXP | GLOBALENV_SXP | BASEENV_SXP | EMPTYENV_SXP
