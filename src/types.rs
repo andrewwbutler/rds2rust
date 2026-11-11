@@ -422,6 +422,10 @@ pub enum RObject {
     },
 }
 
+/// Progress of `into_concrete_deep`, keyed by the address of each `Shared`
+/// allocation: `None` while that node is being converted, `Some` once done.
+type ConcreteVisited = HashMap<usize, Option<RObject>>;
+
 impl RObject {
     /// If this object is a Shared wrapper, return the underlying object reference.
     /// Otherwise return self.
@@ -447,33 +451,41 @@ impl RObject {
     /// Pairlists, WithAttributes, etc.) share Arc<RwLock> pointers that can cause race
     /// conditions when accessed concurrently from different threads.
     ///
-    /// Uses cycle detection to handle circular references (e.g., in environments).
+    /// Cyclic graphs are the one exception. An owned tree cannot hold a cycle,
+    /// so the reference that closes a cycle (for example `e$self` in R's
+    /// `e <- new.env(); e$self <- e`) is kept as the original
+    /// [`RObject::Shared`]. Everything else becomes concrete. Code that walks
+    /// the result recursively must still handle `Shared`, exactly as it must
+    /// on the parser's own output.
     pub fn into_concrete_deep(self) -> RObject {
-        let mut visited = std::collections::HashMap::new();
+        let mut visited = ConcreteVisited::new();
         self.into_concrete_deep_impl(&mut visited)
     }
 
     /// Internal implementation with cycle detection.
     ///
-    /// When a cycle is detected (Shared object already visited), we break the cycle by
-    /// returning a clone of the already-processed concrete object.
-    fn into_concrete_deep_impl(self, visited: &mut HashMap<usize, RObject>) -> RObject {
+    /// A `Shared` node is marked in progress (`None`) before its contents are
+    /// converted and replaced by its finished concrete form (`Some`) after.
+    /// Meeting an in-progress node again means the graph has a cycle, so that
+    /// reference is returned unchanged as `Shared` instead of recursing
+    /// forever. Meeting a finished node (a shared but acyclic reference)
+    /// reuses its concrete form.
+    fn into_concrete_deep_impl(self, visited: &mut ConcreteVisited) -> RObject {
         use RObject::*;
 
         // First unwrap top-level Shared
         let obj = match self {
             Shared(inner) => {
                 let addr = Arc::as_ptr(&inner) as usize;
-                // Check if we've already processed this Shared object
-                if let Some(concrete) = visited.get(&addr) {
-                    // Cycle detected - return the already-processed object
-                    return concrete.clone();
+                match visited.get(&addr) {
+                    Some(Some(concrete)) => return concrete.clone(),
+                    Some(None) => return Shared(inner),
+                    None => {}
                 }
-                // Lock and clone the inner object
+                visited.insert(addr, None);
                 let inner_obj = inner.read().unwrap().clone();
-                // Recursively process it and store in visited map
                 let concrete = inner_obj.into_concrete_deep_impl(visited);
-                visited.insert(addr, concrete.clone());
+                visited.insert(addr, Some(concrete.clone()));
                 return concrete;
             }
             other => other,
@@ -1559,7 +1571,7 @@ impl Attributes {
     ///
     /// This is called from RObject::into_concrete_deep_impl to ensure attributes
     /// are also fully concrete.
-    pub(crate) fn into_concrete_deep_impl(mut self, visited: &mut HashMap<usize, RObject>) -> Self {
+    pub(crate) fn into_concrete_deep_impl(mut self, visited: &mut ConcreteVisited) -> Self {
         self.attrs = self
             .attrs
             .into_iter()

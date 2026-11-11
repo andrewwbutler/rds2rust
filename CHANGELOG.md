@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This affected every data.table, which carries an external pointer in its
   `.internal.selfref` attribute: anything serialized after a data.table
   (later workspace bindings, later list elements) was lost or read as `NULL`.
+- `RObject::into_concrete_deep()` no longer aborts the process on cyclic
+  object graphs. An environment that binds itself (`e$self <- e`), or an
+  external pointer whose attribute is itself, overflowed the stack, because a
+  node was only marked visited after its contents had been converted. An owned
+  tree cannot hold a cycle, so the reference that closes one is now kept as the
+  original `RObject::Shared`. Everything else, including shared but acyclic
+  references, becomes concrete as before. Code that walks the result
+  recursively must still handle `Shared`, as it already must on parser output.
 
 ## [0.3.0] - 2026-09-25
 
