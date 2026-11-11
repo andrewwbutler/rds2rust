@@ -61,6 +61,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without reading the name, so the stream fell out of alignment and later
   values were lost: a list holding `sum`, `` `if` `` and the string
   `"after"` parsed as three `NULL`s. The full parser already handled them.
+- The streaming traversal now reads promises the way R writes them. A
+  promise carries its environment only while unforced; forcing clears it and
+  R then omits it. The streaming walk always read three parts, so any forced
+  promise (for example an argument a function had evaluated, captured in a
+  closure's environment) consumed an object too many and the traversal
+  failed with an unexpected end of file. Unforced promises traversed, but
+  their environment, value and expression were reported under the wrong
+  path names. The full parser already handled both.
 
 ## [0.3.0] - 2026-09-25
 

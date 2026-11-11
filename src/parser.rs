@@ -5659,6 +5659,7 @@ fn parse_object_streaming_inner<V: RdsVisitor>(
         PROMSXP => parse_promise_streaming(
             ctx,
             cursor,
+            has_tag,
             ref_table,
             symbol_table,
             dedup_table,
@@ -7400,6 +7401,7 @@ fn parse_environment_streaming<V: RdsVisitor>(
 fn parse_promise_streaming<V: RdsVisitor>(
     ctx: &mut ParserContext,
     cursor: &mut RdsCursor<'_>,
+    has_tag: bool,
     ref_table: &mut RefTable,
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
@@ -7409,48 +7411,19 @@ fn parse_promise_streaming<V: RdsVisitor>(
     path: &mut crate::ObjectPath,
     progress: &mut StreamingProgressState<'_>,
 ) -> StreamingResult<StreamControl, V::Error> {
-    if emit {
-        path.push(Arc::from("value"));
-        if matches!(
-            parse_object_streaming(
-                ctx,
-                cursor,
-                ref_table,
-                symbol_table,
-                dedup_table,
-                ref_paths,
-                progress,
-                visitor,
-                path,
-                true,
-            )?,
-            StreamControl::Stop
-        ) {
-            path.pop();
-            return Ok(StreamControl::Stop);
+    // R serializes a promise like a dotted pair, the same order as the full
+    // parser's parse_promise: the environment as TAG, but only while the
+    // promise is unforced (forcing clears it, and R then omits it), then the
+    // value as CAR and the expression as CDR.
+    let parts: &[&str] = if has_tag {
+        &["environment", "value", "expression"]
+    } else {
+        &["value", "expression"]
+    };
+    for part in parts {
+        if emit {
+            path.push(Arc::from(*part));
         }
-        path.pop();
-        path.push(Arc::from("expression"));
-        if matches!(
-            parse_object_streaming(
-                ctx,
-                cursor,
-                ref_table,
-                symbol_table,
-                dedup_table,
-                ref_paths,
-                progress,
-                visitor,
-                path,
-                true,
-            )?,
-            StreamControl::Stop
-        ) {
-            path.pop();
-            return Ok(StreamControl::Stop);
-        }
-        path.pop();
-        path.push(Arc::from("environment"));
         let control = parse_object_streaming(
             ctx,
             cursor,
@@ -7461,48 +7434,16 @@ fn parse_promise_streaming<V: RdsVisitor>(
             progress,
             visitor,
             path,
-            true,
+            emit,
         )?;
-        path.pop();
-        return Ok(control);
+        if emit {
+            path.pop();
+        }
+        if matches!(control, StreamControl::Stop) {
+            return Ok(StreamControl::Stop);
+        }
     }
-
-    let _ = parse_object_streaming(
-        ctx,
-        cursor,
-        ref_table,
-        symbol_table,
-        dedup_table,
-        ref_paths,
-        progress,
-        visitor,
-        path,
-        false,
-    )?;
-    let _ = parse_object_streaming(
-        ctx,
-        cursor,
-        ref_table,
-        symbol_table,
-        dedup_table,
-        ref_paths,
-        progress,
-        visitor,
-        path,
-        false,
-    )?;
-    parse_object_streaming(
-        ctx,
-        cursor,
-        ref_table,
-        symbol_table,
-        dedup_table,
-        ref_paths,
-        progress,
-        visitor,
-        path,
-        false,
-    )
+    Ok(StreamControl::Continue)
 }
 
 #[allow(clippy::too_many_arguments)]
