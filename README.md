@@ -64,6 +64,14 @@ bytecode, and streaming parser calls, so it is not an exact count of R list
 levels. `unlimited()` raises size limits but retains a nesting limit,
 capped at the hard ceiling of 128.
 
+On `wasm32`, use a release build. Debug builds use far more stack per
+nested call, and the JavaScript engine's stack can run out before the
+nesting limit is reached: in Node, a debug build overflowed on lists nested
+only 30 deep, failing with `RangeError: Maximum call stack size exceeded`
+instead of a parse error. Release builds (the `wasm-pack build` default)
+reach the limit and return the parse error. Note that `wasm-pack test`
+builds in debug mode unless given `--release`.
+
 | Limit | Scope |
 | --- | --- |
 | `max_vector_length` | Elements in one declared vector |
