@@ -2614,6 +2614,19 @@ async fn parse_object_sequential_value_async_inner<C: AsyncCursor>(
 
     let mut obj = match sexp_type {
         NILSXP | NILVALUE_SXP => RObject::Null,
+        UNBOUNDVALUE_SXP => RObject::UnboundValue,
+        EMPTYENV_SXP => RObject::EmptyEnv,
+        BASEENV_SXP => RObject::BaseEnv,
+        GLOBALENV_SXP => RObject::GlobalEnv,
+        MISSINGARG_SXP => RObject::MissingArg,
+        GENERICREFSXP | CLASSREFSXP => {
+            // R's own reader rejects these unconditionally, as does the sync
+            // parser; no valid stream contains them.
+            return Err(Error::InvalidFormat(format!(
+                "Generic function / class reference type {} cannot be read (R rejects these too)",
+                sexp_type
+            )));
+        }
         SYMSXP => {
             let name_flags = read_u32_async(cursor).await?;
             let name_type_from_0_7 = name_flags & 0xFF;
@@ -3034,6 +3047,134 @@ async fn parse_object_sequential_value_async_inner<C: AsyncCursor>(
         S4SXP => RObject::Null,
         PERSISTSXP | PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => {
             parse_pseudo_stringvec_async(sexp_type, ctx, cursor).await?
+        }
+        ENVSXP => {
+            // Mirrors parse_environment: the locked flag, then the enclosing
+            // environment, frame, hash table and attributes. R writes the
+            // attributes inline even when NULL, never through HAS_ATTR.
+            let _locked = read_i32_async(cursor).await?;
+            let enclosing = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            let frame = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            let hashtab = std::pin::Pin::from(Box::new(parse_env_hashtab_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            let _attributes = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            RObject::Environment {
+                enclosing: Box::new(enclosing),
+                frame: Box::new(frame),
+                hashtab: Box::new(hashtab),
+            }
+        }
+        CLOSXP => {
+            // Mirrors parse_closure: environment, formals, then body.
+            let environment = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            let formals = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            let prev = ctx.parsing_closure_body;
+            ctx.parsing_closure_body = true;
+            let body = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            ctx.parsing_closure_body = prev;
+            RObject::Closure {
+                formals: Box::new(formals),
+                body: Box::new(body),
+                environment: Box::new(environment),
+            }
+        }
+        PROMSXP => {
+            // Mirrors parse_promise: the environment only while the promise
+            // is unforced (HAS_TAG), then the value and the expression.
+            let environment = if has_tag {
+                std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                    ctx,
+                    cursor,
+                    ref_table,
+                    symbol_table,
+                    dedup_table,
+                )))
+                .await?
+            } else {
+                RObject::Null
+            };
+            let value = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            let expression = std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            RObject::Promise {
+                value: Box::new(value),
+                expression: Box::new(expression),
+                environment: Box::new(environment),
+            }
+        }
+        BCODESXP => {
+            // The bytecode format is intricate and its contents are never
+            // large, so reuse the sync decoder rather than a second copy.
+            parse_sync_object_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                parse_bytecode,
+            )
+            .await?
         }
         SPECIALSXP => RObject::Special {
             name: parse_primitive_name_async(ctx, cursor, "special function").await?,
@@ -3962,6 +4103,19 @@ async fn skip_object_sequential_value_async_inner<C: AsyncCursor>(
 
     let mut obj = match sexp_type {
         NILSXP | NILVALUE_SXP => RObject::Null,
+        UNBOUNDVALUE_SXP => RObject::UnboundValue,
+        EMPTYENV_SXP => RObject::EmptyEnv,
+        BASEENV_SXP => RObject::BaseEnv,
+        GLOBALENV_SXP => RObject::GlobalEnv,
+        MISSINGARG_SXP => RObject::MissingArg,
+        GENERICREFSXP | CLASSREFSXP => {
+            // R's own reader rejects these unconditionally, as does the sync
+            // parser; no valid stream contains them.
+            return Err(Error::InvalidFormat(format!(
+                "Generic function / class reference type {} cannot be read (R rejects these too)",
+                sexp_type
+            )));
+        }
         SYMSXP => {
             let name_flags = read_u32_async(cursor).await?;
             let name_type_from_0_7 = name_flags & 0xFF;
@@ -4323,6 +4477,134 @@ async fn skip_object_sequential_value_async_inner<C: AsyncCursor>(
         PERSISTSXP | PACKAGESXP | NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => {
             parse_pseudo_stringvec_async(sexp_type, ctx, cursor).await?
         }
+        ENVSXP => {
+            // Mirrors parse_environment: the locked flag, then the enclosing
+            // environment, frame, hash table and attributes. R writes the
+            // attributes inline even when NULL, never through HAS_ATTR.
+            let _locked = read_i32_async(cursor).await?;
+            let enclosing = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            let frame = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            let hashtab = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            let _attributes = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            RObject::Environment {
+                enclosing: Box::new(enclosing),
+                frame: Box::new(frame),
+                hashtab: Box::new(hashtab),
+            }
+        }
+        CLOSXP => {
+            // Mirrors parse_closure: environment, formals, then body.
+            let environment = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            let formals = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            let prev = ctx.parsing_closure_body;
+            ctx.parsing_closure_body = true;
+            let body = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            ctx.parsing_closure_body = prev;
+            RObject::Closure {
+                formals: Box::new(formals),
+                body: Box::new(body),
+                environment: Box::new(environment),
+            }
+        }
+        PROMSXP => {
+            // Mirrors parse_promise: the environment only while the promise
+            // is unforced (HAS_TAG), then the value and the expression.
+            let environment = if has_tag {
+                std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
+                    ctx,
+                    cursor,
+                    ref_table,
+                    symbol_table,
+                    dedup_table,
+                )))
+                .await?
+            } else {
+                RObject::Null
+            };
+            let value = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            let expression = std::pin::Pin::from(Box::new(skip_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?;
+            RObject::Promise {
+                value: Box::new(value),
+                expression: Box::new(expression),
+                environment: Box::new(environment),
+            }
+        }
+        BCODESXP => {
+            // The bytecode format is intricate and its contents are never
+            // large, so reuse the sync decoder rather than a second copy.
+            parse_sync_object_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+                parse_bytecode,
+            )
+            .await?
+        }
         SPECIALSXP => RObject::Special {
             name: parse_primitive_name_async(ctx, cursor, "special function").await?,
         },
@@ -4424,6 +4706,139 @@ async fn skip_object_sequential_value_async_inner<C: AsyncCursor>(
 /// Shared handling for the string-vec-bearing pseudo-types in the wasm
 /// sequential parse and skip paths. Kept in one place so the two paths cannot
 /// drift: mis-consuming these payloads desynchronizes the stream.
+/// Parse an environment's hash table: NULL for an unhashed environment, or a
+/// list of buckets, each a pairlist of bindings. The bucket count (29 for
+/// every `new.env()`) says nothing about how much data the environment holds,
+/// so the bucket list is always read, even above the lazy threshold that
+/// would skip an ordinary list; skipping it would drop every binding. The
+/// bound values themselves follow the usual lazy rules.
+#[cfg(target_arch = "wasm32")]
+async fn parse_env_hashtab_async<C: AsyncCursor>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+) -> Result<RObject> {
+    cursor.ensure_available(4).await?;
+    let flags = cursor.peek_u32()?;
+    // Anything but a plain list (NULL, or a hash table with attributes) goes
+    // through the ordinary object parser.
+    if flags != VECSXP {
+        return std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+            ctx,
+            cursor,
+            ref_table,
+            symbol_table,
+            dedup_table,
+        )))
+        .await;
+    }
+    cursor.advance(4)?;
+    let length = read_u32_async(cursor).await? as usize;
+    guard_allocation_common(ctx, length, 1, "environment hash table")?;
+    guard_materialized::<RObject>(ctx, length, "environment hash table")?;
+    let mut buckets = Vec::with_capacity(bounded_capacity(length));
+    for _ in 0..length {
+        buckets.push(
+            std::pin::Pin::from(Box::new(parse_object_sequential_value_async(
+                ctx,
+                cursor,
+                ref_table,
+                symbol_table,
+                dedup_table,
+            )))
+            .await?,
+        );
+    }
+    Ok(RObject::List(buckets))
+}
+
+/// A sync object parser that reads one object's payload, after its flags.
+#[cfg(target_arch = "wasm32")]
+type SyncPayloadParser = fn(
+    &mut ParserContext,
+    &mut RdsCursor<'_>,
+    &mut RefTable,
+    &mut SymbolTable,
+    &mut DedupTable,
+) -> Result<RObject>;
+
+/// Run a sync payload parser over the async cursor's buffer, doubling the
+/// window until the object fits. Parser state and the reference, symbol and
+/// dedup tables are rolled back between attempts, so a partial attempt
+/// leaves no trace. Like the streaming parser's sync fallback, the window is
+/// parsed in streaming mode, because it is a slice and not the whole file.
+#[cfg(target_arch = "wasm32")]
+async fn parse_sync_object_async<C: AsyncCursor>(
+    ctx: &mut ParserContext,
+    cursor: &mut C,
+    ref_table: &mut RefTable,
+    symbol_table: &mut SymbolTable,
+    dedup_table: &mut DedupTable,
+    parse: SyncPayloadParser,
+) -> Result<RObject> {
+    let remaining = |cursor: &C| {
+        cursor
+            .total_len()
+            .map(|total| total.saturating_sub(cursor.position()) as usize)
+    };
+    let mut limit = match remaining(cursor) {
+        Some(left) => left.min(cursor.max_buffer_size()),
+        None => cursor.max_buffer_size(),
+    };
+    let mut size = (64 * 1024).min(limit).max(4);
+
+    loop {
+        if let Err(err) = cursor.ensure_available(size).await {
+            // A source of unknown length can end inside this window; its end
+            // is known now, so retry with exactly what is left.
+            match (&err, remaining(cursor)) {
+                (Error::UnexpectedEof | Error::UnexpectedEofDetail { .. }, Some(left))
+                    if left < size =>
+                {
+                    limit = left;
+                    size = left;
+                    continue;
+                }
+                _ => return Err(err),
+            }
+        }
+        let slice = cursor.as_sync_slice(size)?;
+        let mut sync_cursor = RdsCursor::new_slice(slice);
+
+        let snapshot = ctx.snapshot();
+        let ref_checkpoint = ref_table.checkpoint();
+        let symbol_checkpoint = symbol_table.checkpoint();
+        let dedup_checkpoint = dedup_table.checkpoint();
+        ctx.streaming_parse_mode = true;
+        ctx.async_parse_mode = false;
+        let result = parse(ctx, &mut sync_cursor, ref_table, symbol_table, dedup_table);
+
+        let retry = match &result {
+            Ok(_) => false,
+            Err(Error::UnexpectedEof | Error::UnexpectedEofDetail { .. }) => true,
+            Err(Error::Io(err)) => err.kind() == std::io::ErrorKind::UnexpectedEof,
+            Err(Error::InvalidFormat(message)) => message.contains("exceeds remaining"),
+            Err(_) => false,
+        };
+        if result.is_ok() {
+            ctx.streaming_parse_mode = snapshot.streaming_parse_mode;
+            ctx.async_parse_mode = snapshot.async_parse_mode;
+            cursor.advance(sync_cursor.position())?;
+            return result;
+        }
+        ctx.restore(snapshot);
+        ref_table.rollback(ref_checkpoint);
+        symbol_table.rollback(symbol_checkpoint);
+        dedup_table.rollback(dedup_checkpoint);
+        if !retry || size >= limit {
+            return result;
+        }
+        size = std::cmp::min(limit, size.saturating_mul(2));
+    }
+}
+
 /// Read the name payload of a SPECIALSXP or BUILTINSXP: a length, then that
 /// many bytes, with no CHARSXP or SYMSXP wrapper (R's `OutInteger` +
 /// `OutString`). Mirrors the sync `parse_special` / `parse_builtin`.

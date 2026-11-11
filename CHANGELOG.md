@@ -69,6 +69,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failed with an unexpected end of file. Unforced promises traversed, but
   their environment, value and expression were reported under the wrong
   path names. The full parser already handled both.
+- **wasm:** the async `LazyMetadata` parser (`read_rds_async`), including its
+  lazy skip path, now reads environments, closures, promises and bytecode.
+  It used to return `NULL` for all four without reading their payload, so
+  everything after the first one was misread: a list holding an environment
+  and the string `"after"` parsed as two `NULL`s. It also returned `NULL`
+  for the empty, base and global environments, the unbound value and the
+  missing-argument marker, and it now rejects generic function and class
+  references as the full parser does. For these objects it now returns the
+  same result as `Full` mode, except that values bound in an environment
+  still follow the lazy rules, so a large vector in an environment stays
+  lazy. An environment's hash table is always read, even though its bucket
+  count is above the lazy threshold that skips an ordinary list; skipping
+  it dropped every binding.
 
 ## [0.3.0] - 2026-09-25
 
