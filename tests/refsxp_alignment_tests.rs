@@ -475,3 +475,70 @@ fn test_plain_symbol_tag_and_value_dedup() {
     }
     let _ = fs::remove_file(&output_path);
 }
+
+/// Serves an in-memory stream to the streaming traversal.
+struct SliceInput(Vec<u8>);
+
+impl rds2rust::RdsInput for SliceInput {
+    fn read_at(&self, offset: u64, len: usize) -> rds2rust::Result<Vec<u8>> {
+        let start = (offset as usize).min(self.0.len());
+        let end = start.saturating_add(len).min(self.0.len());
+        Ok(self.0[start..end].to_vec())
+    }
+
+    fn len(&self) -> Option<u64> {
+        Some(self.0.len() as u64)
+    }
+}
+
+/// Big-endian XDR words.
+fn words(words: &[u32]) -> Vec<u8> {
+    words.iter().flat_map(|word| word.to_be_bytes()).collect()
+}
+
+/// A version-2 XDR stream: header, then `body`.
+fn stream(body: &[Vec<u8>]) -> SliceInput {
+    let mut bytes = b"X\n".to_vec();
+    bytes.extend(words(&[2, 0x0004_0303, 0x0002_0300]));
+    body.iter().for_each(|part| bytes.extend(part));
+    SliceInput(bytes)
+}
+
+fn traverse(input: &SliceInput) -> Result<(), String> {
+    let mut visitor = CountingVisitor::default();
+    traverse_rds_streaming(input, rds2rust::ParseConfig::default(), &mut visitor)
+        .map_err(|err| err.to_string())
+}
+
+/// SYMSXP `a`, which takes reference index 1. CHARSXP bytes are unpadded.
+fn symbol_a() -> Vec<u8> {
+    let mut bytes = words(&[0x01, 0x0004_0009, 1]);
+    bytes.push(b'a');
+    bytes
+}
+
+#[test]
+fn test_streaming_rejects_out_of_range_reference() {
+    // list(<REFSXP 2>) where nothing has been given index 2.
+    let err =
+        traverse(&stream(&[words(&[0x13, 1, 0x2ff])])).expect_err("dangling reference must fail");
+    assert!(err.contains("Invalid reference index: 2"), "{err}");
+}
+
+#[test]
+fn test_streaming_rejects_out_of_range_pairlist_tail_reference() {
+    // pairlist(a = NULL) whose tail is <REFSXP 5>; only `a` (index 1) exists.
+    let body = [words(&[0x402]), symbol_a(), words(&[0xfe, 0x5ff])];
+    let err = traverse(&stream(&body)).expect_err("dangling tail reference must fail");
+    assert!(err.contains("Invalid reference index: 5"), "{err}");
+}
+
+#[test]
+fn test_streaming_accepts_in_range_references() {
+    // list(quote(a), <REFSXP 1>): the back-reference resolves to `a`.
+    let body = [words(&[0x13, 2]), symbol_a(), words(&[0x1ff])];
+    traverse(&stream(&body)).expect("valid back-reference must traverse");
+    // pairlist(a = NULL) whose tail is <REFSXP 1>.
+    let body = [words(&[0x402]), symbol_a(), words(&[0xfe, 0x1ff])];
+    traverse(&stream(&body)).expect("valid tail back-reference must traverse");
+}

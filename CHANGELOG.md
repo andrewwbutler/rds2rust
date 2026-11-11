@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   original `RObject::Shared`. Everything else, including shared but acyclic
   references, becomes concrete as before. Code that walks the result
   recursively must still handle `Shared`, as it already must on parser output.
+- The streaming traversal now rejects a reference (`REFSXP`) to an index
+  that is not in the reference table, with the same `Invalid reference
+  index` error the full parser returns. Previously it reported the dangling
+  reference to the visitor and carried on, so a corrupt stream that the full
+  parser refuses could be traversed without error. Valid files are
+  unaffected; every fixture in the test corpus traverses exactly as before.
 
 ## [0.3.0] - 2026-09-25
 

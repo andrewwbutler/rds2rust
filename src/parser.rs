@@ -5278,6 +5278,20 @@ impl StreamingRefTable {
     }
 }
 
+/// Reject a REFSXP whose index is not in the reference table, matching the
+/// full parser. The streaming walk only reports references, so without this
+/// check an out-of-range index in a corrupt stream was accepted silently.
+fn ensure_ref_exists(ref_table: &RefTable, ref_index: u32) -> Result<()> {
+    if ref_table.get(ref_index).is_some() {
+        Ok(())
+    } else {
+        Err(Error::InvalidFormat(format!(
+            "Invalid reference index: {}",
+            ref_index
+        )))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn parse_object_streaming<V: RdsVisitor>(
     ctx: &mut ParserContext,
@@ -5372,6 +5386,7 @@ fn parse_object_streaming_inner<V: RdsVisitor>(
 
     if sexp_type == REFSXP {
         let ref_index = flags >> 8;
+        ensure_ref_exists(ref_table, ref_index)?;
         if emit {
             visitor
                 .on_object_start(path, "SharedRef")
@@ -6334,6 +6349,7 @@ where
             let _ = read_u32_async(cursor)
                 .await
                 .map_err(StreamingError::Parse)?;
+            ensure_ref_exists(ref_table, flags >> 8)?;
             if emit {
                 visitor
                     .on_object_start(path, "SharedRef")
@@ -6781,6 +6797,7 @@ fn parse_pairlist_streaming<V: RdsVisitor>(
             has_tag_next || matches!(next_type, LISTSXP | LANGSXP | CLOSXP | PROMSXP);
 
         if next_type == REFSXP {
+            ensure_ref_exists(ref_table, flags >> 8)?;
             if emit {
                 visitor
                     .on_object_start(path, "SharedRef")
