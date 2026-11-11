@@ -82,6 +82,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lazy. An environment's hash table is always read, even though its bucket
   count is above the lazy threshold that skips an ordinary list; skipping
   it dropped every binding.
+- **wasm:** the async streaming traversal no longer delivers visitor events
+  more than once. When an object is larger than the first window the
+  traversal tries, it rolls back and retries with a larger one, but the
+  events from each failed attempt had already reached the visitor, and each
+  retry also started from a path left deeper by the failed attempt. A list
+  holding a 1 MiB raw vector produced 16 object starts instead of 4, with
+  its last element reported at `[0]/[0]/[0]/[0]/[0]/[0]/[2]` instead of `[2]`,
+  which also inflated `DatasetInfo::object_count`. Retries now suppress the
+  events already delivered, giving the parser the visitor's earlier
+  decisions, and restore the path. Objects larger than the largest window
+  (512 MB) go through separate fallback routines whose events are still
+  forwarded as they are.
 
 ## [0.3.0] - 2026-09-25
 

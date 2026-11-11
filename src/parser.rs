@@ -1614,6 +1614,10 @@ where
     };
     let mut size = estimate.clamp(4, max_size.max(4));
 
+    // Each retry re-parses this object from its start; see RetryDedupVisitor.
+    let path_len = path.segments.len();
+    let mut dedup = RetryDedupVisitor::new(visitor);
+
     loop {
         if let Err(err) = cursor.ensure_available(size).await {
             // A source of unknown length, such as a gzip stream, can end
@@ -1647,6 +1651,7 @@ where
         let dedup_checkpoint = dedup_table.checkpoint();
 
         progress.base_offset = cursor.position();
+        dedup.restart();
         let result = parse_object_streaming(
             ctx,
             &mut sync_cursor,
@@ -1655,7 +1660,7 @@ where
             dedup_table,
             ref_paths,
             progress,
-            visitor,
+            &mut dedup,
             path,
             emit,
         );
@@ -1671,6 +1676,7 @@ where
             Err(StreamingError::Parse(Error::UnexpectedEof))
             | Err(StreamingError::Parse(Error::UnexpectedEofDetail { .. })) => {
                 ctx.restore(ctx_snapshot);
+                path.segments.truncate(path_len);
                 ref_table.rollback(ref_checkpoint);
                 symbol_table.rollback(symbol_checkpoint);
                 dedup_table.rollback(dedup_checkpoint);
@@ -1684,8 +1690,12 @@ where
                     )))
                     .await
                     .map_err(StreamingError::Parse)?;
+                    // Objects beyond the largest window take this path. Its
+                    // events come from a different routine, so they cannot be
+                    // matched against what the failed attempts delivered,
+                    // and are forwarded as they are.
                     if emit {
-                        emit_parsed_object_streaming(&obj, path, visitor)?;
+                        emit_parsed_object_streaming(&obj, path, dedup.inner)?;
                     }
                     progress.report_object(cursor.position());
                     return Ok(StreamControl::Continue);
@@ -1696,6 +1706,7 @@ where
                 if err.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
                 ctx.restore(ctx_snapshot);
+                path.segments.truncate(path_len);
                 ref_table.rollback(ref_checkpoint);
                 symbol_table.rollback(symbol_checkpoint);
                 dedup_table.rollback(dedup_checkpoint);
@@ -1708,6 +1719,7 @@ where
                 if message.contains("exceeds remaining") && cursor.total_len().is_none() =>
             {
                 ctx.restore(ctx_snapshot);
+                path.segments.truncate(path_len);
                 ref_table.rollback(ref_checkpoint);
                 symbol_table.rollback(symbol_checkpoint);
                 dedup_table.rollback(dedup_checkpoint);
@@ -1728,7 +1740,8 @@ where
                     dedup_table,
                     ref_paths,
                     progress,
-                    visitor,
+                    // As above: a different routine, so not deduplicated.
+                    dedup.inner,
                     path,
                     emit,
                 )))
@@ -1747,6 +1760,7 @@ where
                 if message.contains("exceeds remaining") && size < max_size =>
             {
                 ctx.restore(ctx_snapshot);
+                path.segments.truncate(path_len);
                 ref_table.rollback(ref_checkpoint);
                 symbol_table.rollback(symbol_checkpoint);
                 dedup_table.rollback(dedup_checkpoint);
@@ -5740,6 +5754,137 @@ impl StreamingRefTable {
         self.paths
             .get(index as usize)
             .and_then(|path| path.as_ref())
+    }
+}
+
+/// What the visitor returned for one delivered callback, so a retry can give
+/// the parser the same answer without calling the visitor again.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Copy)]
+enum DeliveredEvent {
+    Notified,
+    Visit(VisitAction),
+    Chunk(crate::ChunkAction),
+}
+
+/// Wraps the caller's visitor across the async streaming parser's
+/// grow-and-retry loop, so a retry does not deliver events twice.
+///
+/// A failed attempt (the window ended inside the object) has already
+/// delivered some events. The retry re-parses the same bytes from the same
+/// rolled-back state, and gets the same answers for the replayed callbacks,
+/// so it produces those same events in the same order before going further.
+/// The wrapper suppresses the ones already delivered, answering with the
+/// visitor's earlier decisions, and forwards only the new ones.
+#[cfg(target_arch = "wasm32")]
+struct RetryDedupVisitor<'a, V: RdsVisitor> {
+    inner: &'a mut V,
+    delivered: Vec<DeliveredEvent>,
+    /// Index into `delivered` reached by the current attempt.
+    replayed: usize,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl<'a, V: RdsVisitor> RetryDedupVisitor<'a, V> {
+    fn new(inner: &'a mut V) -> Self {
+        Self {
+            inner,
+            delivered: Vec::new(),
+            replayed: 0,
+        }
+    }
+
+    /// Start another attempt at the same object.
+    fn restart(&mut self) {
+        self.replayed = 0;
+    }
+
+    /// The recorded event for the next callback, if this attempt has not yet
+    /// passed what earlier attempts delivered.
+    fn replay(&mut self) -> Option<DeliveredEvent> {
+        let event = self.delivered.get(self.replayed).copied()?;
+        self.replayed += 1;
+        Some(event)
+    }
+
+    fn record(&mut self, event: DeliveredEvent) {
+        self.delivered.push(event);
+        self.replayed += 1;
+    }
+
+    fn notify<F>(&mut self, deliver: F) -> std::result::Result<(), V::Error>
+    where
+        F: FnOnce(&mut V) -> std::result::Result<(), V::Error>,
+    {
+        if self.replay().is_none() {
+            deliver(self.inner)?;
+            self.record(DeliveredEvent::Notified);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl<V: RdsVisitor> RdsVisitor for RetryDedupVisitor<'_, V> {
+    type Error = V::Error;
+
+    fn on_header(&mut self, format_version: u32) -> std::result::Result<(), Self::Error> {
+        self.notify(|inner| inner.on_header(format_version))
+    }
+
+    fn on_object_start(
+        &mut self,
+        path: &crate::ObjectPath,
+        obj_type: &str,
+    ) -> std::result::Result<VisitAction, Self::Error> {
+        if let Some(DeliveredEvent::Visit(action)) = self.replay() {
+            return Ok(action);
+        }
+        let action = self.inner.on_object_start(path, obj_type)?;
+        self.record(DeliveredEvent::Visit(action));
+        Ok(action)
+    }
+
+    fn on_shared_reference(
+        &mut self,
+        path: &crate::ObjectPath,
+        target: Option<&crate::ObjectPath>,
+    ) -> std::result::Result<(), Self::Error> {
+        self.notify(|inner| inner.on_shared_reference(path, target))
+    }
+
+    fn on_vector_metadata(
+        &mut self,
+        path: &crate::ObjectPath,
+        vec_type: VectorKind,
+        len: usize,
+    ) -> std::result::Result<(), Self::Error> {
+        self.notify(|inner| inner.on_vector_metadata(path, vec_type, len))
+    }
+
+    fn on_vector_chunk_available(
+        &mut self,
+        path: &crate::ObjectPath,
+        span: LazyVector,
+    ) -> std::result::Result<crate::ChunkAction, Self::Error> {
+        if let Some(DeliveredEvent::Chunk(action)) = self.replay() {
+            return Ok(action);
+        }
+        let action = self.inner.on_vector_chunk_available(path, span)?;
+        self.record(DeliveredEvent::Chunk(action));
+        Ok(action)
+    }
+
+    fn on_attributes(
+        &mut self,
+        path: &crate::ObjectPath,
+        attrs: &Attributes,
+    ) -> std::result::Result<(), Self::Error> {
+        self.notify(|inner| inner.on_attributes(path, attrs))
+    }
+
+    fn on_object_end(&mut self, path: &crate::ObjectPath) -> std::result::Result<(), Self::Error> {
+        self.notify(|inner| inner.on_object_end(path))
     }
 }
 
