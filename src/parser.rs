@@ -6363,15 +6363,18 @@ fn parse_object_streaming_inner<V: RdsVisitor>(
     Ok(control)
 }
 
+/// The object type name reported to `RdsVisitor::on_object_start`. Types the
+/// full parser reads into a matching `RObject` variant use that variant's
+/// name (see `RObject::variant_name`), so both APIs describe them the same way.
 fn sexp_type_name(sexp_type: u32) -> &'static str {
     match sexp_type {
         NILSXP | NILVALUE_SXP => "Null",
         SYMSXP => "Symbol",
-        LISTSXP => "Pairlist",
+        LISTSXP | ATTRLISTSXP => "Pairlist",
         CLOSXP => "Closure",
         ENVSXP => "Environment",
         PROMSXP => "Promise",
-        LANGSXP => "Language",
+        LANGSXP | ATTRLANGSXP => "Language",
         SPECIALSXP => "Special",
         BUILTINSXP => "Builtin",
         CHARSXP => "Charsxp",
@@ -6379,7 +6382,9 @@ fn sexp_type_name(sexp_type: u32) -> &'static str {
         INTSXP => "Integer",
         REALSXP => "Real",
         CPLXSXP => "Complex",
-        STRSXP => "Character",
+        // A persisted reference is surfaced as the hook's character vector.
+        STRSXP | PERSISTSXP => "Character",
+        RAWSXP => "Raw",
         VECSXP => "List",
         EXPRSXP => "Expression",
         BCODESXP => "Bytecode",
@@ -6388,6 +6393,14 @@ fn sexp_type_name(sexp_type: u32) -> &'static str {
         S4SXP => "S4Object",
         NAMESPACESXP | NAMESPACESXP_SERIAL | BASENAMESPACE_SXP => "Namespace",
         ALTREP_SXP => "Altrep",
+        PACKAGESXP => "PackageEnv",
+        GLOBALENV_SXP => "GlobalEnv",
+        BASEENV_SXP => "BaseEnv",
+        EMPTYENV_SXP => "EmptyEnv",
+        MISSINGARG_SXP => "MissingArg",
+        UNBOUNDVALUE_SXP => "UnboundValue",
+        // Only types the parser rejects (generic and class references,
+        // bytecode markers outside bytecode) and invalid codes remain.
         _ => "Unknown",
     }
 }

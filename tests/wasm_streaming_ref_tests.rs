@@ -144,10 +144,7 @@ mod wasm_streaming_ref_tests {
             .filter(|event| !event.starts_with("end "))
             .map(String::as_str)
             .collect();
-        assert_eq!(starts.len(), 4, "one start per object: {starts:?}");
-        assert_eq!(starts[0], "List ");
-        assert!(starts[1].ends_with(" [0]"), "{starts:?}");
-        assert_eq!(&starts[2..], ["Real [1]", "Character [2]"]);
+        assert_eq!(starts, ["List ", "Raw [0]", "Real [1]", "Character [2]"]);
         let ends = visitor.0.len() - starts.len();
         assert_eq!(ends, 4, "one end per object: {:?}", visitor.0);
     }

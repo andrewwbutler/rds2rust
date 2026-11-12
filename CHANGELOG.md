@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking / behavior changes for downstream consumers
+
+- **Streaming type names.** `RdsVisitor::on_object_start` now reports raw
+  vectors as `"Raw"`, the global, base and empty environments as
+  `"GlobalEnv"`, `"BaseEnv"` and `"EmptyEnv"`, package environments as
+  `"PackageEnv"`, the missing-argument marker as `"MissingArg"`, the unbound
+  value as `"UnboundValue"`, and persisted references as `"Character"`,
+  instead of `"Unknown"`. These match `RObject::variant_name`. The API is
+  unchanged, but a visitor that matched `"Unknown"` to find any of these must
+  match the new names. `"Unknown"` is now reported only for type codes the
+  parser rejects.
+
 ### Fixed
 
 - External pointers (`EXTPTRSXP`) now consume their serialized protected
