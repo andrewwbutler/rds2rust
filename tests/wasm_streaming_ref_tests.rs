@@ -252,4 +252,91 @@ mod wasm_streaming_ref_tests {
             ]
         );
     }
+
+    /// Logs every callback; skips the list at [2], stops at [3], and asks to
+    /// stream the chunks of [1].
+    #[derive(Default)]
+    struct DecidingVisitor(Vec<String>);
+
+    impl RdsVisitor for DecidingVisitor {
+        type Error = std::convert::Infallible;
+
+        fn on_object_start(
+            &mut self,
+            path: &ObjectPath,
+            obj_type: &str,
+        ) -> Result<VisitAction, Self::Error> {
+            let path = path.segments.join("/");
+            self.0.push(format!("start {obj_type} {path}"));
+            Ok(match path.as_str() {
+                "[2]" => VisitAction::Skip,
+                "[3]" => VisitAction::Stop,
+                _ => VisitAction::Continue,
+            })
+        }
+
+        fn on_vector_chunk_available(
+            &mut self,
+            path: &ObjectPath,
+            _span: LazyVector,
+        ) -> Result<ChunkAction, Self::Error> {
+            let path = path.segments.join("/");
+            self.0.push(format!("chunk {path}"));
+            Ok(if path == "[1]" {
+                ChunkAction::StreamAll
+            } else {
+                ChunkAction::Skip
+            })
+        }
+    }
+
+    /// Skip and Stop decisions given before a retry still hold after it, and
+    /// each callback reaches the visitor exactly once.
+    #[wasm_bindgen_test]
+    async fn test_retries_replay_skip_and_stop() {
+        // list(<1 MiB raw>, <20 ints>, list(<3 ints>, <4 ints>), <30 doubles>, "after")
+        let mut bytes = b"X\n".to_vec();
+        bytes.extend(words(&[
+            2,
+            0x0004_0303,
+            0x0002_0300,
+            0x13,
+            5,
+            0x18,
+            1 << 20,
+        ]));
+        bytes.resize(bytes.len() + (1 << 20), 0);
+        bytes.extend(words(&[0x0d, 20]));
+        bytes.resize(bytes.len() + 20 * 4, 0);
+        bytes.extend(words(&[0x13, 2, 0x0d, 3]));
+        bytes.resize(bytes.len() + 3 * 4, 0);
+        bytes.extend(words(&[0x0d, 4]));
+        bytes.resize(bytes.len() + 4 * 4, 0);
+        bytes.extend(words(&[0x0e, 30]));
+        bytes.resize(bytes.len() + 30 * 8, 0);
+        bytes.extend(words(&[0x10, 1, 0x0004_0009, 5]));
+        bytes.extend(b"after");
+
+        let mut visitor = DecidingVisitor::default();
+        traverse_rds_streaming_async(
+            &RandomAccess(bytes),
+            ParseConfig::default(),
+            AsyncCursorConfig::default(),
+            &mut visitor,
+        )
+        .await
+        .expect("traversal must succeed");
+        assert_eq!(
+            visitor.0,
+            [
+                "start List ",
+                "start Raw [0]",
+                "chunk [0]",
+                "start Integer [1]",
+                "chunk [1]",
+                "start List [2]",
+                "start Real [3]",
+            ]
+        );
+    }
 }

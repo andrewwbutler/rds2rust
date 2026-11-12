@@ -5776,16 +5776,6 @@ impl StreamingRefTable {
     }
 }
 
-/// What the visitor returned for one delivered callback, so a retry can give
-/// the parser the same answer without calling the visitor again.
-#[cfg(target_arch = "wasm32")]
-#[derive(Clone, Copy)]
-enum DeliveredEvent {
-    Notified,
-    Visit(VisitAction),
-    Chunk(crate::ChunkAction),
-}
-
 /// Wraps the caller's visitor across the async streaming parser's
 /// grow-and-retry loop, so a retry does not deliver events twice.
 ///
@@ -5796,15 +5786,28 @@ enum DeliveredEvent {
 /// The wrapper suppresses the ones already delivered, answering with the
 /// visitor's earlier decisions, and forwards only the new ones.
 ///
+/// Only decisions need storing: every other callback returns nothing, so a
+/// count is enough to know which ones a retry has already delivered. Almost
+/// every object-start decision is `Continue`, so only the others are kept.
+///
 /// Each attempt parses a window of the stream, so the chunk spans it reports
 /// are relative to the window. The wrapper adds the window's start, so the
 /// visitor receives offsets into the whole stream, as on native.
 #[cfg(target_arch = "wasm32")]
 struct RetryDedupVisitor<'a, V: RdsVisitor> {
     inner: &'a mut V,
-    delivered: Vec<DeliveredEvent>,
-    /// Index into `delivered` reached by the current attempt.
+    /// Callbacks delivered to the visitor so far, across all attempts.
+    delivered: usize,
+    /// Object-start decisions other than `Continue`, by object-start index.
+    visit_decisions: Vec<(usize, VisitAction)>,
+    /// Every chunk decision, in order.
+    chunk_decisions: Vec<crate::ChunkAction>,
+    /// Callbacks, object starts and chunk callbacks reached by the current
+    /// attempt, and the next entry of `visit_decisions` to replay.
     replayed: usize,
+    replayed_starts: usize,
+    replayed_chunks: usize,
+    next_visit_decision: usize,
     /// Stream offset of the current attempt's window.
     window_start: u64,
 }
@@ -5814,8 +5817,13 @@ impl<'a, V: RdsVisitor> RetryDedupVisitor<'a, V> {
     fn new(inner: &'a mut V) -> Self {
         Self {
             inner,
-            delivered: Vec::new(),
+            delivered: 0,
+            visit_decisions: Vec::new(),
+            chunk_decisions: Vec::new(),
             replayed: 0,
+            replayed_starts: 0,
+            replayed_chunks: 0,
+            next_visit_decision: 0,
             window_start: 0,
         }
     }
@@ -5824,29 +5832,34 @@ impl<'a, V: RdsVisitor> RetryDedupVisitor<'a, V> {
     /// begins at `window_start` in the stream.
     fn restart(&mut self, window_start: u64) {
         self.replayed = 0;
+        self.replayed_starts = 0;
+        self.replayed_chunks = 0;
+        self.next_visit_decision = 0;
         self.window_start = window_start;
     }
 
-    /// The recorded event for the next callback, if this attempt has not yet
-    /// passed what earlier attempts delivered.
-    fn replay(&mut self) -> Option<DeliveredEvent> {
-        let event = self.delivered.get(self.replayed).copied()?;
+    /// Count the next callback; true if an earlier attempt delivered it.
+    fn already_delivered(&mut self) -> bool {
         self.replayed += 1;
-        Some(event)
-    }
-
-    fn record(&mut self, event: DeliveredEvent) {
-        self.delivered.push(event);
-        self.replayed += 1;
+        if self.replayed <= self.delivered {
+            true
+        } else {
+            self.delivered = self.replayed;
+            false
+        }
     }
 
     fn notify<F>(&mut self, deliver: F) -> std::result::Result<(), V::Error>
     where
         F: FnOnce(&mut V) -> std::result::Result<(), V::Error>,
     {
-        if self.replay().is_none() {
-            deliver(self.inner)?;
-            self.record(DeliveredEvent::Notified);
+        if self.already_delivered() {
+            return Ok(());
+        }
+        if let Err(err) = deliver(self.inner) {
+            // Not delivered after all; a visitor error ends the traversal.
+            self.delivered -= 1;
+            return Err(err);
         }
         Ok(())
     }
@@ -5865,11 +5878,29 @@ impl<V: RdsVisitor> RdsVisitor for RetryDedupVisitor<'_, V> {
         path: &crate::ObjectPath,
         obj_type: &str,
     ) -> std::result::Result<VisitAction, Self::Error> {
-        if let Some(DeliveredEvent::Visit(action)) = self.replay() {
-            return Ok(action);
+        let index = self.replayed_starts;
+        self.replayed_starts += 1;
+        if self.already_delivered() {
+            let recorded = self.visit_decisions.get(self.next_visit_decision);
+            return Ok(match recorded {
+                Some(&(at, action)) if at == index => {
+                    self.next_visit_decision += 1;
+                    action
+                }
+                _ => VisitAction::Continue,
+            });
         }
-        let action = self.inner.on_object_start(path, obj_type)?;
-        self.record(DeliveredEvent::Visit(action));
+        let action = match self.inner.on_object_start(path, obj_type) {
+            Ok(action) => action,
+            Err(err) => {
+                self.delivered -= 1;
+                return Err(err);
+            }
+        };
+        if action != VisitAction::Continue {
+            self.visit_decisions.push((index, action));
+            self.next_visit_decision = self.visit_decisions.len();
+        }
         Ok(action)
     }
 
@@ -5895,16 +5926,31 @@ impl<V: RdsVisitor> RdsVisitor for RetryDedupVisitor<'_, V> {
         path: &crate::ObjectPath,
         span: LazyVector,
     ) -> std::result::Result<crate::ChunkAction, Self::Error> {
-        if let Some(DeliveredEvent::Chunk(action)) = self.replay() {
-            return Ok(action);
+        let index = self.replayed_chunks;
+        self.replayed_chunks += 1;
+        if self.already_delivered() {
+            // Replays are deterministic, so the decision is always there; the
+            // fallback is the trait's own default rather than a panic.
+            return Ok(self
+                .chunk_decisions
+                .get(index)
+                .copied()
+                .unwrap_or(crate::ChunkAction::Skip));
         }
         let span = LazyVector {
             offset: span.offset + self.window_start,
             ..span
         };
-        let action = self.inner.on_vector_chunk_available(path, span)?;
-        self.record(DeliveredEvent::Chunk(action));
-        Ok(action)
+        match self.inner.on_vector_chunk_available(path, span) {
+            Ok(action) => {
+                self.chunk_decisions.push(action);
+                Ok(action)
+            }
+            Err(err) => {
+                self.delivered -= 1;
+                Err(err)
+            }
+        }
     }
 
     fn on_attributes(
