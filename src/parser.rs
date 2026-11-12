@@ -1398,8 +1398,14 @@ async fn parse_object_async(
     symbol_table: &mut SymbolTable,
     dedup_table: &mut DedupTable,
 ) -> Result<RObject> {
-    cursor.ensure_available(8).await?;
-    let estimate = crate::estimate_parse_size(cursor).unwrap_or(cursor.buffer_size());
+    // The size guess peeks at the flags and a length (8 bytes). An object
+    // can be shorter than that at the end of the stream (a lone NULL is 4
+    // bytes), so a stream that ends sooner just gets the smallest guess.
+    let estimate = match cursor.ensure_available(8).await {
+        Ok(()) => crate::estimate_parse_size(cursor).unwrap_or(cursor.buffer_size()),
+        Err(Error::UnexpectedEof | Error::UnexpectedEofDetail { .. }) => 4,
+        Err(err) => return Err(err),
+    };
     let total_len = cursor
         .total_len()
         .ok_or_else(|| Error::InvalidFormat("async cursor requires length".to_string()))?;
@@ -1600,11 +1606,14 @@ where
             Err(err) => return Err(err),
         }
     }
-    cursor
-        .ensure_available(8)
-        .await
-        .map_err(StreamingError::Parse)?;
-    let estimate = estimate_parse_size_from_cursor(cursor).unwrap_or(cursor.buffer_size());
+    // The size guess peeks at the flags and a length (8 bytes). An object
+    // can be shorter than that at the end of the stream (a lone NULL is 4
+    // bytes), so a stream that ends sooner just gets the smallest guess.
+    let estimate = match cursor.ensure_available(8).await {
+        Ok(()) => estimate_parse_size_from_cursor(cursor).unwrap_or(cursor.buffer_size()),
+        Err(Error::UnexpectedEof | Error::UnexpectedEofDetail { .. }) => 4,
+        Err(err) => return Err(StreamingError::Parse(err)),
+    };
     let mut max_size = match cursor.total_len() {
         Some(total_len) => {
             let remaining = total_len.saturating_sub(cursor.position()) as usize;

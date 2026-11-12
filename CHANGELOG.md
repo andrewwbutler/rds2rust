@@ -112,6 +112,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   native. They were relative to the window the traversal was parsing, so for
   a `.rds` file every offset came out 14 bytes short (the header), and
   reading a chunk at that offset returned the wrong bytes.
+- **wasm:** a file whose only object is `NULL` (`saveRDS(NULL, ...)`) now
+  reads and streams. The async streaming traversal, gzip blob streaming and
+  `read_rds_async` in `Full` mode peeked 8 bytes to guess the object's size,
+  but that object is only 4 bytes, so they failed with an unexpected end of
+  file. Native always read it.
 
 ## [0.3.0] - 2026-09-25
 

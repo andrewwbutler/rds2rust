@@ -6,8 +6,10 @@
 mod wasm_tests {
     use js_sys::{Array, Uint8Array};
     use rds2rust::{
-        traverse_rds_blob_streaming, AsyncSequentialInput, ObjectPath, ParseConfig, RdsVisitor,
-        StreamingGzipDecompressor, VisitAction,
+        read_rds_async, traverse_rds_blob_streaming, traverse_rds_streaming_async,
+        AsyncCursorConfig, AsyncParseConfig, AsyncRdsInput, AsyncReadFuture, AsyncSequentialInput,
+        ObjectPath, ParseConfig, ParseMode, RObject, RdsVisitor, StreamingGzipDecompressor,
+        VisitAction,
     };
     use wasm_bindgen::JsCast;
     use wasm_bindgen_test::*;
@@ -108,6 +110,67 @@ mod wasm_tests {
             .await
             .expect("small gzip file must traverse");
         assert_eq!(visitor.0, ["List", "Real", "Character"]);
+    }
+
+    // serialize(NULL, NULL, version = 2): the whole object is one 4-byte word.
+    const NULL_ONLY: &[u8] = &[
+        0x58, 0x0a, 0x00, 0x00, 0x00, 0x02, 0x00, 0x04, 0x03, 0x03, 0x00, 0x02, 0x03, 0x00, 0x00,
+        0x00, 0x00, 0xfe,
+    ];
+
+    struct RandomAccess(Vec<u8>);
+
+    impl AsyncRdsInput for RandomAccess {
+        fn read_at<'a>(&'a self, offset: u64, len: usize) -> AsyncReadFuture<'a> {
+            Box::pin(async move {
+                let start = (offset as usize).min(self.0.len());
+                let end = start.saturating_add(len).min(self.0.len());
+                Ok(self.0[start..end].to_vec())
+            })
+        }
+
+        fn len(&self) -> Option<u64> {
+            Some(self.0.len() as u64)
+        }
+    }
+
+    /// A file holding only NULL ends 4 bytes after the header. The wasm
+    /// paths peeked 8 bytes for a size guess and failed with an unexpected
+    /// end of file; native always read it.
+    #[wasm_bindgen_test]
+    async fn test_null_only_file_on_every_wasm_path() {
+        let mut visitor = TypeRecorder::default();
+        traverse_rds_streaming_async(
+            &RandomAccess(NULL_ONLY.to_vec()),
+            ParseConfig::default(),
+            AsyncCursorConfig::default(),
+            &mut visitor,
+        )
+        .await
+        .expect("random-access streaming");
+        assert_eq!(visitor.0, ["Null"]);
+
+        let mut visitor = TypeRecorder::default();
+        let blob = create_gzip_blob(NULL_ONLY).await;
+        traverse_rds_blob_streaming(blob, ParseConfig::default(), &mut visitor)
+            .await
+            .expect("gzip blob streaming");
+        assert_eq!(visitor.0, ["Null"]);
+
+        for mode in [ParseMode::Full, ParseMode::LazyMetadata] {
+            let config = ParseConfig {
+                mode: mode.clone(),
+                ..ParseConfig::default()
+            };
+            let parsed = read_rds_async(
+                &RandomAccess(NULL_ONLY.to_vec()),
+                config,
+                AsyncParseConfig::default(),
+            )
+            .await
+            .unwrap_or_else(|err| panic!("read_rds_async {mode:?}: {err}"));
+            assert_eq!(parsed.object, RObject::Null, "{mode:?}");
+        }
     }
 
     #[wasm_bindgen_test]
