@@ -107,6 +107,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decisions, and restore the path. Objects larger than the largest window
   (512 MB) go through separate fallback routines whose events are still
   forwarded as they are.
+- **wasm:** chunk spans passed to `RdsVisitor::on_vector_chunk_available` by
+  the async streaming traversal now hold offsets into the whole stream, as on
+  native. They were relative to the window the traversal was parsing, so for
+  a `.rds` file every offset came out 14 bytes short (the header), and
+  reading a chunk at that offset returned the wrong bytes.
 
 ## [0.3.0] - 2026-09-25
 

@@ -653,3 +653,67 @@ fn test_streaming_names_every_valid_type() {
         .collect();
     assert!(unknown.is_empty(), "{unknown:?}");
 }
+
+/// Records the offset of every chunk span, by path.
+#[derive(Default)]
+struct SpanRecorder(Vec<(String, u64)>);
+
+impl RdsVisitor for SpanRecorder {
+    type Error = std::convert::Infallible;
+
+    fn on_object_start(
+        &mut self,
+        _path: &ObjectPath,
+        _obj_type: &str,
+    ) -> Result<VisitAction, Self::Error> {
+        Ok(VisitAction::Continue)
+    }
+
+    fn on_vector_chunk_available(
+        &mut self,
+        path: &ObjectPath,
+        span: rds2rust::LazyVector,
+    ) -> Result<rds2rust::ChunkAction, Self::Error> {
+        self.0.push((path.segments.join("/"), span.offset));
+        Ok(rds2rust::ChunkAction::Skip)
+    }
+}
+
+/// Chunk spans point into the whole stream. The wasm traversal is held to the
+/// same offsets by test_chunk_spans_are_stream_offsets in
+/// wasm_streaming_ref_tests.rs.
+#[test]
+fn test_chunk_spans_are_stream_offsets() {
+    fn words(words: &[u32]) -> Vec<u8> {
+        words.iter().flat_map(|word| word.to_be_bytes()).collect()
+    }
+    // list("pad", <5000 doubles>, "end"), noting where each vector's
+    // elements start.
+    let mut bytes = b"X\n".to_vec();
+    bytes.extend(words(&[2, 0x0004_0303, 0x0002_0300, 0x13, 3, 0x10, 1]));
+    let pad = bytes.len() as u64;
+    bytes.extend(words(&[0x0004_0009, 3]));
+    bytes.extend(b"pad");
+    bytes.extend(words(&[0x0e, 5000]));
+    let reals = bytes.len() as u64;
+    for i in 0..5000 {
+        bytes.extend(f64::from(i).to_be_bytes());
+    }
+    bytes.extend(words(&[0x10, 1]));
+    let end = bytes.len() as u64;
+    bytes.extend(words(&[0x0004_0009, 3]));
+    bytes.extend(b"end");
+
+    let bytes: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+    let mut visitor = SpanRecorder::default();
+    traverse_rds_streaming(&SliceInput(bytes), ParseConfig::default(), &mut visitor)
+        .expect("traversal must succeed");
+    assert_eq!(
+        visitor.0,
+        [
+            ("[0]".to_string(), pad),
+            ("[1]".to_string(), reals),
+            ("[2]".to_string(), end),
+        ]
+    );
+}

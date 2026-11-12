@@ -1,14 +1,14 @@
 //! wasm-side tests for the async streaming traversal: it rejects a REFSXP
 //! whose index is not in the reference table, matching the native traversal
 //! and the full parser, and it delivers each event once even when it has to
-//! retry an object with a larger window. Runs in node via
-//! `wasm-pack test --node`.
+//! retry an object with a larger window, with chunk spans that point into
+//! the whole stream. Runs in node via `wasm-pack test --node`.
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_streaming_ref_tests {
     use rds2rust::{
         traverse_rds_streaming_async, AsyncCursorConfig, AsyncRdsInput, AsyncReadFuture,
-        ObjectPath, ParseConfig, RdsVisitor, VisitAction,
+        ChunkAction, LazyVector, ObjectPath, ParseConfig, RdsVisitor, VisitAction,
     };
     use wasm_bindgen_test::*;
 
@@ -185,5 +185,71 @@ mod wasm_streaming_ref_tests {
         .await
         .expect("traversal must succeed");
         assert_eq!(visitor.starts, 4);
+    }
+
+    /// Records the offset of every chunk span, by path.
+    #[derive(Default)]
+    struct SpanRecorder(Vec<(String, u64)>);
+
+    impl RdsVisitor for SpanRecorder {
+        type Error = std::convert::Infallible;
+
+        fn on_object_start(
+            &mut self,
+            _path: &ObjectPath,
+            _obj_type: &str,
+        ) -> Result<VisitAction, Self::Error> {
+            Ok(VisitAction::Continue)
+        }
+
+        fn on_vector_chunk_available(
+            &mut self,
+            path: &ObjectPath,
+            span: LazyVector,
+        ) -> Result<ChunkAction, Self::Error> {
+            self.0.push((path.segments.join("/"), span.offset));
+            Ok(ChunkAction::Skip)
+        }
+    }
+
+    /// Chunk spans must point into the whole stream, as on native. They were
+    /// relative to the window the traversal was parsing, which starts after
+    /// the 14-byte header, so every offset came out 14 bytes short.
+    #[wasm_bindgen_test]
+    async fn test_chunk_spans_are_stream_offsets() {
+        // list("pad", <5000 doubles>, "end"), noting where each vector's
+        // elements start.
+        let mut bytes = b"X\n".to_vec();
+        bytes.extend(words(&[2, 0x0004_0303, 0x0002_0300, 0x13, 3, 0x10, 1]));
+        let pad = bytes.len() as u64;
+        bytes.extend(words(&[0x0004_0009, 3]));
+        bytes.extend(b"pad");
+        bytes.extend(words(&[0x0e, 5000]));
+        let reals = bytes.len() as u64;
+        for i in 0..5000 {
+            bytes.extend(f64::from(i).to_be_bytes());
+        }
+        bytes.extend(words(&[0x10, 1]));
+        let end = bytes.len() as u64;
+        bytes.extend(words(&[0x0004_0009, 3]));
+        bytes.extend(b"end");
+
+        let mut visitor = SpanRecorder::default();
+        traverse_rds_streaming_async(
+            &RandomAccess(bytes),
+            ParseConfig::default(),
+            AsyncCursorConfig::default(),
+            &mut visitor,
+        )
+        .await
+        .expect("traversal must succeed");
+        assert_eq!(
+            visitor.0,
+            [
+                ("[0]".to_string(), pad),
+                ("[1]".to_string(), reals),
+                ("[2]".to_string(), end),
+            ]
+        );
     }
 }

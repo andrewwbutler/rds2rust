@@ -1651,7 +1651,7 @@ where
         let dedup_checkpoint = dedup_table.checkpoint();
 
         progress.base_offset = cursor.position();
-        dedup.restart();
+        dedup.restart(cursor.position());
         let result = parse_object_streaming(
             ctx,
             &mut sync_cursor,
@@ -5786,12 +5786,18 @@ enum DeliveredEvent {
 /// so it produces those same events in the same order before going further.
 /// The wrapper suppresses the ones already delivered, answering with the
 /// visitor's earlier decisions, and forwards only the new ones.
+///
+/// Each attempt parses a window of the stream, so the chunk spans it reports
+/// are relative to the window. The wrapper adds the window's start, so the
+/// visitor receives offsets into the whole stream, as on native.
 #[cfg(target_arch = "wasm32")]
 struct RetryDedupVisitor<'a, V: RdsVisitor> {
     inner: &'a mut V,
     delivered: Vec<DeliveredEvent>,
     /// Index into `delivered` reached by the current attempt.
     replayed: usize,
+    /// Stream offset of the current attempt's window.
+    window_start: u64,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -5801,12 +5807,15 @@ impl<'a, V: RdsVisitor> RetryDedupVisitor<'a, V> {
             inner,
             delivered: Vec::new(),
             replayed: 0,
+            window_start: 0,
         }
     }
 
-    /// Start another attempt at the same object.
-    fn restart(&mut self) {
+    /// Start another attempt at the same object, parsing a window that
+    /// begins at `window_start` in the stream.
+    fn restart(&mut self, window_start: u64) {
         self.replayed = 0;
+        self.window_start = window_start;
     }
 
     /// The recorded event for the next callback, if this attempt has not yet
@@ -5880,6 +5889,10 @@ impl<V: RdsVisitor> RdsVisitor for RetryDedupVisitor<'_, V> {
         if let Some(DeliveredEvent::Chunk(action)) = self.replay() {
             return Ok(action);
         }
+        let span = LazyVector {
+            offset: span.offset + self.window_start,
+            ..span
+        };
         let action = self.inner.on_vector_chunk_available(path, span)?;
         self.record(DeliveredEvent::Chunk(action));
         Ok(action)
