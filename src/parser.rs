@@ -4783,6 +4783,14 @@ type SyncPayloadParser = fn(
 /// dedup tables are rolled back between attempts, so a partial attempt
 /// leaves no trace. Like the streaming parser's sync fallback, the window is
 /// parsed in streaming mode, because it is a slice and not the whole file.
+///
+/// The window is also parsed in `Full` mode, so the result holds no lazy
+/// vectors: a lazy vector records the offset of its data, and inside the
+/// window that offset would be relative to the window, not the file, so
+/// loading it later would read the wrong bytes. Shifting the offsets
+/// afterwards is not safe, because the result can share objects parsed
+/// before the window, whose offsets are already correct. The usual
+/// allocation limits still apply to what is loaded.
 #[cfg(target_arch = "wasm32")]
 async fn parse_sync_object_async<C: AsyncCursor>(
     ctx: &mut ParserContext,
@@ -4827,7 +4835,9 @@ async fn parse_sync_object_async<C: AsyncCursor>(
         let dedup_checkpoint = dedup_table.checkpoint();
         ctx.streaming_parse_mode = true;
         ctx.async_parse_mode = false;
+        let mode = std::mem::replace(&mut ctx.mode, crate::ParseMode::Full);
         let result = parse(ctx, &mut sync_cursor, ref_table, symbol_table, dedup_table);
+        ctx.mode = mode;
 
         let retry = match &result {
             Ok(_) => false,

@@ -91,7 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   references as the full parser does. For these objects it now returns the
   same result as `Full` mode, except that values bound in an environment
   still follow the lazy rules, so a large vector in an environment stays
-  lazy. An environment's hash table is always read, even though its bucket
+  lazy. Vectors inside bytecode are always loaded rather than left lazy, as
+  in `Full` mode. An environment's hash table is always read, even though its bucket
   count is above the lazy threshold that skips an ordinary list; skipping
   it dropped every binding.
 - **wasm:** the async streaming traversal no longer delivers visitor events
