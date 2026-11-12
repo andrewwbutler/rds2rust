@@ -55,7 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   automatic again. Previously they became explicit character row names.
   Integer row names that are not `1..n` (for example `c(3L, 1L, 2L)`) still
   come back from R as character row names with the same values, because
-  `DataFrameData` stores row names only as strings.
+  `DataFrameData` stores row names only as strings. For the same reason, row
+  names explicitly set to the strings `"1".."n"` are indistinguishable from
+  automatic ones and come back as automatic row names; in 0.3.0 such a data
+  frame came back from R broken, with `nrow()` of 1 and no row names.
 - **wasm:** streaming a gzip-compressed file with `traverse_rds_blob_streaming`
   or `traverse_rds_streaming_sequential_async` failed on almost every file.
   The sequential cursor pre-filled its whole read buffer (16-128 MB) and
