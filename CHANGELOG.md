@@ -16,8 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value as `"UnboundValue"`, and persisted references as `"Character"`,
   instead of `"Unknown"`. These match `RObject::variant_name`. The API is
   unchanged, but a visitor that matched `"Unknown"` to find any of these must
-  match the new names. `"Unknown"` is now reported only for type codes the
-  parser rejects.
+  match the new names. `"Unknown"` is now reported only for type codes that
+  R does not write.
 
 ### Fixed
 
@@ -43,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   index` error the full parser returns. Previously it reported the dangling
   reference to the visitor and carried on, so a corrupt stream that the full
   parser refuses could be traversed without error. Valid files are
-  unaffected; every fixture in the test corpus traverses exactly as before.
+  unaffected.
 - `write_rds` now writes data frames and factors (including ordered factors)
   with R's OBJECT bit. Without it R saw the class attribute but skipped
   internal-generic dispatch: `nrow()` and `dim()` on a written data frame
@@ -57,8 +57,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   come back from R as character row names with the same values, because
   `DataFrameData` stores row names only as strings. For the same reason, row
   names explicitly set to the strings `"1".."n"` are indistinguishable from
-  automatic ones and come back as automatic row names; in 0.3.0 such a data
-  frame came back from R broken, with `nrow()` of 1 and no row names.
+  automatic ones and come back as automatic row names. In 0.3.0 such a data
+  frame came back from R without row names and, like every data frame
+  written by 0.3.0, with `nrow()` of `NULL`.
 - **wasm:** streaming a gzip-compressed file with `traverse_rds_blob_streaming`
   or `traverse_rds_streaming_sequential_async` failed on almost every file.
   The sequential cursor pre-filled its whole read buffer (16-128 MB) and
@@ -95,9 +96,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same result as `Full` mode, except that values bound in an environment
   still follow the lazy rules, so a large vector in an environment stays
   lazy. Vectors inside bytecode are always loaded rather than left lazy, as
-  in `Full` mode. An environment's hash table is always read, even though its bucket
-  count is above the lazy threshold that skips an ordinary list; skipping
-  it dropped every binding.
+  in `Full` mode. An environment's hash table is always read, even though
+  its bucket count is above the lazy threshold that skips an ordinary list;
+  skipping it dropped every binding.
 - **wasm:** the async streaming traversal no longer delivers visitor events
   more than once. When an object is larger than the first window the
   traversal tries, it rolls back and retries with a larger one, but the
@@ -108,8 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which also inflated `DatasetInfo::object_count`. Retries now suppress the
   events already delivered, giving the parser the visitor's earlier
   decisions, and restore the path. Objects larger than the largest window
-  (512 MB) go through separate fallback routines whose events are still
-  forwarded as they are.
+  (64-512 MB, depending on the device's memory) go through separate fallback
+  routines whose events are still forwarded as they are.
 - **wasm:** chunk spans passed to `RdsVisitor::on_vector_chunk_available` by
   the async streaming traversal now hold offsets into the whole stream, as on
   native. They were relative to the window the traversal was parsing, so for

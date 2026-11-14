@@ -648,6 +648,8 @@ let obj2 = Arc::clone(&obj);
 - **Compression formats**: Reads gzip and xz (xz on native targets only, not `wasm32`); writes gzip. bzip2 is not supported.
 - **ALTREP**: Reads ALTREP objects but writes them as regular vectors
 - **External pointers**: Read as `NULL`, keeping any attributes such as a class (the address itself is not serialized). Their protected value and tag are consumed so the rest of the stream stays aligned. Every data.table carries one (`.internal.selfref`).
+- **Data frames**: `DataFrameData` keeps columns and row names only, with row names as strings. A data frame written back with `write_rds` is a plain `data.frame`: classes beyond `data.frame` (such as data.table's) are dropped, integer row names come back as character, and row names `"1".."n"` come back as automatic row names.
+- **Environment attributes**: An environment's attributes, including a class (as on R6 objects), are read past but not kept.
 
 ## Development Status
 
