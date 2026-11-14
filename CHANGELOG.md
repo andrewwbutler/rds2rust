@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.1] - 2026-11-14
+
+Correctness release. Fixes reads that silently lost or misread everything
+after an external pointer (every data.table carries one) and, on wasm,
+after builtin and special primitives, environments, closures, promises and
+bytecode. Fixes gzip streaming on wasm, which failed on almost every file,
+and several other streaming failures and wrong offsets. Data frames and
+factors written by `write_rds` now dispatch as S3 objects in R. No API
+changes. One behavior change for streaming visitors: object types reported
+as `"Unknown"` now have real names (see below). Anyone reading data.tables,
+workspaces with external pointers, or gzip files on wasm should upgrade.
 
 ### Breaking / behavior changes for downstream consumers
 
